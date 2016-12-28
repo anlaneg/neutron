@@ -70,8 +70,10 @@ The following are the current Neutron Lieutenants.
 | Built-In Control Plane | Kevin Benton              | kevinbenton          |
 +------------------------+---------------------------+----------------------+
 | Client                 | Akihiro Motoki            | amotoki              |
+|                        +---------------------------+----------------------+
+|                        | Abhishek Raut             | abhiraut             |
 +------------------------+---------------------------+----------------------+
-| Docs                   | Matthew Kassawara         | Sam-I-Am             |
+| Docs                   | John Davidge              | john-davidge         |
 +------------------------+---------------------------+----------------------+
 | Infra                  | Nate Johnston             | njohnston            |
 |                        +---------------------------+----------------------+
@@ -79,9 +81,13 @@ The following are the current Neutron Lieutenants.
 |                        +---------------------------+----------------------+
 |                        | Doug Wiegley              | dougwig              |
 +------------------------+---------------------------+----------------------+
-| L3                     | Carl Baldwin              | carl_baldwin         |
+| L3                     | Brian Haley               | haleyb               |
++                        +---------------------------+----------------------+
+|                        | Miguel Lavalle            | mlavalle             |
 +------------------------+---------------------------+----------------------+
-| Services               | Doug Wiegley              | dougwig              |
+| Services               | Ryan Tidwell              | tidwellr             |
+|                        +---------------------------+----------------------+
+|                        | Nate Johnston             | njohnston            |
 +------------------------+---------------------------+----------------------+
 | Testing                | Jakub Libosvar            | jlibosva             |
 +------------------------+---------------------------+----------------------+
