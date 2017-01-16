@@ -25,7 +25,6 @@ from oslo_versionedobjects import fields as obj_fields
 import six
 
 from neutron._i18n import _
-from neutron.api.v2 import attributes
 from neutron.db import api as db_api
 from neutron.db import standard_attr
 from neutron.objects.db import api as obj_db_api
@@ -124,7 +123,6 @@ class NeutronObject(obj_base.VersionedObject,
                     dict_[field_name].to_dict() if value else None)
             else:
                 dict_[field_name] = field.to_primitive(self, field_name, value)
-        attributes.populate_project_info(dict_)
         return dict_
 
     @classmethod
@@ -471,18 +469,27 @@ class NeutronDbObject(NeutronObject):
         return str(value)
 
     @staticmethod
-    def filter_to_json_str(value):
+    def filter_to_json_str(value, default=None):
         def _dict_to_json(v):
-            return jsonutils.dumps(
-                collections.OrderedDict(
-                    sorted(v.items(), key=lambda t: t[0])
-                ) if v else {}
+            return (
+                jsonutils.dumps(
+                    collections.OrderedDict(
+                        sorted(v.items(), key=lambda t: t[0])
+                    )
+                ) if v else default
             )
 
         if isinstance(value, list):
             return [_dict_to_json(val) for val in value]
         v = _dict_to_json(value)
         return v
+
+    @staticmethod
+    def load_json_from_str(field, default=None):
+        value = field or default
+        if value:
+            value = jsonutils.loads(value)
+        return value
 
     def _get_changed_persistent_fields(self):
         fields = self.obj_get_changes()

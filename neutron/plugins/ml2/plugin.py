@@ -421,7 +421,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         self._update_port_dict_binding(port, new_binding)
         new_context = driver_context.PortContext(
             self, orig_context._plugin_context, port,
-            orig_context.network.current, new_binding, None)
+            orig_context.network.current, new_binding, None,
+            original_port=orig_context.original)
 
         # Attempt to bind the port and return the context with the
         # result.
@@ -609,22 +610,17 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
     # registration of hooks in portbindings_db.py used by other
     # plugins.
 
-    def _ml2_port_model_hook(self, context, original_model, query):
-        query = query.outerjoin(models.PortBinding,
-                                (original_model.id ==
-                                 models.PortBinding.port_id))
-        return query
-
     def _ml2_port_result_filter_hook(self, query, filters):
         values = filters and filters.get(portbindings.HOST_ID, [])
         if not values:
             return query
-        return query.filter(models.PortBinding.host.in_(values))
+        bind_criteria = models.PortBinding.host.in_(values)
+        return query.filter(models_v2.Port.port_binding.has(bind_criteria))
 
     db_base_plugin_v2.NeutronDbPluginV2.register_model_query_hook(
         models_v2.Port,
         "ml2_port_bindings",
-        '_ml2_port_model_hook',
+        None,
         None,
         '_ml2_port_result_filter_hook')
 
@@ -739,7 +735,6 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         tenant_id = net_data['tenant_id']
         session = context.session
         with session.begin(subtransactions=True):
-            self._ensure_default_security_group(context, tenant_id)
             net_db = self.create_network_db(context, network)
             result = self._make_network_dict(net_db, process_extensions=False,
                                              context=context)
@@ -775,6 +770,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
     @utils.transaction_guard
     @db_api.retry_if_session_inactive()
     def create_network(self, context, network):
+        self._ensure_default_security_group(context,
+                                            network['network']['tenant_id'])
         result, mech_context = self._create_network_db(context, network)
         kwargs = {'context': context, 'network': result}
         registry.notify(resources.NETWORK, events.AFTER_CREATE, self, **kwargs)
@@ -791,6 +788,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
     @utils.transaction_guard
     @db_api.retry_if_session_inactive()
     def create_network_bulk(self, context, networks):
+        tenants = {n['network']['tenant_id'] for n in networks['networks']}
+        map(lambda t: self._ensure_default_security_group(context, t), tenants)
         objects = self._create_bulk_ml2(attributes.NETWORK, context, networks)
         return [obj['result'] for obj in objects]
 
@@ -1244,6 +1243,9 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         if not attrs.get('status'):
             attrs['status'] = const.PORT_STATUS_DOWN
 
+        # NOTE(kevinbenton): triggered outside of transaction since it
+        # emits 'AFTER' events if it creates.
+        self._ensure_default_security_group(context, attrs['tenant_id'])
         session = context.session
         with session.begin(subtransactions=True):
             dhcp_opts = attrs.get(edo_ext.EXTRADHCPOPTS, [])

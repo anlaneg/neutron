@@ -17,6 +17,7 @@ import mock
 import netaddr
 from neutron_lib import constants
 from neutron_lib.plugins import directory
+from oslo_utils import uuidutils
 
 from neutron import context as nctx
 from neutron.db import models_v2
@@ -57,7 +58,10 @@ class TestRevisionPlugin(test_plugin.Ml2PluginV2TestCase):
                 # load port into our session
                 port_obj = self.ctx.session.query(models_v2.Port).one()
                 # simulate concurrent delete in another session
-                nctx.get_admin_context().session.query(models_v2.Port).delete()
+                other_ctx = nctx.get_admin_context()
+                other_ctx.session.delete(
+                    other_ctx.session.query(models_v2.Port).first()
+                )
                 # expire the port so the revision bumping code will trigger a
                 # lookup on its attributes and encounter an ObjectDeletedError
                 self.ctx.session.expire(port_obj)
@@ -158,7 +162,7 @@ class TestRevisionPlugin(test_plugin.Ml2PluginV2TestCase):
             rev = port['port']['revision_number']
             qos_plugin = directory.get_plugin('QOS')
             qos_policy = {'policy': {'name': "policy1",
-                                     'tenant_id': "tenant1"}}
+                                     'project_id': uuidutils.generate_uuid()}}
             qos_obj = qos_plugin.create_policy(self.ctx, qos_policy)
             data = {'port': {'qos_policy_id': qos_obj['id']}}
             response = self._update('ports', port['port']['id'], data)
@@ -170,7 +174,7 @@ class TestRevisionPlugin(test_plugin.Ml2PluginV2TestCase):
             rev = network['network']['revision_number']
             qos_plugin = directory.get_plugin('QOS')
             qos_policy = {'policy': {'name': "policy1",
-                                     'tenant_id': "tenant1"}}
+                                     'project_id': uuidutils.generate_uuid()}}
             qos_obj = qos_plugin.create_policy(self.ctx, qos_policy)
             data = {'network': {'qos_policy_id': qos_obj['id']}}
             response = self._update('networks', network['network']['id'], data)

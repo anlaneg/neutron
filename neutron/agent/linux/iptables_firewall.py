@@ -61,7 +61,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
                           firewall.EGRESS_DIRECTION: 'physdev-in'}
 
     def __init__(self, namespace=None):
-        self.iptables = iptables_manager.IptablesManager(
+        self.iptables = iptables_manager.IptablesManager(state_less=True,
             use_ipv6=ipv6_utils.is_enabled_and_bind_by_default(),
             namespace=namespace)
         # TODO(majopela, shihanzhang): refactor out ipset to a separate
@@ -107,7 +107,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         LOG.debug("Enabling netfilter for bridges")
         entries = utils.execute(['sysctl', '-N', 'net.bridge'],
                                 run_as_root=True).splitlines()
-        for proto in ('arp', 'ip', 'ip6'):
+        for proto in ('ip', 'ip6'):
             knob = 'net.bridge.bridge-nf-call-%stables' % proto
             if 'net.bridge.bridge-nf-call-%stables' % proto not in entries:
                 raise SystemExit(

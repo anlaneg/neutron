@@ -14,7 +14,6 @@
 #    under the License.
 
 import functools
-import uuid
 
 import fixtures
 import mock
@@ -486,7 +485,6 @@ class TestMl2NetworksWithVlanTransparencyAndMTU(
                                return_value=True):
             config.cfg.CONF.set_override('path_mtu', 1000, group='ml2')
             config.cfg.CONF.set_override('global_physnet_mtu', 1000)
-            config.cfg.CONF.set_override('advertise_mtu', True)
             network_req = self.new_create_request('networks', self.data)
             res = network_req.get_response(self.api)
             self.assertEqual(201, res.status_int)
@@ -1741,6 +1739,20 @@ class TestMl2PortBinding(Ml2PluginV2TestCase,
                 self.context, 'foo_port_id', {'port': port})
         self.assertFalse(mock_dist.called)
 
+    def test__bind_port_original_port_set(self):
+        plugin = directory.get_plugin()
+        plugin.mechanism_manager = mock.Mock()
+        mock_port = {'id': 'port_id'}
+        context = mock.Mock()
+        context.network.current = {'id': 'net_id'}
+        context.original = mock_port
+        with mock.patch.object(plugin, '_update_port_dict_binding'), \
+            mock.patch.object(segments_db, 'get_network_segments',
+                              return_value=[]):
+            new_context = plugin._bind_port(context)
+            self.assertEqual(mock_port, new_context.original)
+            self.assertFalse(new_context == context)
+
 
 class TestMl2PortBindingNoSG(TestMl2PortBinding):
     HAS_PORT_FILTER = False
@@ -2148,7 +2160,7 @@ class TestFaultyMechansimDriver(Ml2PluginV2FaultyDriverTestCase):
                                'create_network_postcommit',
                                side_effect=(exc.InvalidInput(
                                                 error_message=err_msg))):
-            tenant_id = str(uuid.uuid4())
+            tenant_id = uuidutils.generate_uuid()
             data = {'network': {'name': 'net1',
                                 'tenant_id': tenant_id}}
             req = self.new_create_request('networks', data)

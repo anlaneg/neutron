@@ -24,7 +24,6 @@ import netaddr
 from neutron_lib import constants
 from neutron_lib import exceptions
 from neutron_lib.utils import file as file_utils
-from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging
 from oslo_utils import excutils
@@ -39,7 +38,6 @@ from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_manager
 from neutron.cmd.sanity import checks
 from neutron.common import constants as n_const
-from neutron.common import exceptions as n_exc
 from neutron.common import utils as common_utils
 from neutron.extensions import extra_dhcp_opt as edo_ext
 from neutron.ipam import utils as ipam_utils
@@ -390,11 +388,10 @@ class Dnsmasq(DhcpLocalProcess):
                                 cidr.prefixlen, lease))
                 possible_leases += cidr.size
 
-        if cfg.CONF.advertise_mtu:
-            mtu = getattr(self.network, 'mtu', 0)
-            # Do not advertise unknown mtu
-            if mtu > 0:
-                cmd.append('--dhcp-option-force=option:mtu,%d' % mtu)
+        mtu = getattr(self.network, 'mtu', 0)
+        # Do not advertise unknown mtu
+        if mtu > 0:
+            cmd.append('--dhcp-option-force=option:mtu,%d' % mtu)
 
         # Cap the limit because creating lots of subnets can inflate
         # this possible lease cap.
@@ -1241,7 +1238,7 @@ class DeviceManager(object):
                         port.id, {'port': {'network_id': network.id,
                                            'device_id': device_id}})
                 except oslo_messaging.RemoteError as e:
-                    if e.exc_type == n_exc.DhcpPortInUse:
+                    if e.exc_type == 'DhcpPortInUse':
                         LOG.info(_LI("Skipping DHCP port %s as it is "
                                      "already in use"), port.id)
                         continue

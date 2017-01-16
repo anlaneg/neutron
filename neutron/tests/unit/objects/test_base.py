@@ -43,6 +43,7 @@ from neutron.objects import exceptions as o_exc
 from neutron.objects import network as net_obj
 from neutron.objects import ports
 from neutron.objects import rbac_db
+from neutron.objects import securitygroup
 from neutron.objects import subnet
 from neutron.tests import base as test_base
 from neutron.tests import tools
@@ -359,6 +360,19 @@ class FakeNeutronObject(base.NeutronObject):
         ]
 
 
+@obj_base.VersionedObjectRegistry.register_if(False)
+class FakeNeutronObjectDictOfMiscValues(base.NeutronDbObject):
+    # Version 1.0: Initial version
+    VERSION = '1.0'
+
+    db_model = FakeModel
+
+    fields = {
+        'id': common_types.UUIDField(),
+        'dict_field': common_types.DictOfMiscValuesField(),
+    }
+
+
 def get_random_dscp_mark():
     return random.choice(constants.VALID_DSCP_MARKS)
 
@@ -386,6 +400,22 @@ def get_random_dict_of_strings():
     }
 
 
+def get_random_dict():
+    return {
+        helpers.get_random_string(6): helpers.get_random_string(6),
+        helpers.get_random_string(6): tools.get_random_boolean(),
+        helpers.get_random_string(6): tools.get_random_integer(),
+        helpers.get_random_string(6): [
+            tools.get_random_integer(),
+            helpers.get_random_string(6),
+            tools.get_random_boolean(),
+        ],
+        helpers.get_random_string(6): {
+            helpers.get_random_string(6): helpers.get_random_string(6)
+        }
+    }
+
+
 def get_set_of_random_uuids():
     return {
         uuidutils.generate_uuid()
@@ -395,6 +425,7 @@ def get_set_of_random_uuids():
 
 # NOTE: The keys in this dictionary have alphabetic order.
 FIELD_TYPE_VALUE_GENERATOR_MAP = {
+    common_types.DictOfMiscValuesField: get_random_dict,
     common_types.DomainNameField: get_random_domain_name,
     common_types.DscpMarkField: get_random_dscp_mark,
     common_types.EtherTypeEnumField: tools.get_random_ether_type,
@@ -1188,6 +1219,26 @@ class BaseDbObjectMultipleParentsForForeignKeysTestCase(
         self.assertEqual(fake_children, obj.children)
 
 
+class BaseObjectIfaceDictMiscValuesTestCase(_BaseObjectTestCase,
+                                            test_base.BaseTestCase):
+
+    _test_class = FakeNeutronObjectDictOfMiscValues
+
+    def test_dict_of_misc_values(self):
+        obj_id = uuidutils.generate_uuid()
+        float_value = 1.23
+        misc_list = [True, float_value]
+        obj_dict = {
+            'bool': True,
+            'float': float_value,
+            'misc_list': misc_list
+        }
+        obj = self._test_class(self.context, id=obj_id, dict_field=obj_dict)
+        self.assertTrue(obj.dict_field['bool'])
+        self.assertEqual(float_value, obj.dict_field['float'])
+        self.assertEqual(misc_list, obj.dict_field['misc_list'])
+
+
 class BaseDbObjectTestCase(_BaseObjectTestCase,
                            test_db_base_plugin_v2.DbOperationBoundMixin):
     def setUp(self):
@@ -1300,6 +1351,13 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         self._router = obj_db_api.create_object(self.context,
                                                 l3_model.Router,
                                                 attrs)
+
+    def _create_test_security_group(self):
+        sg_fields = self.get_random_object_fields(securitygroup.SecurityGroup)
+        self._securitygroup = securitygroup.SecurityGroup(self.context,
+                                                          **sg_fields)
+        self._securitygroup.create()
+        return self._securitygroup
 
     def _create_test_port(self, network):
         self._port = self._create_port(network_id=network['id'])
@@ -1684,3 +1742,19 @@ class PagerTestCase(test_base.BaseTestCase):
 
         pager3 = base.Pager()
         self.assertNotEqual(pager, pager3)
+
+
+class OperationOnStringAndJsonTestCase(test_base.BaseTestCase):
+    def test_load_empty_string_to_json(self):
+        for field_val in ['', None]:
+            for default_val in [None, {}]:
+                res = base.NeutronDbObject.load_json_from_str(field_val,
+                                                              default_val)
+                self.assertEqual(res, default_val)
+
+    def test_dump_field_to_string(self):
+        for field_val in [{}, None]:
+            for default_val in ['', None]:
+                res = base.NeutronDbObject.filter_to_json_str(field_val,
+                                                              default_val)
+                self.assertEqual(default_val, res)

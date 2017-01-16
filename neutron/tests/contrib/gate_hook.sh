@@ -3,12 +3,14 @@
 set -ex
 
 VENV=${1:-"dsvm-functional"}
+FLAVOR=${2:-"all"}
 
 GATE_DEST=$BASE/new
 NEUTRON_PATH=$GATE_DEST/neutron
 GATE_HOOKS=$NEUTRON_PATH/neutron/tests/contrib/hooks
 DEVSTACK_PATH=$GATE_DEST/devstack
 LOCAL_CONF=$DEVSTACK_PATH/local.conf
+RALLY_EXTRA_DIR=$NEUTRON_PATH/rally-jobs/extra
 
 
 # Inject config from hook into localrc
@@ -26,6 +28,18 @@ ${config}
 function load_conf_hook {
     local hook="$1"
     cat $GATE_HOOKS/$hook >> $LOCAL_CONF
+}
+
+
+# Tweak gate configuration for our rally scenarios
+function load_rc_for_rally {
+    for file in $(ls $RALLY_EXTRA_DIR/*.setup); do
+        local config=$(cat $file)
+        export DEVSTACK_LOCAL_CONFIG+="
+# generated from hook '$file'
+${config}
+"
+    done
 }
 
 
@@ -58,8 +72,8 @@ case $VENV in
     sudo chown -R $STACK_USER:$STACK_USER $BASE
     ;;
 
-"api"|"api-pecan"|"full-pecan"|"dsvm-scenario")
-    load_rc_hook api_extensions
+"api"|"api-pecan"|"full-ovsfw"|"full-pecan"|"dsvm-scenario")
+    load_rc_hook api_${FLAVOR}_extensions
     load_conf_hook quotas
     load_rc_hook dns
     load_rc_hook qos
@@ -72,7 +86,15 @@ case $VENV in
     if [[ "$VENV" =~ "pecan" ]]; then
         load_conf_hook pecan
     fi
+    if [[ "$VENV" =~ "ovsfw" ]]; then
+        load_conf_hook ovsfw
+    fi
 
+    $BASE/new/devstack-gate/devstack-vm-gate.sh
+    ;;
+
+"rally")
+    load_rc_for_rally
     $BASE/new/devstack-gate/devstack-vm-gate.sh
     ;;
 
