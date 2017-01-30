@@ -27,6 +27,7 @@ import signal
 import sys
 import time
 import uuid
+import weakref
 
 import debtcollector
 from debtcollector import removals
@@ -718,7 +719,8 @@ def transaction_guard(f):
     return inner
 
 
-def wait_until_true(predicate, timeout=60, sleep=1, exception=None):
+def wait_until_true(predicate, timeout=60, sleep=1, exception=None,
+                    initial_sleep=0):
     """
     Wait until callable predicate is evaluated as True
 
@@ -730,6 +732,7 @@ def wait_until_true(predicate, timeout=60, sleep=1, exception=None):
                       (default) then WaitTimeout exception is raised.
     """
     try:
+        eventlet.sleep(initial_sleep)
         with eventlet.timeout.Timeout(timeout):
             while not predicate():
                 eventlet.sleep(sleep)
@@ -877,3 +880,17 @@ def get_related_rand_names(prefixes, max_length=None):
 def get_related_rand_device_names(prefixes):
     return get_related_rand_names(prefixes,
                                   max_length=n_const.DEVICE_NAME_MAX_LEN)
+
+
+try:
+    # PY3
+    weak_method = weakref.WeakMethod
+except AttributeError:
+    # PY2
+    import weakrefmethod
+    weak_method = weakrefmethod.WeakMethod
+
+
+def make_weak_ref(f):
+    """Make a weak reference to a function accounting for bound methods."""
+    return weak_method(f) if hasattr(f, '__self__') else weakref.ref(f)

@@ -40,6 +40,7 @@ from six.moves import http_client as httplib
 
 from neutron._i18n import _, _LE
 from neutron.agent.common import config
+from neutron.agent.linux import xenapi_root_helper
 from neutron.common import utils
 from neutron import wsgi
 
@@ -65,8 +66,12 @@ class RootwrapDaemonHelper(object):
     def get_client(cls):
         with cls.__lock:
             if cls.__client is None:
-                cls.__client = client.Client(
-                    shlex.split(cfg.CONF.AGENT.root_helper_daemon))
+                if xenapi_root_helper.ROOT_HELPER_DAEMON_TOKEN == \
+                    cfg.CONF.AGENT.root_helper_daemon:
+                    cls.__client = xenapi_root_helper.XenAPIClient()
+                else:
+                    cls.__client = client.Client(
+                        shlex.split(cfg.CONF.AGENT.root_helper_daemon))
             return cls.__client
 
 
@@ -402,7 +407,7 @@ class UnixDomainHttpProtocol(eventlet.wsgi.HttpProtocol):
     disable_nagle_algorithm = False
 
     def __init__(self, request, client_address, server):
-        if client_address == '':
+        if not client_address:
             client_address = ('<local>', 0)
         # base class is old-style, so super does not work properly
         eventlet.wsgi.HttpProtocol.__init__(self, request, client_address,

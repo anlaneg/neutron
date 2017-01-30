@@ -28,7 +28,7 @@ import weakref
 import eventlet.timeout
 import fixtures
 import mock
-from neutron_lib.plugins import directory
+from neutron_lib import fixture
 from oslo_concurrency.fixture import lockutils
 from oslo_config import cfg
 from oslo_messaging import conffixture as messaging_conffixture
@@ -42,11 +42,13 @@ import testtools
 from neutron._i18n import _
 from neutron.agent.linux import external_process
 from neutron.api.rpc.callbacks.consumer import registry as rpc_consumer_reg
+from neutron.api.rpc.callbacks.producer import registry as rpc_producer_reg
 from neutron.callbacks import manager as registry_manager
 from neutron.callbacks import registry
 from neutron.common import config
 from neutron.common import rpc as n_rpc
 from neutron.db import agentschedulers_db
+from neutron.db import api as db_api
 from neutron import manager
 from neutron import policy
 from neutron.quota import resource_registry
@@ -290,12 +292,15 @@ class BaseTestCase(DietTestCase):
         self.setup_rpc_mocks()
         self.setup_config()
         self.setup_test_registry_instance()
-        self.setup_test_directory_instance()
+        # Give a private copy of the directory to each test.
+        self.useFixture(fixture.PluginDirectoryFixture())
 
         policy.init()
         self.addCleanup(policy.reset)
         self.addCleanup(resource_registry.unregister_all_resources)
+        self.addCleanup(db_api.sqla_remove_all)
         self.addCleanup(rpc_consumer_reg.clear)
+        self.addCleanup(rpc_producer_reg.clear)
 
     def get_new_temp_dir(self):
         """Create a new temporary directory.
@@ -359,14 +364,6 @@ class BaseTestCase(DietTestCase):
         self._callback_manager = registry_manager.CallbacksManager()
         mock.patch.object(registry, '_get_callback_manager',
                           return_value=self._callback_manager).start()
-
-    def setup_test_directory_instance(self):
-        """Give a private copy of the directory to each test."""
-        # TODO(armax): switch to using a fixture to stop relying on stubbing
-        # out _get_plugin_directory directly.
-        self._plugin_directory = directory._PluginDirectory()
-        mock.patch.object(directory, '_get_plugin_directory',
-                          return_value=self._plugin_directory).start()
 
     def setup_config(self, args=None):
         """Tests that need a non-default config can override this method."""

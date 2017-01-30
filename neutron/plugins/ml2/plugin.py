@@ -80,6 +80,7 @@ from neutron.plugins.ml2 import driver_context
 from neutron.plugins.ml2.extensions import qos as qos_ext
 from neutron.plugins.ml2 import managers
 from neutron.plugins.ml2 import models
+from neutron.plugins.ml2 import ovo_rpc
 from neutron.plugins.ml2 import rpc
 from neutron.quota import resource_registry
 from neutron.services.qos import qos_consts
@@ -235,13 +236,10 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 return
         self.update_port_status(context, port_id, const.PORT_STATUS_ACTIVE)
 
-    @property
-    def supported_qos_rule_types(self):
-        return self.mechanism_manager.supported_qos_rule_types
-
     @log_helpers.log_method_call
     def _start_rpc_notifiers(self):
         """Initialize RPC notifiers for agents."""
+        self.ovo_notifier = ovo_rpc.OVOServerRpcInterface()
         self.notifier = rpc.AgentNotifierApi(topics.AGENT)
         self.agent_notifiers[const.AGENT_TYPE_DHCP] = (
             dhcp_rpc_agent_api.DhcpAgentNotifyAPI()
@@ -590,20 +588,16 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                attributes.SUBNETS, ['_ml2_md_extend_subnet_dict'])
 
     def _ml2_md_extend_network_dict(self, result, netdb):
-        session = db_api.get_session()
-        with session.begin(subtransactions=True):
-            self.extension_manager.extend_network_dict(session, netdb, result)
+        session = db_api.get_reader_session()
+        self.extension_manager.extend_network_dict(session, netdb, result)
 
     def _ml2_md_extend_port_dict(self, result, portdb):
-        session = db_api.get_session()
-        with session.begin(subtransactions=True):
-            self.extension_manager.extend_port_dict(session, portdb, result)
+        session = db_api.get_reader_session()
+        self.extension_manager.extend_port_dict(session, portdb, result)
 
     def _ml2_md_extend_subnet_dict(self, result, subnetdb):
-        session = db_api.get_session()
-        with session.begin(subtransactions=True):
-            self.extension_manager.extend_subnet_dict(
-                session, subnetdb, result)
+        session = db_api.get_reader_session()
+        self.extension_manager.extend_subnet_dict(session, subnetdb, result)
 
     # Note - The following hook methods have "ml2" in their names so
     # that they are not called twice during unit tests due to global

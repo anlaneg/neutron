@@ -45,18 +45,15 @@ Service side design
   QoSPlugin, service plugin that implements 'qos' extension, receiving and
   handling API calls to create/modify policies and rules.
 
-* neutron.services.qos.notification_drivers.manager:
-  the manager that passes object notifications down to every enabled
-  notification driver.
+* neutron.services.qos.drivers.manager:
+  the manager that passes object actions down to every enabled QoS driver and
+  issues RPC calls when any of the drivers require RPC push notifications.
 
-* neutron.services.qos.notification_drivers.qos_base:
-  the interface class for pluggable notification drivers that are used to
-  update backends about new {create, update, delete} events on any rule or
-  policy change.
-
-* neutron.services.qos.notification_drivers.message_queue:
-  MQ-based reference notification driver which updates agents via messaging
-  bus, using `RPC callbacks <rpc_callbacks.html>`_.
+* neutron.services.qos.drivers.base:
+  the interface class for pluggable QoS drivers that are used to update
+  backends about new {create, update, delete} events on any rule or policy
+  change. The drivers also declare which QoS rules, VIF drivers and VNIC
+  types are supported.
 
 * neutron.core_extensions.base:
   Contains an interface class to implement core resource (port/network)
@@ -96,21 +93,19 @@ NotImplemented.
 Supported QoS rule types
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-Any plugin or Ml2 mechanism driver can claim support for some QoS rule types by
-providing a plugin/driver class property called 'supported_qos_rule_types' that
-should return a list of strings that correspond to QoS rule types (for the list
-of all rule types, see: neutron.services.qos.qos_consts.VALID_RULE_TYPES).
+Each QoS driver has a property called supported_rule_types, where the driver
+exposes the rules it's able to handle.
 
-In the most simple case, the property can be represented by a simple Python
-list defined on the class.
+For a list of all rule types, see:
+neutron.services.qos.qos_consts.VALID_RULE_TYPES.
 
-For Ml2 plugin, the list of supported QoS rule types is defined as a common
-subset of rules supported by all active mechanism drivers.
+The list of supported QoS rule types exposed by neutron is calculated as
+the common subset of rules supported by all active QoS drivers.
 
 Note: the list of supported rule types reported by core plugin is not enforced
 when accessing QoS rule resources. This is mostly because then we would not be
-able to create any rules while at least one ml2 driver in gate lacks support
-for QoS (at the moment of writing, linuxbridge is such a driver).
+able to create rules while at least one of the QoS driver in gate lacks
+support for the rules we're trying to test.
 
 
 Database models
@@ -362,27 +357,54 @@ Linux bridge
 
 The Linux bridge implementation relies on the new tc_lib functions:
 
-* set_bw_limit
-* update_bw_limit
-* delete_bw_limit
+* set_bw
+* delete_bw
 
-The ingress bandwidth limit is configured on the tap port by setting a simple
-`tc-tbf <http://linux.die.net/man/8/tc-tbf>`_ queueing discipline (qdisc) on the
-port. It requires a value of HZ parameter configured in kernel on the host.
-This value is necessary to calculate the minimal burst value which is set in
-tc. Details about how it is calculated can be found in
-`here <http://unix.stackexchange.com/a/100797>`_. This solution is similar to Open
-vSwitch implementation.
+Only egress direction traffic shaping, from the instance point of view, is
+implemented. Traffic shaping is done by a classful Traffic Control qdisq
+called Class Based Queueing
+(`Classful Queueing Disciplines <http://lartc.org/howto/lartc.qdisc.classful.html>`_).
+This shaping algorithm is implemented by
+`tc-htb <https://linux.die.net/man/8/tc-htb>`_, replacing the former one used
+`tc-tbf <http://linux.die.net/man/8/tc-tbf>`_.
 
-Notification driver design
---------------------------
+Traffic shaping is executed only for interface egress traffic. Because the
+traffic coming from the instance is considered as ingress traffic by the
+interface, shaping is not possible. To solve this, a new element is introduced:
+`Intermediate Functional Block <http://linux-ip.net/gl/tc-filters/tc-filters-node3.html>`_,
+a pseudo network interface used to redirect all the ingress traffic from the TAP
+port to the egress IFB queue. The QoS rules are applied on this IFB
+interface associated to the TAP port::
+
+    +-----------------+
+    | [Instance veth] |
+    +-----------------+
+      | (egress traffic, instance point of view)
+      |
+      |                                +--------------------------+
+     \ /        [tap port]             |                [IFB]    \ /
+    +-------------------------------+  |  +-------------------------------+
+    | ingress queue | egress queue  |  |  | ingress queue | egress queue  |
+    | (filter:      |               |  |  |               | (QoS rules,   |
+    |  redir IFB)   |               |  |  |               |  tc-htb)      |
+    +-------------------------------+  |  +-------------------------------+
+      |                                |                          | shaped
+      +--------------------------------+                          | traffic
+                                                                 \ /
+
+Traffic in the tap port is redirected (mirrored) to the IFB using a Traffic
+Control filter
+(`Filter Actions <http://linux-ip.net/gl/tc-filters/tc-filters-node2.html>`_).
+
+QoS driver design
+-----------------
 
 QoS framework is flexible enough to support any third-party vendor. To integrate a
 third party driver (that just wants to be aware of the QoS create/update/delete API
-calls), one needs to implement 'neutron.services.qos.notification_drivers.qos_base',
-register its specific driver information to the 'notification_drivers' stevedore
-namespace in the setup.cfg and finally set the 'notification_drivers' parameter in
-the [qos] section of the neutron config file.
+calls), one needs to implement 'neutron.services.qos.drivers.base', and register
+the driver during the core plugin or mechanism driver load, see
+
+neutron.services.qos.drivers.openvswitch.driver register method for an example.
 
 .. note::
  All the functionality MUST be implemented by the vendor, neutron's QoS framework
@@ -397,7 +419,6 @@ To enable the service, the following steps should be followed:
 On server side:
 
 * enable qos service in service_plugins;
-* set the needed notification_drivers in [qos] section (message_queue is the default);
 * for ml2, add 'qos' to extension_drivers in [ml2] section.
 
 On agent side (OVS):

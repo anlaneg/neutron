@@ -25,6 +25,10 @@ import testtools
 
 from neutron.agent.common import utils as agent_utils
 from neutron.api.rpc.handlers import l3_rpc
+from neutron.callbacks import events
+from neutron.callbacks import exceptions as c_exc
+from neutron.callbacks import registry
+from neutron.callbacks import resources
 from neutron.common import constants as n_const
 from neutron import context
 from neutron.db import agents_db
@@ -38,6 +42,7 @@ from neutron.extensions import l3_ext_ha_mode
 from neutron.extensions import portbindings
 from neutron.extensions import providernet
 from neutron.scheduler import l3_agent_scheduler
+from neutron.services.revisions import revision_plugin
 from neutron.tests.common import helpers
 from neutron.tests.unit import testlib_api
 
@@ -98,7 +103,8 @@ class L3HATestFramework(testlib_api.SqlTestCase):
             data['distributed'] = distributed
         if admin_state is not None:
             data['admin_state_up'] = admin_state
-        return self.plugin._update_router_db(ctx, router_id, data)
+        self.plugin.update_router(ctx, router_id, {'router': data})
+        return self.plugin._get_router(ctx, router_id)
 
 
 class L3HATestCase(L3HATestFramework):
@@ -119,19 +125,8 @@ class L3HATestCase(L3HATestFramework):
             l3_ext_ha_mode.HANetworkCIDRNotValid,
             self.plugin._verify_configuration)
 
-    def test_verify_configuration_min_l3_agents_per_router_below_minimum(self):
-        cfg.CONF.set_override('min_l3_agents_per_router', 0)
-        self.assertRaises(
-            l3_ext_ha_mode.HAMinimumAgentsNumberNotValid,
-            self.plugin._check_num_agents_per_router)
-
-    def test_verify_configuration_min_l3_agents_per_router_eq_one(self):
-        cfg.CONF.set_override('min_l3_agents_per_router', 1)
-        self.plugin._check_num_agents_per_router()
-
-    def test_verify_configuration_max_l3_agents_below_min_l3_agents(self):
-        cfg.CONF.set_override('max_l3_agents_per_router', 3)
-        cfg.CONF.set_override('min_l3_agents_per_router', 4)
+    def test_verify_configuration_max_l3_agents_below_0(self):
+        cfg.CONF.set_override('max_l3_agents_per_router', -5)
         self.assertRaises(
             l3_ext_ha_mode.HAMaximumAgentsNumberNotValid,
             self.plugin._check_num_agents_per_router)
@@ -175,29 +170,51 @@ class L3HATestCase(L3HATestFramework):
             self.admin_ctx, router['id'])
         self.assertEqual([], bindings)
 
-    def _assert_ha_state_for_agent_is_standby(self, router, agent):
+    def _assert_ha_state_for_agent(self, router, agent,
+                                   state=n_const.HA_ROUTER_STATE_STANDBY):
         bindings = (
             self.plugin.get_l3_bindings_hosting_router_with_ha_states(
                 self.admin_ctx, router['id']))
         agent_ids = [(a[0]['id'], a[1]) for a in bindings]
-        self.assertIn((agent['id'], 'standby'), agent_ids)
+        self.assertIn((agent['id'], state), agent_ids)
 
     def test_get_l3_bindings_hosting_router_with_ha_states_active_and_dead(
             self):
         router = self._create_router()
         self.plugin.update_routers_states(
-            self.admin_ctx, {router['id']: 'active'}, self.agent1['host'])
+            self.admin_ctx, {router['id']: n_const.HA_ROUTER_STATE_ACTIVE},
+            self.agent1['host'])
+        self.plugin.update_routers_states(
+            self.admin_ctx, {router['id']: n_const.HA_ROUTER_STATE_ACTIVE},
+            self.agent2['host'])
         with mock.patch.object(agent_utils, 'is_agent_down',
                                return_value=True):
-            self._assert_ha_state_for_agent_is_standby(router, self.agent1)
+            self._assert_ha_state_for_agent(router, self.agent1)
 
     def test_get_l3_bindings_hosting_router_agents_admin_state_up_is_false(
             self):
         router = self._create_router()
         self.plugin.update_routers_states(
-            self.admin_ctx, {router['id']: 'active'}, self.agent1['host'])
+            self.admin_ctx, {router['id']: n_const.HA_ROUTER_STATE_ACTIVE},
+            self.agent1['host'])
+        self.plugin.update_routers_states(
+            self.admin_ctx, {router['id']: n_const.HA_ROUTER_STATE_ACTIVE},
+            self.agent2['host'])
         helpers.set_agent_admin_state(self.agent1['id'])
-        self._assert_ha_state_for_agent_is_standby(router, self.agent1)
+        self._assert_ha_state_for_agent(router, self.agent1)
+
+    def test_get_l3_bindings_hosting_router_with_ha_states_one_dead(self):
+        router = self._create_router()
+        self.plugin.update_routers_states(
+            self.admin_ctx, {router['id']: n_const.HA_ROUTER_STATE_ACTIVE},
+            self.agent1['host'])
+        self.plugin.update_routers_states(
+            self.admin_ctx, {router['id']: n_const.HA_ROUTER_STATE_STANDBY},
+            self.agent2['host'])
+        with mock.patch.object(agent_utils, 'is_agent_down',
+                               return_value=True):
+            self._assert_ha_state_for_agent(
+                router, self.agent1, state=n_const.HA_ROUTER_STATE_ACTIVE)
 
     def test_ha_router_create(self):
         router = self._create_router()
@@ -233,6 +250,24 @@ class L3HATestCase(L3HATestFramework):
         router = self._create_router(ha=None)
         self.assertTrue(router['ha'])
 
+    def test_ha_interface_concurrent_create_on_delete(self):
+        # this test depends on protection from the revision plugin so
+        # we have to initialize it
+        revision_plugin.RevisionPlugin()
+        router = self._create_router(ha=True)
+
+        def jam_in_interface(*args, **kwargs):
+            ctx = context.get_admin_context()
+            net = self.plugin._ensure_vr_id_and_network(
+                ctx, self.plugin._get_router(ctx, router['id']))
+            self.plugin.add_ha_port(
+                ctx, router['id'], net.network_id, router['tenant_id'])
+            registry.unsubscribe(jam_in_interface, resources.ROUTER,
+                                 events.PRECOMMIT_DELETE)
+        registry.subscribe(jam_in_interface, resources.ROUTER,
+                           events.PRECOMMIT_DELETE)
+        self.plugin.delete_router(self.admin_ctx, router['id'])
+
     def test_ha_router_delete_with_distributed(self):
         router = self._create_router(ha=True, distributed=True)
         self.plugin.delete_router(self.admin_ctx, router['id'])
@@ -257,80 +292,74 @@ class L3HATestCase(L3HATestFramework):
 
     def test_migration_requires_admin_state_down(self):
         router = self._create_router(ha=False)
-        self.assertRaises(n_exc.BadRequest,
-                          self._update_router,
-                          router['id'],
-                          ha=True)
+        e = self.assertRaises(c_exc.CallbackFailure,
+                              self._update_router,
+                              router['id'],
+                              ha=True)
+        self.assertIsInstance(e.inner_exceptions[0],
+                              n_exc.BadRequest)
 
     def test_migrate_ha_router_to_distributed_and_ha(self):
         router = self._create_router(ha=True, admin_state_up=False,
                                      distributed=False)
         self.assertTrue(router['ha'])
-        self.assertRaises(l3_ext_ha_mode.DVRmodeUpdateOfHaNotSupported,
-                          self._update_router,
-                          router['id'],
-                          ha=True,
-                          distributed=True)
+
+        after_update = self._update_router(router['id'],
+                                           ha=True, distributed=True)
+        self.assertTrue(after_update.extra_attributes.ha)
+        self.assertTrue(after_update.extra_attributes.distributed)
 
     def test_migrate_ha_router_to_distributed_and_not_ha(self):
         router = self._create_router(ha=True, admin_state_up=False,
                                      distributed=False)
         self.assertTrue(router['ha'])
-        self.assertRaises(l3_ext_ha_mode.DVRmodeUpdateOfHaNotSupported,
-                          self._update_router,
-                          router['id'],
-                          ha=False,
-                          distributed=True)
+
+        after_update = self._update_router(router['id'],
+                                           ha=False, distributed=True)
+        self.assertFalse(after_update.extra_attributes.ha)
+        self.assertTrue(after_update.extra_attributes.distributed)
 
     def test_migrate_dvr_router_to_ha_and_not_dvr(self):
         router = self._create_router(ha=False, admin_state_up=False,
                                      distributed=True)
         self.assertTrue(router['distributed'])
-        self.assertRaises(l3_ext_ha_mode.HAmodeUpdateOfDvrNotSupported,
-                          self._update_router,
-                          router['id'],
-                          ha=True,
-                          distributed=True)
+
+        after_update = self._update_router(router['id'],
+                                           ha=True, distributed=False)
+        self.assertTrue(after_update.extra_attributes.ha)
+        self.assertFalse(after_update.extra_attributes.distributed)
 
     def test_migrate_dvr_router_to_ha_and_dvr(self):
         router = self._create_router(ha=False, admin_state_up=False,
                                      distributed=True)
         self.assertTrue(router['distributed'])
-        self.assertRaises(l3_ext_ha_mode.HAmodeUpdateOfDvrNotSupported,
-                          self._update_router,
-                          router['id'],
-                          ha=True,
-                          distributed=True)
+
+        after_update = self._update_router(router['id'],
+                                           ha=True, distributed=True)
+        self.assertTrue(after_update.extra_attributes.ha)
+        self.assertTrue(after_update.extra_attributes.distributed)
 
     def test_migrate_distributed_router_to_ha(self):
-        router = self._create_router(ha=False, distributed=True)
+        router = self._create_router(ha=False, admin_state_up=False,
+                                     distributed=True)
         self.assertFalse(router['ha'])
         self.assertTrue(router['distributed'])
 
-        self.assertRaises(l3_ext_ha_mode.HAmodeUpdateOfDvrNotSupported,
-                          self._update_router,
-                          router['id'],
-                          ha=True)
+        after_update = self._update_router(router['id'],
+                                           ha=True, distributed=False)
+        self.assertTrue(after_update.extra_attributes.ha)
+        self.assertFalse(after_update.extra_attributes.distributed)
 
     def test_migrate_legacy_router_to_distributed_and_ha(self):
-        router = self._create_router(ha=False, distributed=False)
+        router = self._create_router(ha=False, admin_state_up=False,
+                                     distributed=False)
         self.assertFalse(router['ha'])
         self.assertFalse(router['distributed'])
 
-        self.assertRaises(l3_ext_ha_mode.UpdateToDvrHamodeNotSupported,
-                          self._update_router,
-                          router['id'],
-                          ha=True,
-                          distributed=True)
-
-    def test_migrate_legacy_router_to_ha_not_enough_agents(self):
-        router = self._create_router(ha=False, distributed=False)
-        self.assertFalse(router['ha'])
-        self.assertFalse(router['distributed'])
-
-        helpers.set_agent_admin_state(self.agent2['id'], admin_state_up=False)
-        self.assertRaises(l3_ext_ha_mode.HANotEnoughAvailableAgents,
-                          self._migrate_router, router['id'], ha=True)
+        after_update = self._update_router(router['id'],
+                                           ha=True, distributed=True)
+        self.assertTrue(after_update.extra_attributes.ha)
+        self.assertTrue(after_update.extra_attributes.distributed)
 
     def test_unbind_ha_router(self):
         router = self._create_router()
@@ -440,7 +469,8 @@ class L3HATestCase(L3HATestFramework):
 
     @mock.patch('neutron.db.l3_hamode_db.VR_ID_RANGE', new=set(range(1, 1)))
     def test_vr_id_depleted(self):
-        self.assertRaises(l3_ext_ha_mode.NoVRIDAvailable, self._create_router)
+        self.assertEqual(n_const.ROUTER_STATUS_ERROR,
+                         self._create_router()['status'])
 
     @mock.patch('neutron.db.l3_hamode_db.VR_ID_RANGE', new=set(range(1, 2)))
     def test_vr_id_unique_range_per_tenant(self):
@@ -653,17 +683,13 @@ class L3HATestCase(L3HATestFramework):
             self.plugin._create_ha_network_tenant_binding(
                 self.admin_ctx, 't1', network['network_id'])
 
-    def test_create_router_db_ha_attribute_failure_rolls_back_router(self):
-        routers_before = self.plugin.get_routers(self.admin_ctx)
-
+    def test_create_router_db_vr_id_allocation_goes_to_error(self):
         for method in ('_ensure_vr_id',
                        '_notify_router_updated'):
             with mock.patch.object(self.plugin, method,
                                    side_effect=ValueError):
-                self.assertRaises(ValueError, self._create_router)
-
-        routers_after = self.plugin.get_routers(self.admin_ctx)
-        self.assertEqual(routers_before, routers_after)
+                self.assertEqual(n_const.ROUTER_STATUS_ERROR,
+                                 self._create_router()['status'])
 
     def test_get_active_host_for_ha_router(self):
         router = self._create_router()
@@ -802,13 +828,6 @@ class L3HATestCase(L3HATestFramework):
             self.admin_ctx)
         self.assertEqual(3, num_ha_candidates)
 
-    def test_get_number_of_agents_for_scheduling_not_enough_agents(self):
-        cfg.CONF.set_override('min_l3_agents_per_router', 3)
-        helpers.kill_agent(helpers.register_l3_agent(host='l3host_3')['id'])
-        self.assertRaises(l3_ext_ha_mode.HANotEnoughAvailableAgents,
-                          self.plugin.get_number_of_agents_for_scheduling,
-                          self.admin_ctx)
-
     def test_ha_network_deleted_if_no_ha_router_present_two_tenants(self):
         # Create two routers in different tenants.
         router1 = self._create_router()
@@ -902,10 +921,12 @@ class L3HATestCase(L3HATestFramework):
         # Unable to create HA network
         with mock.patch.object(self.core_plugin, 'create_network',
                                side_effect=n_exc.NoNetworkAvailable):
-            self.assertRaises(n_exc.NoNetworkAvailable,
-                              self._create_router,
-                              True,
-                              tenant_id)
+            e = self.assertRaises(c_exc.CallbackFailure,
+                                  self._create_router,
+                                  True,
+                                  tenant_id)
+            self.assertIsInstance(e.inner_exceptions[0],
+                                  n_exc.NoNetworkAvailable)
             nets_after = self.core_plugin.get_networks(self.admin_ctx)
             self.assertEqual(nets_before, nets_after)
             self.assertNotIn('HA network tenant %s' % tenant_id,

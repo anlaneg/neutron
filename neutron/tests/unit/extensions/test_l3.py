@@ -53,6 +53,7 @@ from neutron.extensions import external_net
 from neutron.extensions import l3
 from neutron.extensions import portbindings
 from neutron.plugins.ml2 import config
+from neutron.services.revisions import revision_plugin
 from neutron.tests import base
 from neutron.tests.common import helpers
 from neutron.tests import fake_notifier
@@ -1030,6 +1031,23 @@ class L3NatTestCaseBase(L3NatTestCaseMixin):
             with self.network() as n:
                 with self.subnet(network=n) as s:
                     self._test_router_add_interface_subnet(r, s)
+
+    def test_router_delete_race_with_interface_add(self):
+        # this test depends on protection from the revision plugin so
+        # we have to initialize it
+        revision_plugin.RevisionPlugin()
+        with self.router() as r, self.subnet() as s:
+
+            def jam_in_interface(*args, **kwargs):
+                self._router_interface_action('add', r['router']['id'],
+                                              s['subnet']['id'], None)
+                # unsubscribe now that the evil is done
+                registry.unsubscribe(jam_in_interface, resources.ROUTER,
+                                     events.PRECOMMIT_DELETE)
+            registry.subscribe(jam_in_interface, resources.ROUTER,
+                               events.PRECOMMIT_DELETE)
+            self._delete('routers', r['router']['id'],
+                         expected_code=exc.HTTPConflict.code)
 
     def test_router_add_interface_ipv6_subnet(self):
         """Test router-interface-add for valid ipv6 subnets.
@@ -2370,8 +2388,6 @@ class L3NatTestCaseBase(L3NatTestCaseMixin):
                     fip_id = fip['floatingip']['id']
                     router_id = body['floatingip']['router_id']
                     body = self._show('routers', router_id)
-                    ext_gw_info = body['router']['external_gateway_info']
-                    ext_fixed_ip = ext_gw_info['external_fixed_ips'][0]
                     notify.assert_any_call(resources.FLOATING_IP,
                                            events.AFTER_UPDATE,
                                            mock.ANY,
@@ -2382,8 +2398,7 @@ class L3NatTestCaseBase(L3NatTestCaseMixin):
                                            floating_network_id=fip_network_id,
                                            last_known_router_id=None,
                                            floating_ip_id=fip_id,
-                                           router_id=router_id,
-                                           next_hop=ext_fixed_ip['ip_address'])
+                                           router_id=router_id)
 
     def test_floatingip_disassociate_notification(self):
         with self.port() as p:
@@ -2412,8 +2427,7 @@ class L3NatTestCaseBase(L3NatTestCaseMixin):
                                            floating_network_id=fip_network_id,
                                            last_known_router_id=router_id,
                                            floating_ip_id=fip_id,
-                                           router_id=None,
-                                           next_hop=None)
+                                           router_id=None)
 
     def test_floatingip_association_on_unowned_router(self):
         # create a router owned by one tenant and associate the FIP with a

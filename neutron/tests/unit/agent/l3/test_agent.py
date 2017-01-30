@@ -210,6 +210,48 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
         agent.enqueue_state_change(router.id, 'master')
         self.assertFalse(agent._update_metadata_proxy.call_count)
 
+    def test_check_ha_state_for_router_master_standby(self):
+        agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
+        router = mock.Mock()
+        router.id = '1234'
+        router_info = mock.MagicMock()
+        agent.router_info[router.id] = router_info
+        router_info.ha_state = 'master'
+        with mock.patch.object(agent.state_change_notifier,
+                               'queue_event') as queue_event:
+            agent.check_ha_state_for_router(router.id,
+                                            n_const.HA_ROUTER_STATE_STANDBY)
+            queue_event.assert_called_once_with((router.id, 'master'))
+
+    def test_check_ha_state_for_router_standby_standby(self):
+        agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
+        router = mock.Mock()
+        router.id = '1234'
+        router_info = mock.MagicMock()
+        agent.router_info[router.id] = router_info
+        router_info.ha_state = 'backup'
+        with mock.patch.object(agent.state_change_notifier,
+                               'queue_event') as queue_event:
+            agent.check_ha_state_for_router(router.id,
+                                            n_const.HA_ROUTER_STATE_STANDBY)
+            queue_event.assert_not_called()
+
+    def test_periodic_sync_routers_task_call_check_ha_state_for_router(self):
+        agent = l3_agent.L3NATAgentWithStateReport(HOSTNAME, self.conf)
+        ha_id = _uuid()
+        active_routers = [
+            {'id': ha_id,
+             n_const.HA_ROUTER_STATE_KEY: n_const.HA_ROUTER_STATE_STANDBY,
+             'ha': True},
+            {'id': _uuid()}]
+        self.plugin_api.get_router_ids.return_value = [r['id'] for r
+                                                       in active_routers]
+        self.plugin_api.get_routers.return_value = active_routers
+        with mock.patch.object(agent, 'check_ha_state_for_router') as check:
+            agent.periodic_sync_routers_task(agent.context)
+            check.assert_called_once_with(ha_id,
+                                          n_const.HA_ROUTER_STATE_STANDBY)
+
     def test_periodic_sync_routers_task_raise_exception(self):
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
         self.plugin_api.get_router_ids.return_value = ['fake_id']
@@ -1869,6 +1911,35 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
             bridge="",
             namespace=ri.ns_name,
             prefix=namespaces.EXTERNAL_DEV_PREFIX)
+
+    def test_process_dvr_router_delete_stale_external_devices(self):
+        agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
+        stale_devlist = [l3_test_common.FakeDev('qg-a1b2c3d4-e5')]
+        stale_devnames = [dev.name for dev in stale_devlist]
+
+        router = l3_test_common.prepare_router_data(enable_snat=True,
+                                                    num_internal_ports=1)
+        self._set_ri_kwargs(agent, router['id'], router)
+        ri = dvr_router.DvrEdgeRouter(HOSTNAME, **self.ri_kwargs)
+        self.mock_ip.get_devices.return_value = stale_devlist
+
+        ri.process()
+
+        self.mock_driver.unplug.assert_called_with(
+            stale_devnames[0],
+            bridge=agent.conf.external_network_bridge,
+            namespace=ri.snat_namespace.name,
+            prefix=namespaces.EXTERNAL_DEV_PREFIX)
+
+    def test_process_dvr_router_delete_stale_external_devices_no_snat_ns(self):
+        agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
+        router = l3_test_common.prepare_router_data(enable_gw=False,
+                                                    num_internal_ports=1)
+        self._set_ri_kwargs(agent, router['id'], router)
+        ri = dvr_router.DvrEdgeRouter(HOSTNAME, **self.ri_kwargs)
+        self.mock_ip.netns.exists.return_value = False
+        ri._delete_stale_external_devices('qg-a1b2c3d4-e5')
+        self.assertFalse(self.mock_ip.get_devices.called)
 
     def test_router_deleted(self):
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)

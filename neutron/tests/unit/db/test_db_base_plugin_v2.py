@@ -31,7 +31,6 @@ from oslo_utils import importutils
 from oslo_utils import netutils
 from oslo_utils import uuidutils
 import six
-from sqlalchemy import event
 from sqlalchemy import orm
 import testtools
 from testtools import matchers
@@ -6466,10 +6465,8 @@ class DbOperationBoundMixin(object):
         def _event_incrementer(*args, **kwargs):
             self._db_execute_count += 1
 
-        engine = db_api.context_manager.get_legacy_facade().get_engine()
-        event.listen(engine, 'after_execute', _event_incrementer)
-        self.addCleanup(event.remove, engine, 'after_execute',
-                        _event_incrementer)
+        engine = db_api.context_manager.writer.get_engine()
+        db_api.sqla_listen(engine, 'after_execute', _event_incrementer)
 
     def _get_context(self):
         if self.admin:

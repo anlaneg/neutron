@@ -40,6 +40,7 @@ from neutron.objects import base
 from neutron.objects import common_types
 from neutron.objects.db import api as obj_db_api
 from neutron.objects import exceptions as o_exc
+from neutron.objects import flavor
 from neutron.objects import network as net_obj
 from neutron.objects import ports
 from neutron.objects import rbac_db
@@ -430,6 +431,7 @@ FIELD_TYPE_VALUE_GENERATOR_MAP = {
     common_types.DscpMarkField: get_random_dscp_mark,
     common_types.EtherTypeEnumField: tools.get_random_ether_type,
     common_types.FlowDirectionEnumField: tools.get_random_flow_direction,
+    common_types.IpamAllocationStatusEnumField: tools.get_random_ipam_status,
     common_types.IPNetworkField: tools.get_random_ip_network,
     common_types.IPNetworkPrefixLenField: tools.get_random_prefixlen,
     common_types.IPV6ModeEnumField: tools.get_random_ipv6_mode,
@@ -437,7 +439,10 @@ FIELD_TYPE_VALUE_GENERATOR_MAP = {
     common_types.IpProtocolEnumField: tools.get_random_ip_protocol,
     common_types.ListOfIPNetworksField: get_list_of_random_networks,
     common_types.MACAddressField: tools.get_random_EUI,
+    common_types.PortBindingStatusEnumField:
+        tools.get_random_port_binding_statuses,
     common_types.PortRangeField: tools.get_random_port,
+    common_types.PortRangeWith0Field: lambda: tools.get_random_port(0),
     common_types.SetOfUUIDsField: get_set_of_random_uuids,
     common_types.UUIDField: uuidutils.generate_uuid,
     common_types.VlanIdRangeField: tools.get_random_vlan,
@@ -453,8 +458,7 @@ FIELD_TYPE_VALUE_GENERATOR_MAP = {
 }
 
 
-# TODO(ihrachys) consider renaming into e.g. get_obj_persistent_fields
-def get_obj_db_fields(obj):
+def get_obj_persistent_fields(obj):
     return {field: getattr(obj, field) for field in obj.fields
             if field not in obj.synthetic_fields
             if field in obj}
@@ -736,8 +740,8 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                 side_effect=self.fake_get_objects) as get_objects_mock:
             objs = self._test_class.get_objects(self.context)
             self.assertItemsEqual(
-                [get_obj_db_fields(obj) for obj in self.objs],
-                [get_obj_db_fields(obj) for obj in objs])
+                [get_obj_persistent_fields(obj) for obj in self.objs],
+                [get_obj_persistent_fields(obj) for obj in objs])
         get_objects_mock.assert_any_call(
             self.context, self._test_class.db_model,
             _pager=self.pager_map[self._test_class.obj_name()]
@@ -800,8 +804,8 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                                                 validate_filters=False,
                                                 unknown_filter='value')
             self.assertItemsEqual(
-                [get_obj_db_fields(obj) for obj in self.objs],
-                [get_obj_db_fields(obj) for obj in objs])
+                [get_obj_persistent_fields(obj) for obj in self.objs],
+                [get_obj_persistent_fields(obj) for obj in objs])
 
     def test_delete_objects(self):
         '''Test that delete_objects calls to underlying db_api.'''
@@ -845,8 +849,8 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                               fake_field='xxx')
 
     def _check_equal(self, expected, observed):
-        self.assertItemsEqual(get_obj_db_fields(expected),
-                              get_obj_db_fields(observed))
+        self.assertItemsEqual(get_obj_persistent_fields(expected),
+                              get_obj_persistent_fields(observed))
 
     def test_count_validate_filters_false(self):
         if not isinstance(self._test_class, base.NeutronDbObject):
@@ -872,7 +876,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                 create_mock.assert_called_once_with(
                     self.context, self._test_class.db_model,
                     self._test_class.modify_fields_to_db(
-                        get_obj_db_fields(self.objs[0])))
+                        get_obj_persistent_fields(self.objs[0])))
 
     # Adding delete_objects mock because some objects are using delete_objects
     # while calling create(), Port for example
@@ -1393,6 +1397,18 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         self.assertEqual(
             model.standard_attr_id, retrieved_obj.standard_attr_id)
 
+    def _create_test_flavor(self):
+        attrs = self.get_random_object_fields(obj_cls=flavor.Flavor)
+        self._flavor = flavor.Flavor(self.context, **attrs)
+        self._flavor.create()
+        return self._flavor
+
+    def _create_test_service_profile(self):
+        attrs = self.get_random_object_fields(obj_cls=flavor.ServiceProfile)
+        self._service_profile = flavor.ServiceProfile(self.context, **attrs)
+        self._service_profile.create()
+        return self._service_profile
+
     def _make_object(self, fields):
         fields = get_non_synthetic_fields(self._test_class, fields)
         return self._test_class(self.context,
@@ -1509,7 +1525,7 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         obj = self._make_object(self.obj_fields[0])
         obj.create()
 
-        for field in get_obj_db_fields(obj):
+        for field in get_obj_persistent_fields(obj):
             if not isinstance(obj[field], list):
                 filters = {field: [obj[field]]}
             else:

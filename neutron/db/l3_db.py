@@ -197,13 +197,13 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
 
     def _create_router_db(self, context, router, tenant_id):
         """Create the DB object."""
+        router.setdefault('id', uuidutils.generate_uuid())
+        router['tenant_id'] = tenant_id
         registry.notify(resources.ROUTER, events.BEFORE_CREATE,
                         self, context=context, router=router)
         with context.session.begin(subtransactions=True):
             # pre-generate id so it will be available when
             # configuring external gw port
-            router.setdefault('id', uuidutils.generate_uuid())
-            router['tenant_id'] = tenant_id
             router_db = l3_models.Router(
                 id=router['id'],
                 tenant_id=router['tenant_id'],
@@ -428,6 +428,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                         context=context,
                         router=router,
                         network_id=old_network_id,
+                        new_network_id=new_network_id,
                         gateway_ips=gw_ips)
 
     def _delete_router_gw_port_db(self, context, router):
@@ -549,6 +550,10 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             registry.notify(resources.ROUTER, events.PRECOMMIT_DELETE,
                             self, context=context, router_db=router,
                             router_id=id)
+            # we bump the revision even though we are about to delete to throw
+            # staledataerror if something snuck in with a new interface
+            router.bump_revision()
+            context.session.flush()
             context.session.delete(router)
         registry.notify(resources.ROUTER, events.AFTER_DELETE, self,
                         context=context, router_id=id, original=original)
@@ -1211,17 +1216,6 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         if 'description' in fip:
             update['description'] = fip['description']
         floatingip_db.update(update)
-        next_hop = None
-        if router_id:
-            # NOTE(tidwellr) use admin context here
-            # tenant may not own the router and that's OK on a FIP association
-            router = self._get_router(context.elevated(), router_id)
-            gw_port = router.gw_port
-            for fixed_ip in gw_port.fixed_ips:
-                addr = netaddr.IPAddress(fixed_ip.ip_address)
-                if addr.version == constants.IP_VERSION_4:
-                    next_hop = fixed_ip.ip_address
-                    break
         return {'fixed_ip_address': internal_ip_address,
                 'fixed_port_id': port_id,
                 'router_id': router_id,
@@ -1229,7 +1223,6 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 'floating_ip_address': floatingip_db.floating_ip_address,
                 'floating_network_id': floatingip_db.floating_network_id,
                 'floating_ip_id': floatingip_db.id,
-                'next_hop': next_hop,
                 'context': context}
 
     def _is_ipv4_network(self, context, net_id):
