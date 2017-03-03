@@ -14,21 +14,25 @@
 #    under the License.
 
 from neutron_lib.plugins import directory
-from oslo_log import log
 
-from neutron._i18n import _LW
 from neutron.api import extensions
 from neutron.api.v2 import attributes
 from neutron.api.v2 import base
-from neutron.api.v2 import router
 from neutron import manager
 from neutron.pecan_wsgi.controllers import resource as res_ctrl
 from neutron.pecan_wsgi.controllers import utils
 from neutron import policy
 from neutron.quota import resource_registry
-from neutron import wsgi
 
-LOG = log.getLogger(__name__)
+
+# NOTE(blogan): This currently already exists in neutron.api.v2.router but
+# instead of importing that module and creating circular imports elsewhere,
+# it's easier to just copy it here.  The likelihood of it needing to be changed
+# are slim to none.
+RESOURCES = {'network': 'networks',
+             'subnet': 'subnets',
+             'subnetpool': 'subnetpools',
+             'port': 'ports'}
 
 
 def initialize_all():
@@ -38,7 +42,7 @@ def initialize_all():
     # At this stage we have a fully populated resource attribute map;
     # build Pecan controllers and routes for all core resources
     plugin = directory.get_plugin()
-    for resource, collection in router.RESOURCES.items():
+    for resource, collection in RESOURCES.items():
         resource_registry.register_resource_by_name(resource)
         new_controller = res_ctrl.CollectionsController(collection, resource,
                                                         plugin=plugin)
@@ -104,14 +108,14 @@ def initialize_all():
             if path_prefix:
                 manager.NeutronManager.add_resource_for_path_prefix(
                     collection, path_prefix)
-        elif isinstance(legacy_controller, wsgi.Controller):
+        else:
             new_controller = utils.ShimCollectionsController(
                 collection, None, legacy_controller,
                 collection_actions=collection_actions,
-                member_actions=member_actions)
-        else:
-            LOG.warning(_LW("Unknown controller type encountered %s.  It will"
-                            "be ignored."), legacy_controller)
+                member_actions=member_actions,
+                action_status=ext_res.controller.action_status,
+                collection_methods=ext_res.collection_methods)
+
         manager.NeutronManager.set_controller_for_resource(
             collection_key, new_controller)
 

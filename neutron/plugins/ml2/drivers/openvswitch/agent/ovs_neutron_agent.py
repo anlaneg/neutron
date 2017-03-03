@@ -470,6 +470,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         if not self.l2_pop:
             self._setup_tunnel_port(self.tun_br, tun_name, tunnel_ip,
                                     tunnel_type)
+            self._setup_tunnel_flood_flow(self.tun_br, tunnel_type)
 
     def tunnel_delete(self, context, **kwargs):
         LOG.debug("tunnel_delete received")
@@ -852,7 +853,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                 continue
             # Uninitialized port has tag set to []
             if cur_tag and cur_tag != lvm.vlan:
-                self.int_br.delete_flows(in_port=port.ofport)
+                self.int_br.uninstall_flows(in_port=port.ofport)
             if self.prevent_arp_spoofing:
                 self.setup_arp_spoofing_protection(self.int_br,
                                                    port, port_detail)
@@ -995,7 +996,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             # the flows on br-int, so that traffic doesn't get flooded over
             # while flows are missing.
             self.int_br.delete_port(self.conf.OVS.int_peer_patch_port)
-            self.int_br.delete_flows()
+            self.int_br.uninstall_flows()
         self.int_br.setup_default_table()
 
     def setup_ancillary_bridges(self, integ_br, tun_br):
@@ -1057,7 +1058,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                           "ports. Agent terminated!"))
             sys.exit(1)
         if self.conf.AGENT.drop_flows_on_start:
-            self.tun_br.delete_flows()
+            self.tun_br.uninstall_flows()
 
     def setup_tunnel_br_flows(self):
         '''Setup the tunnel bridge.
@@ -1101,7 +1102,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             br.set_secure_mode()
             br.setup_controllers(self.conf)
             if cfg.CONF.AGENT.drop_flows_on_start:
-                br.delete_flows()
+                br.uninstall_flows()
             br.setup_default_table()
             self.phys_brs[physical_network] = br
 
@@ -1191,7 +1192,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         for ofport in ofports_deleted:
             if self.prevent_arp_spoofing:
                 self.int_br.delete_arp_spoofing_protection(port=ofport)
-            self.int_br.delete_flows(in_port=ofport)
+            self.int_br.uninstall_flows(in_port=ofport)
         # store map for next iteration
         self.vifname_to_ofport_map = current
         return moved_ports
@@ -1238,7 +1239,8 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         port_info['removed'] &= port_info['current']
         # retry failed devices
         port_info['added'] |= failed_devices['added']
-        LOG.debug("retrying failed devices %s", failed_devices['added'])
+        if failed_devices['added']:
+            LOG.debug("retrying failed devices %s", failed_devices['added'])
         port_info['removed'] |= failed_devices['removed']
         # Update current ports
         port_info['current'] |= port_info['added']
@@ -1440,7 +1442,9 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         # Add flow in default table to resubmit to the right
         # tunneling table (lvid will be set in the latter)
         br.setup_tunnel_port(tunnel_type, ofport)
+        return ofport
 
+    def _setup_tunnel_flood_flow(self, br, tunnel_type):
         ofports = self.tun_br_ofports[tunnel_type].values()
         if ofports and not self.l2_pop:
             # Update flooding flows to include the new tunnel
@@ -1449,7 +1453,6 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                     br.install_flood_to_tun(vlan_mapping.vlan,
                                             vlan_mapping.segmentation_id,
                                             ofports)
-        return ofport
 
     def setup_tunnel_port(self, br, remote_ip, network_type):
         port_name = self.get_tunnel_name(
@@ -1460,6 +1463,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                                          port_name,
                                          remote_ip,
                                          network_type)
+        self._setup_tunnel_flood_flow(br, network_type)
         return ofport
 
     def cleanup_tunnel_port(self, br, tun_ofport, tunnel_type):
@@ -1712,6 +1716,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                                                     tun_name,
                                                     tunnel['ip_address'],
                                                     tunnel_type)
+                    self._setup_tunnel_flood_flow(self.tun_br, tunnel_type)
         except Exception as e:
             LOG.debug("Unable to sync tunnel IP %(local_ip)s: %(e)s",
                       {'local_ip': self.local_ip, 'e': e})

@@ -165,10 +165,8 @@ class PolicyHook(hooks.PecanHook):
             return
         is_single = resource in data
         action_type = pecan_constants.ACTION_MAP[state.request.method]
-        if action_type == 'get' and is_single:
+        if action_type == 'get':
             action = controller.plugin_handlers[controller.SHOW]
-        elif action_type == 'get':
-            action = controller.plugin_handlers[controller.LIST]
         else:
             action = controller.plugin_handlers[action_type]
         key = resource if is_single else collection
@@ -185,11 +183,14 @@ class PolicyHook(hooks.PecanHook):
                         policy_method(neutron_context, action, item,
                                       plugin=plugin,
                                       pluralized=collection))]
-        except oslo_policy.PolicyNotAuthorized as e:
+        except oslo_policy.PolicyNotAuthorized:
             # This exception must be explicitly caught as the exception
             # translation hook won't be called if an error occurs in the
-            # 'after' handler.
-            raise webob.exc.HTTPForbidden(str(e))
+            # 'after' handler.  Instead of raising an HTTPForbidden exception,
+            # we have to set the status_code here to prevent the catch_errors
+            # middleware from turning this into a 500.
+            state.response.status_code = 403
+            return
 
         if is_single:
             resp = resp[0]

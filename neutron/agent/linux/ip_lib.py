@@ -205,15 +205,6 @@ class IPWrapper(SubProcessBase):
         self._as_root([], 'link', ('add', name, 'type', 'dummy'))
         return IPDevice(name, namespace=self.namespace)
 
-    def add_ifb(self, name):
-        """Create a Linux IFB type interface with the given name."""
-        self._as_root([], 'link', ('add', name, 'type', 'ifb'))
-        return IPDevice(name, namespace=self.namespace)
-
-    def del_ifb(self, name):
-        """Delete a Linux IFB type interface with the given name."""
-        self._as_root([], 'link', ('del', name))
-
     def ensure_namespace(self, name):
         if not self.netns.exists(name):
             ip = self.netns.add(name)
@@ -291,6 +282,10 @@ class IPDevice(SubProcessBase):
 
     def __str__(self):
         return self.name
+
+    def __repr__(self):
+        return "<IPDevice(name=%s, namespace=%s)>" % (self._name,
+                                                      self.namespace)
 
     def exists(self):
         """Return True if the device exists in the namespace."""
@@ -475,7 +470,10 @@ class IpRuleCommand(IpCommandBase):
     def add(self, ip, **kwargs):
         ip_version = get_ip_version(ip)
 
-        kwargs.update({'from': ip})
+        # In case if we need to add in a rule based on incoming
+        # interface we don't need to pass in the ip.
+        if not kwargs.get('iif'):
+            kwargs.update({'from': ip})
         canonical_kwargs = self._make_canonical(ip_version, kwargs)
 
         if not self._exists(ip_version, **canonical_kwargs):

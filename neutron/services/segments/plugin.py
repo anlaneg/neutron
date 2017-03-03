@@ -30,6 +30,7 @@ from neutron.callbacks import registry
 from neutron.callbacks import resources
 from neutron.common import exceptions as n_exc
 from neutron.db import common_db_mixin
+from neutron.db.models import segment as segment_model
 from neutron.db import models_v2
 from neutron.extensions import ip_allocation
 from neutron.extensions import l2_adjacency
@@ -98,8 +99,12 @@ class Plugin(db.SegmentDbMixin, segment.SegmentPluginBase):
         return cls._instance
 
     def _prevent_segment_delete_with_subnet_associated(
-            self, resource, event, trigger, context, segment):
+            self, resource, event, trigger, context, segment,
+            for_net_delete=False):
         """Raise exception if there are any subnets associated with segment."""
+        if for_net_delete:
+            # don't check if this is a part of a network delete operation
+            return
         segment_id = segment['id']
         query = context.session.query(models_v2.Subnet.id)
         query = query.filter(models_v2.Subnet.segment_id == segment_id)
@@ -183,8 +188,10 @@ class NovaSegmentNotifier(object):
             return
         total, reserved = self._calculate_inventory_total_and_reserved(subnet)
         if total:
-            query = context.session.query(
-                db.SegmentHostMapping).filter_by(segment_id=segment_id)
+            query = (
+                context.session.query(segment_model.SegmentHostMapping).
+                filter_by(segment_id=segment_id)
+            )
             self.batch_notifier.queue_event(Event(
                 self._create_or_update_nova_inventory, segment_id, total=total,
                 reserved=reserved, segment_host_mappings=query.all()))
@@ -271,7 +278,7 @@ class NovaSegmentNotifier(object):
             segment_host_mappings = None
             if not original_subnet['allocation_pools']:
                 segment_host_mappings = context.session.query(
-                    db.SegmentHostMapping).filter_by(
+                    segment_model.SegmentHostMapping).filter_by(
                         segment_id=segment_id).all()
             self.batch_notifier.queue_event(Event(
                 self._create_or_update_nova_inventory, segment_id, total=total,

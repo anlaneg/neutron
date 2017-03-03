@@ -78,7 +78,10 @@ class Port(standard_attr.HasStandardAttributes, model_base.BASEV2,
     name = sa.Column(sa.String(db_const.NAME_FIELD_SIZE))
     network_id = sa.Column(sa.String(36), sa.ForeignKey("networks.id"),
                            nullable=False)
-    fixed_ips = orm.relationship(IPAllocation, backref='port', lazy='joined',
+    fixed_ips = orm.relationship(IPAllocation,
+                                 backref=orm.backref('port',
+                                                     load_on_pending=True),
+                                 lazy='subquery',
                                  cascade='all, delete-orphan',
                                  order_by=(IPAllocation.ip_address,
                                            IPAllocation.subnet_id))
@@ -160,21 +163,25 @@ class Subnet(standard_attr.HasStandardAttributes, model_base.BASEV2,
     ip_version = sa.Column(sa.Integer, nullable=False)
     cidr = sa.Column(sa.String(64), nullable=False)
     gateway_ip = sa.Column(sa.String(64))
-    revises_on_change = ('networks', )
+    network_standard_attr = orm.relationship(
+        'StandardAttribute', lazy='subquery', viewonly=True,
+        secondary='networks', uselist=False,
+        load_on_pending=True)
+    revises_on_change = ('network_standard_attr', )
     allocation_pools = orm.relationship(IPAllocationPool,
                                         backref='subnet',
-                                        lazy="joined",
+                                        lazy="subquery",
                                         cascade='delete')
     enable_dhcp = sa.Column(sa.Boolean())
     dns_nameservers = orm.relationship(DNSNameServer,
                                        backref='subnet',
                                        cascade='all, delete, delete-orphan',
                                        order_by=DNSNameServer.order,
-                                       lazy='joined')
+                                       lazy='subquery')
     routes = orm.relationship(SubnetRoute,
                               backref='subnet',
                               cascade='all, delete, delete-orphan',
-                              lazy='joined')
+                              lazy='subquery')
     ipv6_ra_mode = sa.Column(sa.Enum(constants.IPV6_SLAAC,
                                      constants.DHCPV6_STATEFUL,
                                      constants.DHCPV6_STATELESS,
@@ -227,7 +234,7 @@ class SubnetPool(standard_attr.HasStandardAttributes, model_base.BASEV2,
     prefixes = orm.relationship(SubnetPoolPrefix,
                                 backref='subnetpools',
                                 cascade='all, delete, delete-orphan',
-                                lazy='joined')
+                                lazy='subquery')
     api_collections = [attr.SUBNETPOOLS]
 
 
@@ -236,9 +243,8 @@ class Network(standard_attr.HasStandardAttributes, model_base.BASEV2,
     """Represents a v2 neutron network."""
 
     name = sa.Column(sa.String(db_const.NAME_FIELD_SIZE))
-    ports = orm.relationship(Port, backref='networks')
     subnets = orm.relationship(
-        Subnet, backref=orm.backref('networks', lazy='subquery'),
+        Subnet,
         lazy="subquery")
     status = sa.Column(sa.String(16))
     admin_state_up = sa.Column(sa.Boolean)
@@ -248,6 +254,6 @@ class Network(standard_attr.HasStandardAttributes, model_base.BASEV2,
                                     cascade='all, delete, delete-orphan')
     availability_zone_hints = sa.Column(sa.String(255))
     dhcp_agents = orm.relationship(
-        'Agent', lazy='joined', viewonly=True,
+        'Agent', lazy='subquery', viewonly=True,
         secondary=ndab_model.NetworkDhcpAgentBinding.__table__)
     api_collections = [attr.NETWORKS]

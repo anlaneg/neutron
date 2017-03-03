@@ -510,13 +510,14 @@ class TestLinuxBridgeManager(base.BaseTestCase):
                               p_const.TYPE_VLAN, "physnet1", None, "tap1",
                               "foo")
 
-    def test_add_tap_interface_owner_other(self):
+    def test_add_tap_interface_owner_compute(self):
         with mock.patch.object(ip_lib, "device_exists"):
             with mock.patch.object(self.lbm, "ensure_local_bridge"):
                 self.assertTrue(self.lbm.add_tap_interface("123",
                                                            p_const.TYPE_LOCAL,
                                                            "physnet1", None,
-                                                           "tap1", "foo"))
+                                                           "tap1",
+                                                           "compute:1"))
 
     def _test_add_tap_interface(self, dev_owner_prefix):
         with mock.patch.object(ip_lib, "device_exists") as de_fn:
@@ -871,11 +872,11 @@ class TestLinuxBridgeManager(base.BaseTestCase):
                 mock.patch.object(
                     ip_lib,
                     "get_device_mac",
-                    return_value='16:63:69:10:a0:59') as mock_gim:
+                    side_effect=[None, '16:63:69:10:a0:59']) as mock_gim:
 
             agent_id = lbm.get_agent_id()
             self.assertEqual("lb16636910a059", agent_id)
-            mock_gim.assert_called_with("eth1")
+            mock_gim.assert_has_calls([mock.call("eth1"), mock.call("eth2")])
 
 
 class TestLinuxBridgeRpcCallbacks(base.BaseTestCase):

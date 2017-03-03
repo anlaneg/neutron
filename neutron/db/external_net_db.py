@@ -26,7 +26,6 @@ from neutron.callbacks import events
 from neutron.callbacks import exceptions as c_exc
 from neutron.callbacks import registry
 from neutron.callbacks import resources
-from neutron.common import _deprecate
 from neutron.db import _utils as db_utils
 from neutron.db import db_base_plugin_v2
 from neutron.db.models import external_net as ext_net_models
@@ -39,9 +38,8 @@ from neutron.extensions import rbac as rbac_ext
 
 DEVICE_OWNER_ROUTER_GW = constants.DEVICE_OWNER_ROUTER_GW
 
-_deprecate._moved_global('ExternalNetwork', new_module=ext_net_models)
 
-
+@registry.has_registry_receivers
 class External_net_db_mixin(object):
     """Mixin class to add external network methods to db_base_plugin_v2."""
 
@@ -105,27 +103,20 @@ class External_net_db_mixin(object):
         if not external_set:
             return
 
-        # TODO(armax): these notifications should switch to *_COMMIT
-        # when the event becomes available, as this block is expected
-        # to be called within a plugin's session
         if external:
-            try:
-                registry.notify(
-                    resources.EXTERNAL_NETWORK, events.BEFORE_CREATE,
-                    self, context=context,
-                    request=req_data, network=net_data)
-            except c_exc.CallbackFailure as e:
-                # raise the underlying exception
-                raise e.errors[0].error
             context.session.add(
                 ext_net_models.ExternalNetwork(network_id=net_data['id']))
             context.session.add(rbac_db.NetworkRBAC(
                   object_id=net_data['id'], action='access_as_external',
                   target_tenant='*', tenant_id=net_data['tenant_id']))
-            registry.notify(
-                resources.EXTERNAL_NETWORK, events.AFTER_CREATE,
-                self, context=context,
-                request=req_data, network=net_data)
+            try:
+                registry.notify(
+                    resources.EXTERNAL_NETWORK, events.PRECOMMIT_CREATE,
+                    self, context=context,
+                    request=req_data, network=net_data)
+            except c_exc.CallbackFailure as e:
+                # raise the underlying exception
+                raise e.errors[0].error
         net_data[external_net.EXTERNAL] = external
 
     def _process_l3_update(self, context, net_data, req_data, allow_all=True):
@@ -184,6 +175,7 @@ class External_net_db_mixin(object):
         else:
             return nets[0]['id'] if nets else None
 
+    @registry.receives('rbac-policy', [events.BEFORE_CREATE])
     def _process_ext_policy_create(self, resource, event, trigger, context,
                                    object_type, policy, **kwargs):
         if (object_type != 'network' or
@@ -200,6 +192,8 @@ class External_net_db_mixin(object):
                                     {external_net.EXTERNAL: True},
                                     allow_all=False)
 
+    @registry.receives('rbac-policy', (events.BEFORE_UPDATE,
+                                       events.BEFORE_DELETE))
     def _validate_ext_not_in_use_by_tenant(self, resource, event, trigger,
                                            context, object_type, policy,
                                            **kwargs):
@@ -257,18 +251,3 @@ class External_net_db_mixin(object):
                     "depend on this policy for access.")
             raise rbac_ext.RbacPolicyInUse(object_id=policy['object_id'],
                                            details=msg)
-
-    def _register_external_net_rbac_hooks(self):
-        registry.subscribe(self._process_ext_policy_create,
-                           'rbac-policy', events.BEFORE_CREATE)
-        for e in (events.BEFORE_UPDATE, events.BEFORE_DELETE):
-            registry.subscribe(self._validate_ext_not_in_use_by_tenant,
-                               'rbac-policy', e)
-
-    def __new__(cls, *args, **kwargs):
-        new = super(External_net_db_mixin, cls).__new__(cls, *args, **kwargs)
-        new._register_external_net_rbac_hooks()
-        return new
-
-
-_deprecate._MovedGlobals()

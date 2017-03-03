@@ -19,6 +19,7 @@ function load_rc_hook {
     config=$(cat $GATE_HOOKS/$hook)
     export DEVSTACK_LOCAL_CONFIG+="
 # generated from hook '$hook'
+[[local|localrc]]
 ${config}
 "
 }
@@ -27,14 +28,18 @@ ${config}
 # Inject config from hook into local.conf
 function load_conf_hook {
     local hook="$1"
-    cat $GATE_HOOKS/$hook >> $LOCAL_CONF
+    config=$(cat $GATE_HOOKS/$hook)
+    export DEVSTACK_LOCAL_CONFIG+="
+# generated from hook '$hook'
+${config}
+"
 }
 
 
 # Tweak gate configuration for our rally scenarios
 function load_rc_for_rally {
     for file in $(ls $RALLY_EXTRA_DIR/*.setup); do
-        local config=$(cat $file)
+        config=$(cat $file)
         export DEVSTACK_LOCAL_CONFIG+="
 # generated from hook '$file'
 ${config}
@@ -58,18 +63,28 @@ case $VENV in
 
     configure_host_for_func_testing
 
-    # Kernel modules are not needed for functional job. They are needed only
-    # for fullstack because of bug present in Ubuntu Xenial kernel version
-    # that makes VXLAN local tunneling fail.
-    if [[ "$VENV" =~ "dsvm-functional" ]]; then
-        compile_modules=False
-        NEUTRON_OVERRIDE_OVS_BRANCH=v2.5.1
+    # Because of bug present in current Ubuntu Xenial kernel version
+    # we need a fix for VXLAN local tunneling.
+    if [[ "$VENV" =~ "dsvm-fullstack" ]]; then
+        upgrade_ovs_if_necessary
     fi
-    upgrade_ovs_if_necessary $compile_modules
 
-    load_conf_hook iptables_verify
+    # prepare base environment for ./stack.sh
+    load_rc_hook stack_base
+
+    # enable monitoring
+    load_rc_hook dstat
+
+    # Since we don't use devstack-gate to deploy devstack services, we need to
+    # dump DEVSTACK_LOCAL_CONFIG into local.conf ourselves. Note that we should
+    # dump the file before changing the ownership
+    echo "$DEVSTACK_LOCAL_CONFIG" > $LOCAL_CONF
+
     # Make the workspace owned by the stack user
     sudo chown -R $STACK_USER:$STACK_USER $BASE
+
+    # deploy devstack as per local.conf
+    cd $DEVSTACK_PATH && sudo -H -u $GATE_STACK_USER ./stack.sh
     ;;
 
 "api"|"api-pecan"|"full-ovsfw"|"full-pecan"|"dsvm-scenario")
