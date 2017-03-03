@@ -280,6 +280,7 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
             LOG.debug("Agent healthcheck: found %s active agents",
                       len(agents))
 
+    #给出agent_type及host值，取查应agent记录
     def _get_agent_by_type_and_host(self, context, agent_type, host):
         query = self._model_query(context, agent_model.Agent)
         try:
@@ -321,6 +322,7 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
                       'uuid': state.get('uuid'),
                       'delta': delta})
 
+    #创建或者更新agent状态信息
     @db_api.retry_if_session_inactive()
     def create_or_update_agent(self, context, agent_state):
         """Registers new agent in the database or updates existing.
@@ -355,14 +357,18 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
                         # version_manager and bring it up to date
                         agent_state['resource_versions'] = self._get_dict(
                             agent_db, 'resource_versions', ignore_missing=True)
+                #更新心跳收到时间
                 res['heartbeat_timestamp'] = current_time
                 if agent_state.get('start_flag'):
+                    #如果标记为首次启动，则记录agent启动时间
                     res['started_at'] = current_time
+                #为什么需要在这里进行一次协程切换
                 greenthread.sleep(0)
                 self._log_heartbeat(agent_state, agent_db, configurations_dict)
                 agent_db.update(res)
                 event_type = events.AFTER_UPDATE
             except ext_agent.AgentNotFoundByTypeHost:
+                #没有找到具体的agent,需要创建
                 greenthread.sleep(0)
                 res['created_at'] = current_time
                 res['started_at'] = current_time
@@ -376,9 +382,11 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
                 status = n_const.AGENT_NEW
             greenthread.sleep(0)
 
+        #触发agent after update 或者 after create事件
         registry.notify(resources.AGENT, event_type, self, context=context,
                         host=agent_state['host'], plugin=self,
                         agent=agent_state)
+        #返回agent状态及创建的agent状态记录
         return status, agent_state
 
     def _get_agents_considered_for_versions(self):

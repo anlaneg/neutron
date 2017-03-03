@@ -314,9 +314,11 @@ def _delete_segments_for_network(resource, event, trigger,
 
 
 def subscribe():
+    #注册agent创建事件
     registry.subscribe(_update_segment_host_mapping_for_agent,
                        resources.AGENT,
                        events.AFTER_CREATE)
+    #注册agent更新事件
     registry.subscribe(_update_segment_host_mapping_for_agent,
                        resources.AGENT,
                        events.AFTER_UPDATE)

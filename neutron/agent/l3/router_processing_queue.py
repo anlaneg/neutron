@@ -91,8 +91,10 @@ class ExclusiveRouterProcessor(object):
             self._masters[router_id] = self
             self._queue = []
 
+        #self._master 用来指当前路由器(router_id)的master
         self._master = self._masters[router_id]
 
+    #如果self可以处理当前的self._router_id,则返回true
     def _i_am_master(self):
         return self == self._master
 
@@ -128,11 +130,13 @@ class ExclusiveRouterProcessor(object):
         come in from other workers while it is in progress.  This method loops
         until they stop coming.
         """
+        #当前自已是master,则处理自已的_queue中的rotuer
         if self._i_am_master():
             while self._queue:
                 # Remove the update from the queue even if it is old.
                 update = self._queue.pop(0)
                 # Process the update only if it is fresh.
+                # 确保只处理最新的
                 if self._get_router_data_timestamp() < update.timestamp:
                     yield update
 
@@ -153,12 +157,17 @@ class RouterProcessingQueue(object):
         """
         next_update = self._queue.get()
 
+        #构造ExclusiveRouterProcessor　对象，并调用__enter__
         with ExclusiveRouterProcessor(next_update.id) as rp:
             # Queue the update whether this worker is the master or not.
+            #这一句进入后next_update的master可能是rp自身，也可以是别人，这里之所以
+            #在函数实现时，可以不加锁，其原因是这里采用的是协程，而不是线程。协程不能在
+            #下面函数运行时发生切换。
             rp.queue_update(next_update)
 
             # Here, if the current worker is not the master, the call to
             # rp.updates() will not yield and so this will essentially be a
             # noop.
+            #返回self可以处理的update
             for update in rp.updates():
                 yield (rp, update)

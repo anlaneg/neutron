@@ -56,4 +56,5 @@ class Agent(model_base.BASEV2, model_base.HasId):
 
     @property
     def is_active(self):
+        #是否已为down
         return not utils.is_agent_down(self.heartbeat_timestamp)

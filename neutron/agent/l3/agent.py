@@ -464,6 +464,7 @@ class L3NATAgent(ha.AgentMixin,
         self._queue.add(router_update)
 
     def _process_router_update(self):
+        #针对每个rp,update处理
         for rp, update in self._queue.each_update_to_next_router():
             LOG.debug("Starting router update for %s, action %s, priority %s",
                       update.id, update.action, update.priority)
@@ -690,6 +691,7 @@ class L3NATAgentWithStateReport(L3NATAgent):
             num_floating_ips += len(ri.router.get(lib_const.FLOATINGIP_KEY,
                                                   []))
         configurations = self.agent_state['configurations']
+        #记录路由数，gateway_ports数，接口数，浮动ip数
         configurations['routers'] = num_routers
         configurations['ex_gw_ports'] = num_ex_gw_ports
         configurations['interfaces'] = num_interfaces
@@ -702,6 +704,7 @@ class L3NATAgentWithStateReport(L3NATAgent):
                 LOG.info(_LI('Agent has just been revived. '
                              'Doing a full sync.'))
                 self.fullsync = True
+            #上报成功后，清除掉新启动标记
             self.agent_state.pop('start_flag', None)
         except AttributeError:
             # This means the server does not support report_state

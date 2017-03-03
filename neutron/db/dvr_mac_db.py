@@ -84,6 +84,7 @@ class DVRDbMixin(ext_dvr.DVRMacAddressPluginBase):
     """Mixin class to add dvr mac address to db_plugin_base_v2."""
 
     def __new__(cls, *args, **kwargs):
+        #注册agent删除事件
         registry.subscribe(_delete_mac_associated_with_agent,
                            resources.AGENT, events.BEFORE_DELETE)
         return super(DVRDbMixin, cls).__new__(cls)
