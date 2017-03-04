@@ -279,6 +279,7 @@ class L3NATAgent(ha.AgentMixin,
 
     def _fetch_external_net_id(self, force=False):
         """Find UUID of single external network for this agent."""
+        #如果配置了gateway network id,则返回
         if self.conf.gateway_external_network_id:
             return self.conf.gateway_external_network_id
 
@@ -288,9 +289,11 @@ class L3NATAgent(ha.AgentMixin,
         if not self.conf.external_network_bridge:
             return
 
+        #如果非强制，则使用缓存的net_id
         if not force and self.target_ex_net_id:
             return self.target_ex_net_id
 
+        #从neutron上获取，外部network_id
         try:
             self.target_ex_net_id = self.plugin_rpc.get_external_network_id(
                 self.context)
@@ -310,10 +313,10 @@ class L3NATAgent(ha.AgentMixin,
         kwargs = {
             'agent': self,
             'router_id': router_id,
-            'router': router,
-            'use_ipv6': self.use_ipv6,
-            'agent_conf': self.conf,
-            'interface_driver': self.driver,
+            'router': router,#路由器配置
+            'use_ipv6': self.use_ipv6,#ipv6是否启用
+            'agent_conf': self.conf,#agent配置
+            'interface_driver': self.driver,#接口操作驱动
         }
 
         if router.get('distributed'):
@@ -414,6 +417,7 @@ class L3NATAgent(ha.AgentMixin,
         self.routers_updated(context, payload)
 
     def _process_router_if_compatible(self, router):
+        #配置了外部桥，但不存在，报错
         if (self.conf.external_network_bridge and
             not ip_lib.device_exists(self.conf.external_network_bridge)):
             LOG.error(_LE("The external network bridge '%s' does not exist"),
@@ -422,10 +426,13 @@ class L3NATAgent(ha.AgentMixin,
 
         # Either ex_net_id or handle_internal_only_routers must be set
         ex_net_id = (router['external_gateway_info'] or {}).get('network_id')
+        #路由器有qg口，但本agent仅容许内部routers,扔异常
         if not ex_net_id and not self.conf.handle_internal_only_routers:
             raise n_exc.RouterNotCompatibleWithAgent(router_id=router['id'])
 
         # If target_ex_net_id and ex_net_id are set they must be equal
+        #先不强制从neutron-server上获取，一旦发现不同，则强制从neutron－server上获取
+        #防止每次配置均需要向neutron-server请求
         target_ex_net_id = self._fetch_external_net_id()
         if (target_ex_net_id and ex_net_id and ex_net_id != target_ex_net_id):
             # Double check that our single external_net_id has not changed
@@ -434,6 +441,8 @@ class L3NATAgent(ha.AgentMixin,
                 raise n_exc.RouterNotCompatibleWithAgent(
                     router_id=router['id'])
 
+        #如果要配置的路由器信息在本地无缓存，则处理为add_router
+        #如果要配置的路由器信息在本地已缓存，则处理为update_router
         if router['id'] not in self.router_info:
             self._process_added_router(router)
         else:
@@ -473,6 +482,7 @@ class L3NATAgent(ha.AgentMixin,
                 LOG.debug("Finished a router update for %s", update.id)
                 continue
             router = update.router
+            #对于非delete,但没有提供router的，首先拉取router
             if update.action != queue.DELETE_ROUTER and not router:
                 try:
                     update.timestamp = timeutils.utcnow()
@@ -486,9 +496,11 @@ class L3NATAgent(ha.AgentMixin,
 
                 if routers:
                     router = routers[0]
-
+                    
+            #执行delete操作，它没有提供router
             if not router:
                 removed = self._safe_router_removed(update.id)
+                #删除失败，重新尝试
                 if not removed:
                     self._resync_router(update)
                 else:
@@ -496,11 +508,13 @@ class L3NATAgent(ha.AgentMixin,
                     # there are older events for the same router in the
                     # processing queue (like events from fullsync) in order to
                     # prevent deleted router re-creation
+                    #设置更新后时间
                     rp.fetched_and_processed(update.timestamp)
                 LOG.debug("Finished a router update for %s", update.id)
                 continue
 
             try:
+                #执行添加更新操作
                 self._process_router_if_compatible(router)
             except n_exc.RouterNotCompatibleWithAgent as e:
                 log_verbose_exc(e.msg, router)
@@ -516,6 +530,7 @@ class L3NATAgent(ha.AgentMixin,
                 self._resync_router(update)
                 continue
 
+            #设置更新时间
             LOG.debug("Finished a router update for %s", update.id)
             rp.fetched_and_processed(update.timestamp)
 

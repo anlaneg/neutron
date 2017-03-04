@@ -29,7 +29,7 @@ from neutron._i18n import _LI
 LOG = log.getLogger(__name__)
 _IS_IPV6_ENABLED = None
 
-
+#检查主机是否启用了ipv6
 def is_enabled_and_bind_by_default():
     """Check if host has the IPv6 support and is configured to bind IPv6
     address to new interfaces by default.
