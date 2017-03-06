@@ -60,7 +60,7 @@ class RouterInfo(object):
         self.pd_subnets = {}
         self.floating_ips = set()
         # Invoke the setter for establishing initial SNAT action
-        self.router = router
+        self.router = router #配置
         self.use_ipv6 = use_ipv6
         ns = self.create_router_namespace_object(
             router_id, agent_conf, interface_driver, use_ipv6)
@@ -515,6 +515,7 @@ class RouterInfo(object):
             device_name, mark_mask)
 
     def _process_internal_ports(self):
+        #首先计算出存在的ids
         existing_port_ids = set(p['id'] for p in self.internal_ports)
 
         internal_ports = self.router.get(lib_constants.INTERFACE_KEY, [])
@@ -522,6 +523,7 @@ class RouterInfo(object):
                                if p['admin_state_up'])
 
         new_port_ids = current_port_ids - existing_port_ids
+        #确定create,delete,update的port
         new_ports = [p for p in internal_ports if p['id'] in new_port_ids]
         old_ports = [p for p in self.internal_ports
                      if p['id'] not in current_port_ids]
@@ -529,10 +531,11 @@ class RouterInfo(object):
                                                 internal_ports)
 
         enable_ra = False
+        #加入新接口
         for p in new_ports:
             self.internal_network_added(p)
             LOG.debug("appending port %s to internal_ports cache", p)
-            self.internal_ports.append(p)
+            self.internal_ports.append(p) #缓存port
             enable_ra = enable_ra or self._port_has_ipv6_subnet(p)
             for subnet in p['subnets']:
                 if ipv6_utils.is_ipv6_pd_enabled(subnet):
@@ -540,17 +543,18 @@ class RouterInfo(object):
                     self.agent.pd.enable_subnet(self.router_id, subnet['id'],
                                      subnet['cidr'],
                                      interface_name, p['mac_address'])
-
+        #删除port
         for p in old_ports:
             self.internal_network_removed(p)
             LOG.debug("removing port %s from internal_ports cache", p)
-            self.internal_ports.remove(p)
+            self.internal_ports.remove(p) #缓存移除
             enable_ra = enable_ra or self._port_has_ipv6_subnet(p)
             for subnet in p['subnets']:
                 if ipv6_utils.is_ipv6_pd_enabled(subnet):
                     self.agent.pd.disable_subnet(self.router_id, subnet['id'])
                     del self.pd_subnets[subnet['id']]
 
+        #更新
         updated_cidrs = []
         if updated_ports:
             for index, p in enumerate(internal_ports):
