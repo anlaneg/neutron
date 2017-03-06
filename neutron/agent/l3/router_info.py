@@ -97,7 +97,7 @@ class RouterInfo(object):
                                       self.get_internal_device_name,
                                       self.agent_conf)
 
-        self.router_namespace.create()
+        self.router_namespace.create() #创建这个路由器
 
     def create_router_namespace_object(
             self, router_id, agent_conf, iface_driver, use_ipv6):
@@ -116,9 +116,11 @@ class RouterInfo(object):
         # enable_snat by default if it wasn't specified by plugin
         self._snat_enabled = self._router.get('enable_snat', True)
 
+    #内部口
     def get_internal_device_name(self, port_id):
         return (INTERNAL_DEV_PREFIX + port_id)[:self.driver.DEV_NAME_LEN]
 
+    #外部口
     def get_external_device_name(self, port_id):
         return (EXTERNAL_DEV_PREFIX + port_id)[:self.driver.DEV_NAME_LEN]
 
@@ -128,6 +130,7 @@ class RouterInfo(object):
     def get_gw_ns_name(self):
         return self.ns_name
 
+    #更新（添加，删除）路由表
     def _update_routing_table(self, operation, route, namespace):
         cmd = ['ip', 'route', operation, 'to', route['destination'],
                'via', route['nexthop']]
@@ -137,6 +140,7 @@ class RouterInfo(object):
     def update_routing_table(self, operation, route):
         self._update_routing_table(operation, route, self.ns_name)
 
+    #根据old,new计算出哪些需要add,哪些需要delete，并将其更新。
     def routes_updated(self, old_routes, new_routes):
         adds, removes = helpers.diff_list_of_dict(old_routes,
                                                   new_routes)

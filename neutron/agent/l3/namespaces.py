@@ -91,6 +91,7 @@ class Namespace(object):
 
     def create(self):
         ip_wrapper = self.ip_wrapper_root.ensure_namespace(self.name)
+        #设置为转发模式，启动ipv6转发
         cmd = ['sysctl', '-w', 'net.ipv4.ip_forward=1']
         ip_wrapper.netns.execute(cmd)
         if self.use_ipv6:
@@ -98,6 +99,7 @@ class Namespace(object):
             ip_wrapper.netns.execute(cmd)
 
     def delete(self):
+        #删除掉指定namespace
         try:
             self.ip_wrapper_root.netns.delete(self.name)
         except RuntimeError:
@@ -105,6 +107,7 @@ class Namespace(object):
             LOG.exception(msg, self.name)
 
     def exists(self):
+        #检查namespace是否存在
         return self.ip_wrapper_root.netns.exists(self.name)
 
 
@@ -118,6 +121,7 @@ class RouterNamespace(Namespace):
 
     @classmethod
     def _get_ns_name(cls, router_id):
+        #qrouter-$router_id
         return build_ns_name(NS_PREFIX, router_id)
 
     @check_ns_existence
@@ -126,11 +130,14 @@ class RouterNamespace(Namespace):
         for d in ns_ip.get_devices(exclude_loopback=True):
             if d.name.startswith(INTERNAL_DEV_PREFIX):
                 # device is on default bridge
+                #qr口删除
                 self.driver.unplug(d.name, namespace=self.name,
                                    prefix=INTERNAL_DEV_PREFIX)
             elif d.name.startswith(ROUTER_2_FIP_DEV_PREFIX):
+                #rfp口删除
                 ns_ip.del_veth(d.name)
             elif d.name.startswith(EXTERNAL_DEV_PREFIX):
+                #qg口删除
                 self.driver.unplug(
                     d.name,
                     bridge=self.agent_conf.external_network_bridge,

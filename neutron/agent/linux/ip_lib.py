@@ -122,6 +122,7 @@ class IPWrapper(SubProcessBase):
     def device(self, name):
         return IPDevice(name, namespace=self.namespace)
 
+    #返回namespace下所有接口
     def get_devices(self, exclude_loopback=False, exclude_gre_devices=False):
         retval = []
         if self.namespace:
@@ -205,6 +206,7 @@ class IPWrapper(SubProcessBase):
         self._as_root([], 'link', ('add', name, 'type', 'dummy'))
         return IPDevice(name, namespace=self.namespace)
 
+    #创建namespace，并创建loopback口
     def ensure_namespace(self, name):
         if not self.netns.exists(name):
             ip = self.netns.add(name)
