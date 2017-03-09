@@ -23,6 +23,7 @@ class AgentMixin(object):
         self._fip_namespaces = weakref.WeakValueDictionary()
         super(AgentMixin, self).__init__(host)
 
+    #给定ext_net_id求fip namespace 对应的对象
     def get_fip_ns(self, ext_net_id):
         # TODO(Carl) is this necessary?  Code that this replaced was careful to
         # convert these to string like this so I preserved that.
@@ -30,16 +31,19 @@ class AgentMixin(object):
 
         fip_ns = self._fip_namespaces.get(ext_net_id)
         if fip_ns and not fip_ns.destroyed:
+            #fip_ns已存在
             return fip_ns
 
         fip_ns = dvr_fip_ns.FipNamespace(ext_net_id,
                                          self.conf,
                                          self.driver,
                                          self.use_ipv6)
+        #第一次设置fip
         self._fip_namespaces[ext_net_id] = fip_ns
 
         return fip_ns
 
+    #通过rpc获取指定subnet中所有ports的信息
     def get_ports_by_subnet(self, subnet_id):
         return self.plugin_rpc.get_ports_by_subnet(self.context, subnet_id)
 
@@ -47,6 +51,7 @@ class AgentMixin(object):
         router_id = payload['router_id']
         ri = self.router_info.get(router_id)
         if not ri:
+            #没有在本地找到路由器的配置，跳出
             return
 
         arp_table = payload['arp_table']
@@ -54,6 +59,7 @@ class AgentMixin(object):
         mac = arp_table['mac_address']
         subnet_id = arp_table['subnet_id']
 
+        #arp表项，ip,mac,子网id,要求扫执的动作
         ri._update_arp_entry(ip, mac, subnet_id, action)
 
     def add_arp_entry(self, context, payload):
