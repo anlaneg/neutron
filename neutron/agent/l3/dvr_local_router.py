@@ -47,6 +47,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         self.rtr_fip_subnet = None
         self.dist_fip_count = None
         self.fip_ns = None
+        #缓存未下发的arp表项
         self._pending_arp_set = set()
 
     def get_floating_ips(self):
@@ -194,8 +195,10 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         self.floating_ip_moved_dist(fip)
         return lib_constants.FLOATINGIP_STATUS_ACTIVE
 
+    #找出路由器中负责此subnet_id路由接口
     def _get_internal_port(self, subnet_id):
         """Return internal router port based on subnet_id."""
+        #找出配置中关于interface的所有配置
         router_ports = self.router.get(lib_constants.INTERFACE_KEY, [])
         for port in router_ports:
             fips = port['fixed_ips']
@@ -205,17 +208,20 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
 
     def _cache_arp_entry(self, ip, mac, subnet_id, operation):
         """Cache the arp entries if device not ready."""
+        #构造arp缓存项，并加入缓存
         arp_entry_tuple = Arp_entry(ip=ip,
                                     mac=mac,
                                     subnet_id=subnet_id,
                                     operation=operation)
         self._pending_arp_set.add(arp_entry_tuple)
 
+    #下发缓存的arp
     def _process_arp_cache_for_internal_port(self, subnet_id):
         """Function to process the cached arp entries."""
         arp_remove = set()
         for arp_entry in self._pending_arp_set:
             if subnet_id == arp_entry.subnet_id:
+                #需要处理的arp
                 try:
                     state = self._update_arp_entry(
                         arp_entry.ip, arp_entry.mac,
@@ -241,6 +247,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         """Add or delete arp entry into router namespace for the subnet."""
         port = self._get_internal_port(subnet_id)
         # update arp entry only if the subnet is attached to the router
+        #此subnet可能还没有加到路由器上，跳出
         if not port:
             return False
 
@@ -249,12 +256,14 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
             interface_name = self.get_internal_device_name(port['id'])
             device = ip_lib.IPDevice(interface_name, namespace=self.ns_name)
             if device.exists():
+                #接口是存在的，按要求做arp的添加，删除。
                 if operation == 'add':
                     device.neigh.add(ip, mac)
                 elif operation == 'delete':
                     device.neigh.delete(ip, mac)
                 return True
             else:
+                #接口还不存在，此时arp信息暂时缓存
                 if operation == 'add':
                     LOG.warning(_LW("Device %s does not exist so ARP entry "
                                     "cannot be updated, will cache "
@@ -273,6 +282,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         # processing a router.
         subnet_ports = self.agent.get_ports_by_subnet(subnet_id)
 
+        #下发这个subnet_id上所有port的arp信息（防arp flood)
         for p in subnet_ports:
             if p['device_owner'] not in lib_constants.ROUTER_INTERFACE_OWNERS:
                 for fixed_ip in p['fixed_ips']:
@@ -280,6 +290,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                                            p['mac_address'],
                                            subnet_id,
                                            'add')
+        #下发原来暂时缓存的subnet_id的arp
         self._process_arp_cache_for_internal_port(subnet_id)
 
     @staticmethod
@@ -346,6 +357,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         try:
             ns_ipr = ip_lib.IPRule(namespace=self.ns_name)
             ns_ipd = ip_lib.IPDevice(sn_int, namespace=self.ns_name)
+            #遍历源端口上所有ip地址
             for port_fixed_ip in sn_port['fixed_ips']:
                 # Iterate and find the gateway IP address matching
                 # the IP version
@@ -353,13 +365,17 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                 port_ip_vers = netaddr.IPAddress(port_ip_addr).version
                 for gw_fixed_ip in gateway['fixed_ips']:
                     gw_ip_addr = gw_fixed_ip['ip_address']
+                    #ip版本号必须相等
                     if netaddr.IPAddress(gw_ip_addr).version == port_ip_vers:
                         sn_port_cidr = common_utils.ip_to_cidr(
                             port_ip_addr, port_fixed_ip['prefixlen'])
                         snat_idx = self._get_snat_idx(sn_port_cidr)
                         if is_add:
+                            #添加表snat_idx中的默认路由
+                            #http://www.cnblogs.com/iceocean/articles/1594488.html
                             ns_ipd.route.add_gateway(gw_ip_addr,
                                                      table=snat_idx)
+                            #指定源ip
                             ns_ipr.rule.add(ip=sn_port_cidr,
                                             table=snat_idx,
                                             priority=snat_idx)
@@ -387,6 +403,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         """Removes rules and routes for SNAT redirection."""
         self._snat_redirect_modify(gateway, sn_port, sn_int, is_add=False)
 
+    #内部口添加（qr口）
     def internal_network_added(self, port):
         super(DvrLocalRouter, self).internal_network_added(port)
 
@@ -395,6 +412,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         # entries for the dvr services ports into the router
         # namespace. This does not have dependency on the
         # external_gateway port or the agent_mode.
+        #添加这个口对应的所有subnet内的arp信息
         for subnet in port['subnets']:
             self._set_subnet_arp_info(subnet['id'])
         self._snat_redirect_add_from_port(port)
@@ -402,21 +420,27 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
     def _snat_redirect_add_from_port(self, port):
         ex_gw_port = self.get_ex_gw_port()
         if not ex_gw_port:
+            #dvr还没有连接到外网，不处理（没有sg口）
             return
 
         sn_port = self.get_snat_port_for_internal_port(port)
         if not sn_port:
+            #这个口还没有它对应的sg口
             return
 
+        #加所有自qr口来的包，发往qr口对应的sg口。
         interface_name = self.get_internal_device_name(port['id'])
+        #加策略路由送到网关
         self._snat_redirect_add(sn_port, port, interface_name)
 
     def _dvr_internal_network_removed(self, port):
         if not self.ex_gw_port:
+            #如果没有gw_port，不会下发pbr,故没必要删除
             return
 
         sn_port = self.get_snat_port_for_internal_port(port, self.snat_ports)
         if not sn_port:
+            #sg口没有创建，则也不会下发pbr
             return
 
         # DVR handling code for SNAT
@@ -424,6 +448,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         self._snat_redirect_remove(sn_port, port, interface_name)
         # Clean up the cached arp entries related to the port subnet
         for subnet in port['subnets']:
+            #可能会有arp缓存，需要删除
             self._delete_arp_cache_for_internal_port(subnet)
 
     def internal_network_removed(self, port):
@@ -640,6 +665,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
     def process(self):
         ex_gw_port = self.get_ex_gw_port()
         if ex_gw_port:
+            #分布式路由器有网关（已连接到外部网络）
             self.fip_ns = self.agent.get_fip_ns(ex_gw_port['network_id'])
             self.fip_ns.scan_fip_ports(self)
 

@@ -273,10 +273,10 @@ class IPDevice(SubProcessBase):
     def __init__(self, name, namespace=None):
         super(IPDevice, self).__init__(namespace=namespace)
         self._name = name
-        self.link = IpLinkCommand(self)
-        self.addr = IpAddrCommand(self)
-        self.route = IpRouteCommand(self)
-        self.neigh = IpNeighCommand(self)
+        self.link = IpLinkCommand(self)   #接口链路配置
+        self.addr = IpAddrCommand(self)   #接口地址配置
+        self.route = IpRouteCommand(self) #路由表项
+        self.neigh = IpNeighCommand(self) #邻居表项
 
     def __eq__(self, other):
         return (other is not None and self.name == other.name
@@ -691,6 +691,7 @@ class IpRouteCommand(IpDeviceCommandBase):
     def _dev_args(self):
         return ['dev', self.name] if self.name else []
 
+    #添加默认路由
     def add_gateway(self, gateway, metric=None, table=None):
         ip_version = get_ip_version(gateway)
         args = ['replace', 'default', 'via', gateway]
@@ -1069,7 +1070,7 @@ def _arping(ns_name, iface_name, address, count, log_exception):
                             'ns': ns_name,
                             'err': exc})
 
-
+#发送地址通告
 def send_ip_addr_adv_notif(
         ns_name, iface_name, address, count=3, log_exception=True):
     """Send advance notification of an IP address assignment.

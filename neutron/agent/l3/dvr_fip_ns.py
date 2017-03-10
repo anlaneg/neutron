@@ -69,7 +69,7 @@ class FipNamespace(namespaces.Namespace):
         self.destroyed = False
 
     @classmethod
-    def _get_ns_name(cls, ext_net_id):
+    def _get_ns_name(cls, ext_net_id):#设置fip-开始的namespace
         return namespaces.build_ns_name(FIP_NS_PREFIX, ext_net_id)
 
     def get_name(self):

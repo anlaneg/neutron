@@ -193,6 +193,7 @@ class LinuxInterfaceDriver(object):
         v6_onlink = device.route.list_onlink_routes(constants.IP_VERSION_6)
         existing_onlink_cidrs = set(r['cidr'] for r in v4_onlink + v6_onlink)
 
+        #加路由
         for route in new_onlink_cidrs - existing_onlink_cidrs:
             LOG.debug("adding onlink route(%s)", route)
             device.route.add_onlink_route(route)
@@ -201,6 +202,7 @@ class LinuxInterfaceDriver(object):
             LOG.debug("deleting onlink route(%s)", route)
             device.route.delete_onlink_route(route)
 
+    #加ipv6地址
     def add_ipv6_addr(self, device_name, v6addr, namespace, scope='global'):
         device = ip_lib.IPDevice(device_name,
                                  namespace=namespace)
@@ -230,6 +232,7 @@ class LinuxInterfaceDriver(object):
 
         return device.addr.list(scope='link', ip_version=6)
 
+    #如果bridge不存在，则扔出异常
     def check_bridge_exists(self, bridge):
         if not ip_lib.device_exists(bridge):
             raise exceptions.BridgeDoesNotExist(bridge=bridge)
@@ -418,7 +421,7 @@ class OVSInterfaceDriver(LinuxInterfaceDriver):
             ns_dev = ip_lib.IPWrapper(namespace=namespace).device(device_name)
         ns_dev.link.set_mtu(mtu)
 
-
+#ivs环境
 class IVSInterfaceDriver(LinuxInterfaceDriver):
     """Driver for creating an internal interface on an IVS bridge."""
 
@@ -477,7 +480,9 @@ class IVSInterfaceDriver(LinuxInterfaceDriver):
             LOG.error(_LE("Failed unplugging interface '%s'"),
                       device_name)
 
-
+#在每个namesapce中加入的port，均有一个对端在默认namespace中存在一个口
+#这些口如何配置ip地址，在相应namespace中存在ip,但默认namespace中的口不
+#配置ip地址。
 class BridgeInterfaceDriver(LinuxInterfaceDriver):
     """Driver for creating bridge interfaces."""
 
@@ -486,12 +491,15 @@ class BridgeInterfaceDriver(LinuxInterfaceDriver):
     def plug_new(self, network_id, port_id, device_name, mac_address,
                  bridge=None, namespace=None, prefix=None, mtu=None):
         """Plugin the interface."""
+        #创建了ip对象，但没有指定namespace
         ip = ip_lib.IPWrapper()
 
         # Enable agent to define the prefix
+        #依据device_name变更前缀成为tap_name，
         tap_name = device_name.replace(prefix or self.DEV_NAME_PREFIX,
                                        constants.TAP_DEVICE_PREFIX)
         # Create ns_veth in a namespace if one is configured.
+        #创建veth口，root_veth将放在namepspace为None中，而ns_veth将放在namespace中
         root_veth, ns_veth = ip.add_veth(tap_name, device_name,
                                          namespace2=namespace)
         root_veth.disable_ipv6()
@@ -515,6 +523,7 @@ class BridgeInterfaceDriver(LinuxInterfaceDriver):
             LOG.error(_LE("Failed unplugging interface '%s'"),
                       device_name)
 
+    #为两个接口均设置mtu
     def set_mtu(self, device_name, mtu, namespace=None, prefix=None):
         tap_name = device_name.replace(prefix or self.DEV_NAME_PREFIX,
                                        constants.TAP_DEVICE_PREFIX)

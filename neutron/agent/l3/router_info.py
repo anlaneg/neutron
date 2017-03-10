@@ -60,7 +60,7 @@ class RouterInfo(object):
         self.pd_subnets = {}
         self.floating_ips = set()
         # Invoke the setter for establishing initial SNAT action
-        self.router = router
+        self.router = router #配置
         self.use_ipv6 = use_ipv6
         ns = self.create_router_namespace_object(
             router_id, agent_conf, interface_driver, use_ipv6)
@@ -116,11 +116,11 @@ class RouterInfo(object):
         # enable_snat by default if it wasn't specified by plugin
         self._snat_enabled = self._router.get('enable_snat', True)
 
-    #内部口
+    #内部口(qr-)
     def get_internal_device_name(self, port_id):
         return (INTERNAL_DEV_PREFIX + port_id)[:self.driver.DEV_NAME_LEN]
 
-    #外部口
+    #外部口(qg-)
     def get_external_device_name(self, port_id):
         return (EXTERNAL_DEV_PREFIX + port_id)[:self.driver.DEV_NAME_LEN]
 
@@ -156,6 +156,7 @@ class RouterInfo(object):
             LOG.debug("Removed route entry is '%s'", route)
             self.update_routing_table('delete', route)
 
+    #获取配置中的gw_port
     def get_ex_gw_port(self):
         return self.router.get('gw_port')
 
@@ -318,6 +319,7 @@ class RouterInfo(object):
     def remove_external_gateway_ip(self, device, ip_cidr):
         device.delete_addr_and_conntrack_state(ip_cidr)
 
+    #返回设备所有ip地址
     def get_router_cidrs(self, device):
         return set([addr['cidr'] for addr in device.addr.list()])
 
@@ -347,6 +349,7 @@ class RouterInfo(object):
             new_cidrs.add(ip_cidr)
             fip_statuses[fip['id']] = lib_constants.FLOATINGIP_STATUS_ACTIVE
             if ip_cidr not in existing_cidrs:
+                #当前配置了此ip地址，但还不在实际中存在，故在interface_name上添加浮动ip
                 fip_statuses[fip['id']] = self.add_floating_ip(
                     fip, interface_name, device)
                 LOG.debug('Floating ip %(id)s added, status %(status)s',
@@ -354,6 +357,7 @@ class RouterInfo(object):
                            'status': fip_statuses.get(fip['id'])})
             elif (fip_ip in self.fip_map and
                   self.fip_map[fip_ip] != fip['fixed_ip_address']):
+                #floatip在，但fixip变化了，需要重新配置（nat规则需要变更）
                 LOG.debug("Floating IP was moved from fixed IP "
                           "%(old)s to %(new)s",
                           {'old': self.fip_map[fip_ip],
@@ -369,10 +373,12 @@ class RouterInfo(object):
         for ip_cidr in fips_to_remove:
             LOG.debug("Removing floating ip %s from interface %s in "
                       "namespace %s", ip_cidr, interface_name, self.ns_name)
+            #移除floating-ip
             self.remove_floating_ip(device, ip_cidr)
 
         return fip_statuses
 
+    #将配置ex_gw_port中所有fixed_ips加入gw_cidrs中返回
     def _get_gw_ips_cidr(self):
         gw_cidrs = set()
         ex_gw_port = self.get_ex_gw_port()
@@ -384,6 +390,7 @@ class RouterInfo(object):
                     gw_cidrs.add(common_utils.ip_to_cidr(ex_gw_ip))
         return gw_cidrs
 
+    #floatip配置
     def configure_fip_addresses(self, interface_name):
         try:
             return self.process_floating_ip_addresses(interface_name)
@@ -420,28 +427,30 @@ class RouterInfo(object):
                         self.driver.add_ipv6_addr(interface_name, v6addr,
                                                   self.ns_name)
         else:
-            self.driver.delete_ipv6_addr_with_prefix(interface_name,
+            self.driver.delete_ipv6exdx_addr_with_prefix(interface_name,
                                                      old_prefix,
                                                      self.ns_name)
 
+    #填加接口，并配置ip,发送地址通告
     def _internal_network_added(self, ns_name, network_id, port_id,
                                 fixed_ips, mac_address,
                                 interface_name, prefix, mtu=None):
         LOG.debug("adding internal network: prefix(%s), port(%s)",
                   prefix, port_id)
+        #调用驱动，在指定network_id中创建对应port
         self.driver.plug(network_id, port_id, interface_name, mac_address,
                          namespace=ns_name,
                          prefix=prefix, mtu=mtu)
 
         ip_cidrs = common_utils.fixed_ip_cidrs(fixed_ips)
         self.driver.init_router_port(
-            interface_name, ip_cidrs, namespace=ns_name)
+            interface_name, ip_cidrs, namespace=ns_name)#配置ip地址
         for fixed_ip in fixed_ips:
             ip_lib.send_ip_addr_adv_notif(ns_name,
                                           interface_name,
                                           fixed_ip['ip_address'],
                                           self.agent_conf.send_arp_for_ha)
-
+    #内部口添加
     def internal_network_added(self, port):
         network_id = port['network_id']
         port_id = port['id']
@@ -459,6 +468,7 @@ class RouterInfo(object):
                                      INTERNAL_DEV_PREFIX,
                                      mtu=port.get('mtu'))
 
+    #移除接口
     def internal_network_removed(self, port):
         interface_name = self.get_internal_device_name(port['id'])
         LOG.debug("removing internal network: port(%s) interface(%s)",
@@ -519,6 +529,7 @@ class RouterInfo(object):
             device_name, mark_mask)
 
     def _process_internal_ports(self):
+        #首先计算出存在的ids
         existing_port_ids = set(p['id'] for p in self.internal_ports)
 
         internal_ports = self.router.get(lib_constants.INTERFACE_KEY, [])
@@ -526,6 +537,7 @@ class RouterInfo(object):
                                if p['admin_state_up'])
 
         new_port_ids = current_port_ids - existing_port_ids
+        #确定create,delete,update的port
         new_ports = [p for p in internal_ports if p['id'] in new_port_ids]
         old_ports = [p for p in self.internal_ports
                      if p['id'] not in current_port_ids]
@@ -533,10 +545,11 @@ class RouterInfo(object):
                                                 internal_ports)
 
         enable_ra = False
+        #加入新接口
         for p in new_ports:
             self.internal_network_added(p)
             LOG.debug("appending port %s to internal_ports cache", p)
-            self.internal_ports.append(p)
+            self.internal_ports.append(p) #缓存port
             enable_ra = enable_ra or self._port_has_ipv6_subnet(p)
             for subnet in p['subnets']:
                 if ipv6_utils.is_ipv6_pd_enabled(subnet):
@@ -544,17 +557,18 @@ class RouterInfo(object):
                     self.agent.pd.enable_subnet(self.router_id, subnet['id'],
                                      subnet['cidr'],
                                      interface_name, p['mac_address'])
-
+        #删除port
         for p in old_ports:
             self.internal_network_removed(p)
             LOG.debug("removing port %s from internal_ports cache", p)
-            self.internal_ports.remove(p)
+            self.internal_ports.remove(p) #缓存移除
             enable_ra = enable_ra or self._port_has_ipv6_subnet(p)
             for subnet in p['subnets']:
                 if ipv6_utils.is_ipv6_pd_enabled(subnet):
                     self.agent.pd.disable_subnet(self.router_id, subnet['id'])
                     del self.pd_subnets[subnet['id']]
 
+        #更新
         updated_cidrs = []
         if updated_ports:
             for index, p in enumerate(internal_ports):

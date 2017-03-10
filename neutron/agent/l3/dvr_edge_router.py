@@ -24,7 +24,7 @@ from neutron.agent.linux import iptables_manager
 
 LOG = logging.getLogger(__name__)
 
-
+#边界路由器，由dvrlocalRouter走process处理
 class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
 
     def __init__(self, host, *args, **kwargs):

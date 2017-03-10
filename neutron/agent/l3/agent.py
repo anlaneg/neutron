@@ -323,21 +323,25 @@ class L3NATAgent(ha.AgentMixin,
             kwargs['host'] = self.host
 
         if router.get('distributed') and router.get('ha'):
+            #创建分布式ha路由器
             if self.conf.agent_mode == lib_const.L3_AGENT_MODE_DVR_SNAT:
                 kwargs['state_change_callback'] = self.enqueue_state_change
-                return dvr_edge_ha_router.DvrEdgeHaRouter(*args, **kwargs)
+                return dvr_edge_ha_router.DvrEdgeHaRouter(*args, **kwargs) #ha功能的snat路由器
 
         if router.get('distributed'):
+            #创建分布式路由器
             if self.conf.agent_mode == lib_const.L3_AGENT_MODE_DVR_SNAT:
-                return dvr_router.DvrEdgeRouter(*args, **kwargs)
+                return dvr_router.DvrEdgeRouter(*args, **kwargs) #snat路由器
             else:
-                return dvr_local_router.DvrLocalRouter(*args, **kwargs)
+                return dvr_local_router.DvrLocalRouter(*args, **kwargs) #普通dvr路由器
 
         if router.get('ha'):
+            #集中ha路由器
             kwargs['state_change_callback'] = self.enqueue_state_change
-            return ha_router.HaRouter(*args, **kwargs)
+            return ha_router.HaRouter(*args, **kwargs) #普通ha路由器
 
-        return legacy_router.LegacyRouter(*args, **kwargs)
+        #创建传统路由器
+        return legacy_router.LegacyRouter(*args, **kwargs) #普通路由器
 
     def _router_added(self, router_id, router):
         ri = self._create_router(router_id, router)
