@@ -49,7 +49,7 @@ def _get_veth(name1, name2, namespace2):
     return (ip_lib.IPDevice(name1),
             ip_lib.IPDevice(name2, namespace=namespace2))
 
-
+#基础interface driver
 @six.add_metaclass(abc.ABCMeta)
 class LinuxInterfaceDriver(object):
 
@@ -251,13 +251,16 @@ class LinuxInterfaceDriver(object):
                  bridge=None, namespace=None, prefix=None, mtu=None):
         """Plug in the interface only for new devices that don't exist yet."""
 
+    #插入一个接口
     def plug(self, network_id, port_id, device_name, mac_address,
              bridge=None, namespace=None, prefix=None, mtu=None):
         if not ip_lib.device_exists(device_name,
                                     namespace=namespace):
+            #接口不存在，需要新建
             self.plug_new(network_id, port_id, device_name, mac_address,
                           bridge, namespace, prefix, mtu)
         else:
+            #接口已存在，如果需要设置mtu,则set mtu ？（这个会不会太简化了，mac不需要设置吗？）
             LOG.info(_LI("Device %s already exists"), device_name)
             if mtu:
                 self.set_mtu(
@@ -302,6 +305,7 @@ class NullDriver(LinuxInterfaceDriver):
         pass
 
 
+#ovs对应的interface 驱动
 class OVSInterfaceDriver(LinuxInterfaceDriver):
     """Driver for creating an internal interface on an OVS bridge."""
 

@@ -311,8 +311,8 @@ class L3NATAgent(ha.AgentMixin,
     def _create_router(self, router_id, router):
         args = []
         kwargs = {
-            'agent': self,
-            'router_id': router_id,
+            'agent': self,#agent自身
+            'router_id': router_id,#路由器编号
             'router': router,#路由器配置
             'use_ipv6': self.use_ipv6,#ipv6是否启用
             'agent_conf': self.conf,#agent配置
