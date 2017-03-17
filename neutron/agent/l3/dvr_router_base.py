@@ -31,10 +31,11 @@ class DvrRouterBase(router.RouterInfo):
         # NOTE:  Keep a copy of the interfaces around for when they are removed
         self.snat_ports = self.get_snat_interfaces()
 
-    #
+    #获取snat的接口配置
     def get_snat_interfaces(self):
         return self.router.get(l3_constants.SNAT_ROUTER_INTF_KEY, [])
 
+    #给一个internal-port求它对应的snat-port
     def get_snat_port_for_internal_port(self, int_port, snat_ports=None):
         """Return the SNAT port for the given internal interface port."""
         if snat_ports is None:

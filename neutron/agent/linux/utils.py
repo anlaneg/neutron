@@ -84,7 +84,8 @@ def addl_env_args(addl_env):
         return []
     return ['env'] + ['%s=%s' % pair for pair in addl_env.items()]
 
-
+#addl_env为环境变量，如果run_as_root时，就在前面加'sudo'
+#创建进程后，返回进程对象，cmd
 def create_process(cmd, run_as_root=False, addl_env=None):
     """Create a process object for the given command.
 
@@ -115,6 +116,11 @@ def execute_rootwrap_daemon(cmd, process_input, addl_env):
     return client.execute(cmd, process_input)
 
 
+#执行命令
+#cmd 是命令，process_input 是进程要处理的输入,addl_env是启动命令前的环境变量
+#check_exit_code 表示是否检查返回值, return_stderr表示是否返回标准错误输出
+#log_fail_as_error表示是否用日志记录错误信息，extra_ok_codes 表示附加的认为正确的返回值（默认只有0是正确的)
+#run_as_root 表示是否以root权限运行
 def execute(cmd, process_input=None, addl_env=None,
             check_exit_code=True, return_stderr=False, log_fail_as_error=True,
             extra_ok_codes=None, run_as_root=False):
@@ -129,9 +135,13 @@ def execute(cmd, process_input=None, addl_env=None,
         else:
             obj, cmd = create_process(cmd, run_as_root=run_as_root,
                                       addl_env=addl_env)
+            #为进程提供标准输入，等待进程结束
             _stdout, _stderr = obj.communicate(_process_input)
             returncode = obj.returncode
+            #关闭标准输入
             obj.stdin.close()
+            
+        #处理输出字符串
         _stdout = helpers.safe_decode_utf8(_stdout)
         _stderr = helpers.safe_decode_utf8(_stderr)
 
@@ -157,7 +167,7 @@ def execute(cmd, process_input=None, addl_env=None,
         # NOTE(termie): this appears to be necessary to let the subprocess
         #               call clean something up in between calls, without
         #               it two execute calls in a row hangs the second one
-        greenthread.sleep(0)
+        greenthread.sleep(0) #防止两个协程起的进程相互等待
 
     return (_stdout, _stderr) if return_stderr else _stdout
 

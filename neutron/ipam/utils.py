@@ -17,6 +17,7 @@ import netaddr
 from neutron_lib import constants
 
 
+#检查ip_address是否归cidr所有
 def check_subnet_ip(cidr, ip_address):
     """Validate that the IP address is on the subnet."""
     ip = netaddr.IPAddress(ip_address)

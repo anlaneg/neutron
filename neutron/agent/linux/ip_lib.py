@@ -426,14 +426,16 @@ class IpRuleCommand(IpCommandBase):
             k, v = item
             # ip rule shows these as 'any'
             if k == 'from' and v == 'all':
+                #如果有'from'并且v == 'all',就返回'from','0.0.0.0'
                 return k, constants.IP_ANY[ip_version]
             # lookup and table are interchangeable.  Use table every time.
             if k == 'lookup':
                 return 'table', v
             if k == 'fwmark':
                 return k, canonicalize_fwmark_string(v)
-            return k, v
+            return k, v #其它格式
 
+        #如果settings中没有'type'，则将setttings的'type‘定义为单播报文
         if 'type' not in settings:
             settings['type'] = 'unicast'
 
@@ -469,16 +471,19 @@ class IpRuleCommand(IpCommandBase):
             args += kwargs_item
         return tuple(args)
 
+    #添加策略
     def add(self, ip, **kwargs):
         ip_version = get_ip_version(ip)
 
         # In case if we need to add in a rule based on incoming
         # interface we don't need to pass in the ip.
         if not kwargs.get('iif'):
+            #如果没有指定入接口，则采用源ip进行限制
             kwargs.update({'from': ip})
         canonical_kwargs = self._make_canonical(ip_version, kwargs)
 
         if not self._exists(ip_version, **canonical_kwargs):
+            #没有没有，就添加这条规则
             args_tuple = self._make__flat_args_tuple('add', **canonical_kwargs)
             self._as_root([ip_version], args_tuple)
 

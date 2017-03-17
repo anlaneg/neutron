@@ -43,6 +43,7 @@ FIP_PR_START = 32768
 FIP_PR_END = FIP_PR_START + 40000
 
 
+#fip路由器
 class FipNamespace(namespaces.Namespace):
 
     def __init__(self, ext_net_id, agent_conf, driver, use_ipv6):
@@ -72,21 +73,27 @@ class FipNamespace(namespaces.Namespace):
     def _get_ns_name(cls, ext_net_id):#设置fip-开始的namespace
         return namespaces.build_ns_name(FIP_NS_PREFIX, ext_net_id)
 
+    #生成名称'fip-$(network-id)'
     def get_name(self):
         return self._get_ns_name(self._ext_net_id)
 
+    #生成名称"fg-$(port_id)"
     def get_ext_device_name(self, port_id):
         return (FIP_EXT_DEV_PREFIX + port_id)[:self.driver.DEV_NAME_LEN]
 
+    #生成名称"fpr-${router_id}"
     def get_int_device_name(self, router_id):
         return (FIP_2_ROUTER_DEV_PREFIX + router_id)[:self.driver.DEV_NAME_LEN]
 
+    #生成名称“rfp-$(router_id)”
     def get_rtr_ext_device_name(self, router_id):
         return (ROUTER_2_FIP_DEV_PREFIX + router_id)[:self.driver.DEV_NAME_LEN]
 
+    #是否已有注册者
     def has_subscribers(self):
         return len(self._subscribers) != 0
 
+    #将net_id注册，返回是否为首个
     def subscribe(self, external_net_id):
         is_first = not self.has_subscribers()
         self._subscribers.add(external_net_id)
@@ -123,9 +130,11 @@ class FipNamespace(namespaces.Namespace):
         with self._fip_port_lock(interface_name):
             is_first = self.subscribe(agent_gateway_port['network_id'])
             if is_first:
+                #之前，还没有创建gateway-port
                 self._create_gateway_port(agent_gateway_port, interface_name)
             else:
                 try:
+                    #之前，已创建agent_gateway_port,这里对其进行更新
                     self._update_gateway_port(
                         agent_gateway_port, interface_name)
                 except Exception:
@@ -146,6 +155,7 @@ class FipNamespace(namespaces.Namespace):
 
         LOG.debug("DVR: adding gateway interface: %s", interface_name)
         ns_name = self.get_name()
+        #创建fg口（ex_gw_port应命名为agent_gateway_port)
         self.driver.plug(ex_gw_port['network_id'],
                          ex_gw_port['id'],
                          interface_name,
@@ -156,6 +166,7 @@ class FipNamespace(namespaces.Namespace):
                          mtu=ex_gw_port.get('mtu'))
 
         # Remove stale fg devices
+        # 移除掉错误的fg设备
         ip_wrapper = ip_lib.IPWrapper(namespace=ns_name)
         devices = ip_wrapper.get_devices()
         for device in devices:
@@ -168,15 +179,19 @@ class FipNamespace(namespaces.Namespace):
                                    namespace=ns_name,
                                    prefix=FIP_EXT_DEV_PREFIX)
 
+        #为fd口设置ip地址
         ip_cidrs = common_utils.fixed_ip_cidrs(ex_gw_port['fixed_ips'])
         self.driver.init_l3(interface_name, ip_cidrs, namespace=ns_name,
                             clean_connections=True)
 
+        #整个agent这么一个口
         self.agent_gateway_port = ex_gw_port
 
+        #在此接口开启arp代理功能
         cmd = ['sysctl', '-w', 'net.ipv4.conf.%s.proxy_arp=1' % interface_name]
         ip_wrapper.netns.execute(cmd, check_exit_code=False)
 
+    #创建fip路由器
     def create(self):
         LOG.debug("DVR: add fip namespace: %s", self.name)
         # parent class will ensure the namespace exists and turn-on forwarding
@@ -223,9 +238,11 @@ class FipNamespace(namespaces.Namespace):
         LOG.debug('DVR: destroy fip namespace: %s', self.name)
         super(FipNamespace, self).delete()
 
+    #检查gateway ip地址是否发生了变更
     def _check_for_gateway_ip_change(self, new_agent_gateway_port):
 
         def get_gateway_ips(gateway_port):
+            #获取gateway_ip
             gw_ips = {}
             if gateway_port:
                 for subnet in gateway_port.get('subnets', []):
@@ -297,6 +314,7 @@ class FipNamespace(namespaces.Namespace):
                          priority=rt_tbl_index)
 
     def _update_gateway_port(self, agent_gateway_port, interface_name):
+        #agent_gateway_port存在，且ip没有发生变化，则不处理
         if (self.agent_gateway_port and
             not self._check_for_gateway_ip_change(agent_gateway_port)):
                 return
@@ -318,6 +336,7 @@ class FipNamespace(namespaces.Namespace):
         # throw exceptions.  Unsubscribe this external network so that
         # the next call will trigger the interface to be plugged.
         if not ipd.exists():
+            #报错，ipd不存在
             LOG.warning(_LW('DVR: FIP gateway port with interface '
                             'name: %(device)s does not exist in the given '
                             'namespace: %(ns)s'), {'device': interface_name,
@@ -326,6 +345,7 @@ class FipNamespace(namespaces.Namespace):
                     'should be attempted on next call')
             raise n_exc.FloatingIpSetupException(msg)
 
+        #发送arp
         for fixed_ip in agent_gateway_port['fixed_ips']:
             ip_lib.send_ip_addr_adv_notif(ns_name,
                                           interface_name,
@@ -338,9 +358,13 @@ class FipNamespace(namespaces.Namespace):
                 is_gateway_not_in_subnet = not ipam_utils.check_subnet_ip(
                                                 subnet.get('cidr'), gw_ip)
                 if is_gateway_not_in_subnet:
+                    #gateay不在subnet中，认为本机可访问此地址(比较怪，
+                    #scope：路由的范围，主要是link，即是和本设备有关的直接联机
                     ipd.route.add_route(gw_ip, scope='link')
+                #添加默认路由
                 self._add_default_gateway_for_fip(gw_ip, ipd, tbl_index)
             else:
+                #删除gateway
                 current_gateway = ipd.route.get_gateway()
                 if current_gateway and current_gateway.get('gateway'):
                     ipd.route.delete_gateway(current_gateway.get('gateway'))
@@ -381,6 +405,7 @@ class FipNamespace(namespaces.Namespace):
                                                     fip_2_rtr_name)
 
         # add default route for the link local interface
+        #为表FIP_RT_TBL添加一条默认路由fip_2_rtr.ip,使其指向fip路由器
         rtr_2_fip_dev.route.add_gateway(str(fip_2_rtr.ip), table=FIP_RT_TBL)
 
     def scan_fip_ports(self, ri):

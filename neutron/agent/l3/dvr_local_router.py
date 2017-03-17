@@ -50,6 +50,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         #缓存未下发的arp表项
         self._pending_arp_set = set()
 
+    #返回由本主机负责的floating ip
     def get_floating_ips(self):
         """Filter Floating IPs to be hosted on this agent."""
         floating_ips = super(DvrLocalRouter, self).get_floating_ips()
@@ -60,12 +61,15 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
     def floating_forward_rules(self, floating_ip, fixed_ip):
         """Override this function defined in router_info for dvr routers."""
         if not self.fip_ns:
+            #对dvr来说，所有floating_ip来源于fip路由器，故没有fip就不提供floating-ip功能
             return []
 
         rtr_2_fip_name = self.fip_ns.get_rtr_ext_device_name(self.router_id)
+        #如果报文由fip路由器过来（入接口就是rtr_2_fip),做dnat转换，报文将由公网地址变更为私网地址
         dnat_from_floatingip_to_fixedip = (
             'PREROUTING', '-d %s/32 -i %s -j DNAT --to-destination %s' % (
                 floating_ip, rtr_2_fip_name, fixed_ip))
+        #对于所有源ip为fixed_ip的（私网ip)，对其做dnat，将其转换为公网地址
         snat_from_fixedip_to_floatingip = (
             'float-snat', '-s %s/32 -j SNAT --to-source %s' % (
                 fixed_ip, floating_ip))
@@ -108,10 +112,13 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         # update internal structures
         self.dist_fip_count = self.dist_fip_count + 1
 
+    #添加对fixed_ip的策略
     def _add_floating_ip_rule(self, floating_ip, fixed_ip):
         rule_pr = self.fip_ns.allocate_rule_priority(floating_ip)
         self.floating_ips_dict[floating_ip] = rule_pr
         ip_rule = ip_lib.IPRule(namespace=self.ns_name)
+        #指定源ip为fixed_ip的报文查找dvr_fip_ns.FIP_RT_TBL
+        #优先级为rule_pr
         ip_rule.rule.add(ip=fixed_ip,
                          table=dvr_fip_ns.FIP_RT_TBL,
                          priority=rule_pr)
@@ -120,6 +127,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         if floating_ip in self.floating_ips_dict:
             rule_pr = self.floating_ips_dict[floating_ip]
             ip_rule = ip_lib.IPRule(namespace=self.ns_name)
+            #移除策略
             ip_rule.rule.delete(ip=floating_ip,
                                 table=dvr_fip_ns.FIP_RT_TBL,
                                 priority=rule_pr)
@@ -351,6 +359,8 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         self._stale_ip_rule_cleanup(ns_ipr, ns_ipd, lib_constants.IP_VERSION_4)
         self._stale_ip_rule_cleanup(ns_ipr, ns_ipd, lib_constants.IP_VERSION_6)
 
+    #gateway是网关接口，sn_port是报文源端口，sn_int是接口名称
+    #完成dvr到snat路由器的路由添加(思考：之后路由也可放在此表，以实现dvr去snat前的处理）
     def _snat_redirect_modify(self, gateway, sn_port, sn_int, is_add):
         """Adds or removes rules and routes for SNAT redirection."""
         cmd = ['net.ipv4.conf.%s.send_redirects=0' % sn_int]
@@ -365,22 +375,23 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                 port_ip_vers = netaddr.IPAddress(port_ip_addr).version
                 for gw_fixed_ip in gateway['fixed_ips']:
                     gw_ip_addr = gw_fixed_ip['ip_address']
-                    #ip版本号必须相等
+                    #ip版本号必须相等（这俩是同网段的）
                     if netaddr.IPAddress(gw_ip_addr).version == port_ip_vers:
                         sn_port_cidr = common_utils.ip_to_cidr(
                             port_ip_addr, port_fixed_ip['prefixlen'])
-                        snat_idx = self._get_snat_idx(sn_port_cidr)
+                        snat_idx = self._get_snat_idx(sn_port_cidr) #选一张路由表（感觉这个选择比较粗）
                         if is_add:
                             #添加表snat_idx中的默认路由
                             #http://www.cnblogs.com/iceocean/articles/1594488.html
                             ns_ipd.route.add_gateway(gw_ip_addr,
                                                      table=snat_idx)
-                            #指定源ip
+                            #指定源ip（如果源网段是来自于sn_port_cidr的，则跳到snat_idx表查路由表）
                             ns_ipr.rule.add(ip=sn_port_cidr,
                                             table=snat_idx,
                                             priority=snat_idx)
                             ip_lib.sysctl(cmd, namespace=self.ns_name)
                         else:
+                            #删除规则，删除路由
                             self._delete_gateway_device_if_exists(ns_ipd,
                                                                   gw_ip_addr,
                                                                   snat_idx)
@@ -395,6 +406,8 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                           'and device')
             LOG.exception(exc)
 
+    #gateway是sg port,sn_port是内部口，sn_int是内部口名称
+    #添加dvr到snat路由器的路由
     def _snat_redirect_add(self, gateway, sn_port, sn_int):
         """Adds rules and routes for SNAT redirection."""
         self._snat_redirect_modify(gateway, sn_port, sn_int, is_add=True)
@@ -461,8 +474,10 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         return next(
             (p for p in fip_ports if p['network_id'] == ext_net_id), None)
 
+    #通过fpr接口，获得rfp接口{只有fpr在fip路由器上存在时，才返回}
     def get_external_device_interface_name(self, ex_gw_port):
         fip_int = self.fip_ns.get_int_device_name(self.router_id)
+        #如果fip路由器上有fpr接口，则返回，rfp接口
         if ip_lib.device_exists(fip_int, namespace=self.fip_ns.get_name()):
             return self.fip_ns.get_rtr_ext_device_name(self.router_id)
 
@@ -476,22 +491,27 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
             gateway = self.get_snat_port_for_internal_port(p)
             id_name = self.get_internal_device_name(p['id'])
             if gateway:
+                #内部口有gateway,添加重定向
                 self._snat_redirect_add(gateway, p, id_name)
 
         for port in self.get_snat_interfaces():
+            #将snat路由器上对应的接口ip添加至arp表中，减少arp广播
             for ip in port['fixed_ips']:
                 self._update_arp_entry(ip['ip_address'],
                                        port['mac_address'],
                                        ip['subnet_id'],
                                        'add')
 
+    #对于dvr来讲，外部口gateway发生变化，自身不需要处理
     def external_gateway_updated(self, ex_gw_port, interface_name):
         pass
 
+    #对于dvr来讲，外部口gateway移除时，自身需要移除策略路由
     def external_gateway_removed(self, ex_gw_port, interface_name):
         # TODO(Carl) Should this be calling process_snat_dnat_for_fip?
-        self.process_floating_ip_nat_rules()
+        self.process_floating_ip_nat_rules() #处理floating-ip {为什么在这里处理？}
         if self.fip_ns:
+            #拿到rfp接口名称
             to_fip_interface_name = (
                 self.get_external_device_interface_name(ex_gw_port))
             self.process_floating_ip_addresses(to_fip_interface_name)
@@ -527,6 +547,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
             return
 
         # Add back the jump to float-snat
+        #  在snat链上加入float-snat链的跳转
         self.iptables_manager.ipv4['nat'].add_rule('snat', '-j $float-snat')
 
         rule = self._prevent_snat_for_internal_traffic_rule(ext_device_name)
@@ -555,11 +576,14 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
     def process_external(self):
         ex_gw_port = self.get_ex_gw_port()
         if ex_gw_port:
+            #存在gateway,说明分布式路由器可以出外网了
             self.create_dvr_fip_interfaces(ex_gw_port)
         super(DvrLocalRouter, self).process_external()
 
+    #创建agent
     def create_dvr_fip_interfaces(self, ex_gw_port):
         floating_ips = self.get_floating_ips()
+        #找一个同一network的
         fip_agent_port = self.get_floating_agent_gw_interface(
             ex_gw_port['network_id'])
         if fip_agent_port:

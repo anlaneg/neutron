@@ -78,7 +78,7 @@ def comment_rule(rule, comment):
     except ValueError:
         return '%s %s' % (rule, comment)
 
-
+#依据是否需要包装，取子串，构造不同的链名称（长度不同）
 def get_chain_name(chain_name, wrap=True):
     if wrap:
         return chain_name[:MAX_CHAIN_LEN_WRAP]
@@ -104,12 +104,14 @@ class IptablesRule(object):
         self.tag = tag
         self.comment = comment
 
+    #定义__eq__，以支持规则的remove
     def __eq__(self, other):
         return ((self.chain == other.chain) and
                 (self.rule == other.rule) and
                 (self.top == other.top) and
                 (self.wrap == other.wrap))
 
+    #支持__ne__,以支持规则的!= 检查
     def __ne__(self, other):
         return not self == other
 
@@ -130,11 +132,12 @@ class IptablesTable(object):
     def __init__(self, binary_name=binary_name):
         self.rules = []
         self.remove_rules = []
-        self.chains = set()
-        self.unwrapped_chains = set()
+        self.chains = set() #保存所有需要包装的链
+        self.unwrapped_chains = set() #保存所有不需要包装的链
         self.remove_chains = set()
         self.wrap_name = binary_name[:16]
 
+    #添加一条链（包装或者不包装）
     def add_chain(self, name, wrap=True):
         """Adds a named chain to the table.
 
@@ -153,12 +156,14 @@ class IptablesTable(object):
         else:
             self.unwrapped_chains.add(name)
 
+    #依据是否wrap，选择不同的链
     def _select_chain_set(self, wrap):
         if wrap:
             return self.chains
         else:
             return self.unwrapped_chains
 
+    #删除掉链
     def remove_chain(self, name, wrap=True):
         """Remove named chain.
 
@@ -176,23 +181,26 @@ class IptablesTable(object):
                       name)
             return
 
-        chain_set.remove(name)
+        chain_set.remove(name) #自链集合中移除
 
         if not wrap:
             # non-wrapped chains and rules need to be dealt with specially,
             # so we keep a list of them to be iterated over in apply()
-            self.remove_chains.add(name)
+            self.remove_chains.add(name) #未包装的链，需要考虑在被其它人用，故先添加到remove_chains
 
             # Add rules to remove that have a matching chain name or
             # a matching jump chain
+            #所有跳到此链的规则及此链上所有规则均需要被删除（记录在self.remove_rules中)
             jump_snippet = '-j %s' % name
             self.remove_rules += [str(r) for r in self.rules
                                   if r.chain == name or jump_snippet in r.rule]
         else:
+            #如果是保装的，则不记录remove_chains及remove_rules
             jump_snippet = '-j %s-%s' % (self.wrap_name, name)
 
         # Remove rules from list that have a matching chain name or
         # a matching jump chain
+        # 更新self.rules ,它应是所有删除本链及跳转到此链后的剩余规则
         self.rules = [r for r in self.rules
                       if r.chain != name and jump_snippet not in r.rule]
 
@@ -212,19 +220,23 @@ class IptablesTable(object):
         if wrap and chain not in self.chains:
             raise LookupError(_('Unknown chain: %r') % chain)
 
+        #如果规则中有'$'，则为rule中每个单词进行wrap操作
         if '$' in rule:
             rule = ' '.join(
                 self._wrap_target_chain(e, wrap) for e in rule.split(' '))
 
+        #添加一条规则
         self.rules.append(IptablesRule(chain, rule, wrap, top, self.wrap_name,
                                        tag, comment))
 
+    #将$导开为self.wrap_name 与s
     def _wrap_target_chain(self, s, wrap):
         if s.startswith('$'):
             s = ('%s-%s' % (self.wrap_name, get_chain_name(s[1:], wrap)))
 
         return s
 
+    #移除规则
     def remove_rule(self, chain, rule, wrap=True, top=False, comment=None):
         """Remove a rule from a chain.
 
@@ -243,6 +255,7 @@ class IptablesTable(object):
                                            self.wrap_name,
                                            comment=comment))
             if not wrap:
+                #不包装的，需要并入remove_rules中
                 self.remove_rules.append(str(IptablesRule(chain, rule, wrap,
                                                           top, self.wrap_name,
                                                           comment=comment)))
@@ -252,17 +265,20 @@ class IptablesTable(object):
                         {'chain': chain, 'rule': rule,
                          'top': top, 'wrap': wrap})
 
+    #获取指定链上，包装或者不包装的规则
     def _get_chain_rules(self, chain, wrap):
         chain = get_chain_name(chain, wrap)
         return [rule for rule in self.rules
                 if rule.chain == chain and rule.wrap == wrap]
 
+    #清空链上所有规则
     def empty_chain(self, chain, wrap=True):
         """Remove all rules from a chain."""
         chained_rules = self._get_chain_rules(chain, wrap)
         for rule in chained_rules:
             self.rules.remove(rule)
 
+    #清规所有指定tag的规则
     def clear_rules_by_tag(self, tag):
         if not tag:
             return
@@ -270,7 +286,7 @@ class IptablesTable(object):
         for rule in rules:
             self.rules.remove(rule)
 
-
+#https://rlworkman.net/howtos/iptables/cn/iptables-tutorial-cn-1.1.19.html#CONVENTIONSUSED
 class IptablesManager(object):
     """Wrapper for iptables.
 
@@ -301,11 +317,12 @@ class IptablesManager(object):
         else:
             self.execute = linux_utils.execute
 
-        self.use_ipv6 = use_ipv6
-        self.namespace = namespace
+        self.use_ipv6 = use_ipv6 #是否用ipv6
+        self.namespace = namespace #iptable-manager关联的namespace是哪个
         self.iptables_apply_deferred = False
-        self.wrap_name = binary_name[:16]
+        self.wrap_name = binary_name[:16] #防重复用（每个agent有自已的前缀）
 
+        #初始化ipv4,ipv6两张iptable表
         self.ipv4 = {'filter': IptablesTable(binary_name=self.wrap_name)}
         self.ipv6 = {'filter': IptablesTable(binary_name=self.wrap_name)}
 
@@ -313,13 +330,18 @@ class IptablesManager(object):
         # among the various neutron components. It sits at the very top
         # of FORWARD and OUTPUT.
         for tables in [self.ipv4, self.ipv6]:
+            #添加不包装的neutron-filter-top链
             tables['filter'].add_chain('neutron-filter-top', wrap=False)
+            #在forward链上顶层加-j neutron-filter-top
             tables['filter'].add_rule('FORWARD', '-j neutron-filter-top',
                                       wrap=False, top=True)
+            #在output链上顶层加-j neutron-filter-top
             tables['filter'].add_rule('OUTPUT', '-j neutron-filter-top',
                                       wrap=False, top=True)
 
+            #添加包装的local链
             tables['filter'].add_chain('local')
+            #在neutron-filter-top链上加-j $local {$符将被展开}
             tables['filter'].add_rule('neutron-filter-top', '-j $local',
                                       wrap=False)
 
@@ -329,25 +351,26 @@ class IptablesManager(object):
 
         if not state_less:
             self.ipv4.update(
-                {'mangle': IptablesTable(binary_name=self.wrap_name)})
+                {'mangle': IptablesTable(binary_name=self.wrap_name)}) #加入ipv4 mangle表
             builtin_chains[4].update(
                 {'mangle': ['PREROUTING', 'INPUT', 'FORWARD', 'OUTPUT',
-                            'POSTROUTING']})
+                            'POSTROUTING']}) #为mangle表，添加内置的链
             self.ipv6.update(
-                {'mangle': IptablesTable(binary_name=self.wrap_name)})
+                {'mangle': IptablesTable(binary_name=self.wrap_name)}) #加入ipv6 mangle表
             builtin_chains[6].update(
                 {'mangle': ['PREROUTING', 'INPUT', 'FORWARD', 'OUTPUT',
-                            'POSTROUTING']})
+                            'POSTROUTING']}) #为mangle表，添加内置的链
             self.ipv4.update(
-                {'nat': IptablesTable(binary_name=self.wrap_name)})
+                {'nat': IptablesTable(binary_name=self.wrap_name)}) #加入ipv4 nat表
             builtin_chains[4].update({'nat': ['PREROUTING',
-                                      'OUTPUT', 'POSTROUTING']})
+                                      'OUTPUT', 'POSTROUTING']}) #加入内置链
 
-        self.ipv4.update({'raw': IptablesTable(binary_name=self.wrap_name)})
-        builtin_chains[4].update({'raw': ['PREROUTING', 'OUTPUT']})
-        self.ipv6.update({'raw': IptablesTable(binary_name=self.wrap_name)})
-        builtin_chains[6].update({'raw': ['PREROUTING', 'OUTPUT']})
+        self.ipv4.update({'raw': IptablesTable(binary_name=self.wrap_name)}) #加入ipv4 raw表
+        builtin_chains[4].update({'raw': ['PREROUTING', 'OUTPUT']}) #加入raw表内置链
+        self.ipv6.update({'raw': IptablesTable(binary_name=self.wrap_name)}) #加入ipv6 raw表
+        builtin_chains[6].update({'raw': ['PREROUTING', 'OUTPUT']}) #加入raw表内置链
 
+        #将刚才构造的内置链，应用到对应表中。
         for ip_version in builtin_chains:
             if ip_version == 4:
                 tables = self.ipv4
@@ -356,45 +379,50 @@ class IptablesManager(object):
 
             for table, chains in six.iteritems(builtin_chains[ip_version]):
                 for chain in chains:
-                    tables[table].add_chain(chain)
+                    tables[table].add_chain(chain) #将链加入，且为包装
                     tables[table].add_rule(chain, '-j $%s' %
-                                           (chain), wrap=False)
+                                           (chain), wrap=False) #为linux中原生的同名链，加入 '-j $%s'实现跳转
 
         if not state_less:
             # Add a neutron-postrouting-bottom chain. It's intended to be
             # shared among the various neutron components. We set it as the
             # last chain of POSTROUTING chain.
             self.ipv4['nat'].add_chain('neutron-postrouting-bottom',
-                                       wrap=False)
+                                       wrap=False) #添加neutron-postrouting-bottom
             self.ipv4['nat'].add_rule('POSTROUTING',
                                       '-j neutron-postrouting-bottom',
-                                      wrap=False)
+                                      wrap=False) #在postrouting中跳转 neutron-postrouting-bottom
 
             # We add a snat chain to the shared neutron-postrouting-bottom
             # chain so that it's applied last.
             self.ipv4['nat'].add_chain('snat')
             self.ipv4['nat'].add_rule('neutron-postrouting-bottom',
                                       '-j $snat', wrap=False,
-                                      comment=ic.SNAT_OUT)
+                                      comment=ic.SNAT_OUT) #使其跳'snat'
 
             # And then we add a float-snat chain and jump to first thing in
             # the snat chain.
             self.ipv4['nat'].add_chain('float-snat')
-            self.ipv4['nat'].add_rule('snat', '-j $float-snat')
+            self.ipv4['nat'].add_rule('snat', '-j $float-snat') #在snat链上，使其跳‘float-snat'
 
             # Add a mark chain to mangle PREROUTING chain. It is used to
             # identify ingress packets from a certain interface.
+            #添加 mark 链，并使 报文一进来，跳到'-j $mark'
             self.ipv4['mangle'].add_chain('mark')
             self.ipv4['mangle'].add_rule('PREROUTING', '-j $mark')
 
+    #按版本返回不同的表集合
     def get_tables(self, ip_version):
         return {4: self.ipv4, 6: self.ipv6}[ip_version]
 
+    #获取链上所有规则
     def get_chain(self, table, chain, ip_version=4, wrap=True):
         try:
+            #拿到对应的表
             requested_table = self.get_tables(ip_version)[table]
         except KeyError:
             return []
+        #拿到对应链上的所有规则
         return requested_table._get_chain_rules(chain, wrap)
 
     def is_chain_empty(self, table, chain, ip_version=4, wrap=True):
@@ -417,13 +445,16 @@ class IptablesManager(object):
                 LOG.exception(msg)
                 raise n_exc.IpTablesApplyException(msg)
 
+    #开启iptables应用延迟
     def defer_apply_on(self):
         self.iptables_apply_deferred = True
 
+    #关闭iptable应用延迟，并应用
     def defer_apply_off(self):
         self.iptables_apply_deferred = False
         self._apply()
 
+    #如果当前延迟应用，则返回，否则调用_apply,进行应用
     def apply(self):
         if self.iptables_apply_deferred:
             return
@@ -435,12 +466,14 @@ class IptablesManager(object):
         if self.namespace:
             lock_name += '-' + self.namespace
 
+        #对此namespace中的iptables下发加锁
         with lockutils.lock(lock_name, utils.SYNCHRONIZED_PREFIX, True):
-            first = self._apply_synchronized()
+            first = self._apply_synchronized() #第一次生成
             if not cfg.CONF.AGENT.debug_iptables_rules:
                 return first
-            second = self._apply_synchronized()
+            second = self._apply_synchronized() #第二次生成，应为空
             if second:
+                #不为空，报错
                 msg = (_("IPTables Rules did not converge. Diff: %s") %
                        '\n'.join(second))
                 LOG.error(msg)
@@ -454,6 +487,7 @@ class IptablesManager(object):
             args = ['ip', 'netns', 'exec', self.namespace] + args
         return self.execute(args, run_as_root=True).split('\n')
 
+    #为iptables应用规则 
     def _apply_synchronized(self):
         """Apply the current in-memory set of iptables rules.
 
@@ -463,23 +497,25 @@ class IptablesManager(object):
 
         Returns a list of the changes that were sent to iptables-save.
         """
+        #如果开启ipv6,则加入对ipv6的管理
         s = [('iptables', self.ipv4)]
         if self.use_ipv6:
             s += [('ip6tables', self.ipv6)]
         all_commands = []  # variable to keep track all commands for return val
         for cmd, tables in s:
-            args = ['%s-save' % (cmd,)]
+            args = ['%s-save' % (cmd,)] #如iptables-save,采用此命令dump iptable的值到save_output中
             if self.namespace:
                 args = ['ip', 'netns', 'exec', self.namespace] + args
             save_output = self.execute(args, run_as_root=True)
             all_lines = save_output.split('\n')
             commands = []
             # Traverse tables in sorted order for predictable dump output
+            # 现在我们开始遍历dump出来的内容，并对其进行分析
             for table_name in sorted(tables):
                 table = tables[table_name]
                 # isolate the lines of the table we are modifying
                 start, end = self._find_table(all_lines, table_name)
-                old_rules = all_lines[start:end]
+                old_rules = all_lines[start:end] #有关于此表的所有规则
                 # generate the new table state we want
                 new_rules = self._modify_rules(old_rules, table, table_name)
                 # generate the iptables commands to get between the old state
@@ -488,6 +524,7 @@ class IptablesManager(object):
                 if changes:
                     # if there are changes to the table, we put on the header
                     # and footer that iptables-save needs
+                    #生成变更
                     commands += (['# Generated by iptables_manager'] +
                                  ['*%s' % table_name] + changes +
                                  ['COMMIT', '# Completed by iptables_manager'])
@@ -499,6 +536,7 @@ class IptablesManager(object):
                 args = ['ip', 'netns', 'exec', self.namespace] + args
             try:
                 # always end with a new line
+                # 执行 iptable-restore -n,并提供输入
                 commands.append('')
                 self.execute(args, process_input='\n'.join(commands),
                              run_as_root=True)
@@ -527,16 +565,19 @@ class IptablesManager(object):
                   "commands were issued", len(all_commands))
         return all_commands
 
+    #找iptable-save输出内容，定位table_name的位置
     def _find_table(self, lines, table_name):
         if len(lines) < 3:
             # length only <2 when fake iptables
             return (0, 0)
         try:
+            #起始位置匹配'*$(table_name)‘独占一行
             start = lines.index('*%s' % table_name)
         except ValueError:
             # Couldn't find table_name
             LOG.debug('Unable to find table %s', table_name)
             return (0, 0)
+        #结束位置匹配'COMMIT'，独占一行
         end = lines[start:].index('COMMIT') + start + 1
         return (start, end)
 
@@ -564,21 +605,25 @@ class IptablesManager(object):
         rules = set(map(str, table.rules))
 
         # we don't want to change any rules that don't belong to us so we start
+        # 我们不能改变任何不属于我们的规则
         # the new_filter with these rules
         # there are some rules that belong to us but they don't have the wrap
         # name. we want to add them in the right location in case our new rules
         # changed the order
         # (e.g. '-A FORWARD -j neutron-filter-top')
+        # 当前生效的所有规则中，如果规则本身没有被包装，且在我们的规则中找不到，则定义为new_filter
         new_filter = [line.strip() for line in current_lines
                       if self.wrap_name not in line and
                       line.strip() not in rules]
 
         # generate our list of chain names
+        # 我们自已的包装后的链名
         our_chains = [':%s-%s' % (self.wrap_name, name) for name in chains]
 
         # the unwrapped chains (e.g. neutron-filter-top) may already exist in
         # the new_filter since they aren't marked by the wrap_name so we only
         # want to add them if they arent' already there
+        # 针对所有不包装的链名，如果它不包含在new_filter中，则记录
         our_chains += [':%s' % name for name in unwrapped_chains
                        if not any(':%s' % name in s for s in new_filter)]
 
@@ -588,11 +633,14 @@ class IptablesManager(object):
             rule_str = str(rule)
 
             if rule.top:
+                #如果是顶层规则，则加入头部
                 # rule.top == True means we want this rule to be at the top.
                 our_top_rules += [rule_str]
             else:
+                #非顶层规则，加入到尾部
                 our_bottom_rules += [rule_str]
 
+        #链的顺序
         our_chains_and_rules = our_chains + our_top_rules + our_bottom_rules
 
         # locate the position immediately after the existing chains to insert

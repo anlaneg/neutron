@@ -70,6 +70,7 @@ class RouterInfo(object):
                                             ADDRESS_SCOPE_MARK_ID_MAX))
         self._address_scope_to_mark_id = {
             DEFAULT_ADDRESS_SCOPE: self.available_mark_ids.pop()}
+        #iptables管理
         self.iptables_manager = iptables_manager.IptablesManager(
             use_ipv6=use_ipv6,
             namespace=self.ns_name)
@@ -160,15 +161,22 @@ class RouterInfo(object):
     def get_ex_gw_port(self):
         return self.router.get('gw_port')
 
+    #获取配置中关于floating ip中的配置
     def get_floating_ips(self):
         """Filter Floating IPs to be hosted on this agent."""
         return self.router.get(lib_constants.FLOATINGIP_KEY, [])
 
     def floating_forward_rules(self, floating_ip, fixed_ip):
-        return [('PREROUTING', '-d %s/32 -j DNAT --to-destination %s' %
+        return [
+                #报文进来后在路由前，将所有目的地址为 $floating_ip/32 的报文，做dnat转换
+                #转换后目的地址为fixed_ip {实现公网ip到私网ip的转换}
+                 ('PREROUTING', '-d %s/32 -j DNAT --to-destination %s' %
                  (floating_ip, fixed_ip)),
+                #本地下发下来的报文,如果这个ip地址是由本机下发下来的，也需要考虑转换
                 ('OUTPUT', '-d %s/32 -j DNAT --to-destination %s' %
                  (floating_ip, fixed_ip)),
+                #在float-snat链上，将由$fixed_ip/32 的报文，做snat转换
+                #转换后目的地址为floating_ip{实现私网ip到公网ip的转换}，这个在路由完成后转换
                 ('float-snat', '-s %s/32 -j SNAT --to-source %s' %
                  (fixed_ip, floating_ip))]
 
@@ -176,6 +184,7 @@ class RouterInfo(object):
         mark_traffic_to_floating_ip = (
             'floatingip', '-d %s/32 -j MARK --set-xmark %s' % (
                 floating_ip, internal_mark))
+        #转发的报文，路由已查询
         mark_traffic_from_fixed_ip = (
             'FORWARD', '-s %s/32 -j $float-snat' % fixed_ip)
         return [mark_traffic_to_floating_ip, mark_traffic_from_fixed_ip]
@@ -212,15 +221,17 @@ class RouterInfo(object):
         Configures iptables rules for the floating ips of the given router
         """
         # Clear out all iptables rules for floating ips
+        # 删除掉所有被标记为'floating-ip'的规则
         self.iptables_manager.ipv4['nat'].clear_rules_by_tag('floating_ip')
 
-        floating_ips = self.get_floating_ips()
+        floating_ips = self.get_floating_ips() #取出所有floating-ips的配置
         # Loop once to ensure that floating ips are configured.
         for fip in floating_ips:
             # Rebuild iptables rules for the floating ip.
-            fixed = fip['fixed_ip_address']
-            fip_ip = fip['floating_ip_address']
+            fixed = fip['fixed_ip_address'] #私网ip
+            fip_ip = fip['floating_ip_address'] #公网ip
             for chain, rule in self.floating_forward_rules(fip_ip, fixed):
+                #在nat表上添加规则
                 self.iptables_manager.ipv4['nat'].add_rule(chain, rule,
                                                            tag='floating_ip')
 
@@ -337,7 +348,7 @@ class RouterInfo(object):
             return fip_statuses
 
         device = ip_lib.IPDevice(interface_name, namespace=self.ns_name)
-        existing_cidrs = self.get_router_cidrs(device)
+        existing_cidrs = self.get_router_cidrs(device) #取出此接口上所有ip地址
         new_cidrs = set()
         gw_cidrs = self._get_gw_ips_cidr()
 
@@ -431,7 +442,7 @@ class RouterInfo(object):
                                                      old_prefix,
                                                      self.ns_name)
 
-    #填加接口，并配置ip,发送地址通告
+    #添加接口，并配置ip,发送地址通告
     def _internal_network_added(self, ns_name, network_id, port_id,
                                 fixed_ips, mac_address,
                                 interface_name, prefix, mtu=None):
@@ -445,6 +456,7 @@ class RouterInfo(object):
         ip_cidrs = common_utils.fixed_ip_cidrs(fixed_ips)
         self.driver.init_router_port(
             interface_name, ip_cidrs, namespace=ns_name)#配置ip地址
+        #发送地址通告
         for fixed_ip in fixed_ips:
             ip_lib.send_ip_addr_adv_notif(ns_name,
                                           interface_name,
@@ -477,6 +489,7 @@ class RouterInfo(object):
             self.driver.unplug(interface_name, namespace=self.ns_name,
                                prefix=INTERNAL_DEV_PREFIX)
 
+    #获取namespace中已存在的所有设备（排除loopback)
     def _get_existing_devices(self):
         ip_wrapper = ip_lib.IPWrapper(namespace=self.ns_name)
         ip_devs = ip_wrapper.get_devices(exclude_loopback=True)
@@ -549,7 +562,7 @@ class RouterInfo(object):
         for p in new_ports:
             self.internal_network_added(p)
             LOG.debug("appending port %s to internal_ports cache", p)
-            self.internal_ports.append(p) #缓存port
+            self.internal_ports.append(p) #加入缓存port
             enable_ra = enable_ra or self._port_has_ipv6_subnet(p)
             for subnet in p['subnets']:
                 if ipv6_utils.is_ipv6_pd_enabled(subnet):
@@ -573,16 +586,17 @@ class RouterInfo(object):
         if updated_ports:
             for index, p in enumerate(internal_ports):
                 if not updated_ports.get(p['id']):
-                    continue
-                self.internal_ports[index] = updated_ports[p['id']]
+                    continue #未变更，不需要处理
+                self.internal_ports[index] = updated_ports[p['id']] #缓存更新
                 interface_name = self.get_internal_device_name(p['id'])
                 ip_cidrs = common_utils.fixed_ip_cidrs(p['fixed_ips'])
                 LOG.debug("updating internal network for port %s", p)
                 updated_cidrs += ip_cidrs
-                self.internal_network_updated(interface_name, ip_cidrs)
+                self.internal_network_updated(interface_name, ip_cidrs) #更新ip地址
                 enable_ra = enable_ra or self._port_has_ipv6_subnet(p)
 
         # Check if there is any pd prefix update
+        # ipv6处理
         for p in internal_ports:
             if p['id'] in (set(current_port_ids) & set(existing_port_ids)):
                 for subnet in p.get('subnets', []):
@@ -600,22 +614,23 @@ class RouterInfo(object):
                             enable_ra = True
 
         # Enable RA
+        # ipv6 ra处理
         if enable_ra:
             self.enable_radvd(internal_ports)
 
         existing_devices = self._get_existing_devices()
         current_internal_devs = set(n for n in existing_devices
-                                    if n.startswith(INTERNAL_DEV_PREFIX))
+                                    if n.startswith(INTERNAL_DEV_PREFIX)) #收集所有内部口
         current_port_devs = set(self.get_internal_device_name(port_id)
-                                for port_id in current_port_ids)
-        stale_devs = current_internal_devs - current_port_devs
+                                for port_id in current_port_ids) #当前配置中要求adminup的口
+        stale_devs = current_internal_devs - current_port_devs #不应存在的设备
         for stale_dev in stale_devs:
             LOG.debug('Deleting stale internal router device: %s',
                       stale_dev)
             self.agent.pd.remove_stale_ri_ifname(self.router_id, stale_dev)
             self.driver.unplug(stale_dev,
                                namespace=self.ns_name,
-                               prefix=INTERNAL_DEV_PREFIX)
+                               prefix=INTERNAL_DEV_PREFIX) #将口拔出
 
     def _list_floating_ip_cidrs(self):
         # Compute a list of addresses this router is supposed to have.
@@ -752,6 +767,7 @@ class RouterInfo(object):
     def _gateway_ports_equal(port1, port2):
         return port1 == port2
 
+    #移除掉不需要的qg口
     def _delete_stale_external_devices(self, interface_name):
         existing_devices = self._get_existing_devices()
         stale_devs = [dev for dev in existing_devices
@@ -767,23 +783,30 @@ class RouterInfo(object):
 
     def _process_external_gateway(self, ex_gw_port):
         # TODO(Carl) Refactor to clarify roles of ex_gw_port vs self.ex_gw_port
+        #现在有或者之前有，就返回现在或者之前的port_id
         ex_gw_port_id = (ex_gw_port and ex_gw_port['id'] or
                          self.ex_gw_port and self.ex_gw_port['id'])
 
         interface_name = None
         if ex_gw_port_id:
+            #qg口名称
             interface_name = self.get_external_device_name(ex_gw_port_id)
         if ex_gw_port:
+            #现在有gateway port
             if not self.ex_gw_port:
+                #之前没有gateway_port,处理为新添
                 self.external_gateway_added(ex_gw_port, interface_name)
                 self.agent.pd.add_gw_interface(self.router['id'],
                                                interface_name)
             elif not self._gateway_ports_equal(ex_gw_port, self.ex_gw_port):
+                #更新ex_gw_port
                 self.external_gateway_updated(ex_gw_port, interface_name)
         elif not ex_gw_port and self.ex_gw_port:
+            #现在没有，以前有，需要移除
             self.external_gateway_removed(self.ex_gw_port, interface_name)
             self.agent.pd.remove_gw_interface(self.router['id'])
         elif not ex_gw_port and not self.ex_gw_port:
+            #现在没有，以前也没有，则一定无法到达snat路由器，dvr路由器需要删除策略路由
             for p in self.internal_ports:
                 interface_name = self.get_internal_device_name(p['id'])
                 self.gateway_redirect_cleanup(interface_name)
@@ -887,6 +910,7 @@ class RouterInfo(object):
         finally:
             self.update_fip_statuses(fip_statuses)
 
+    #处理外部口
     def process_external(self):
         fip_statuses = {}
         try:

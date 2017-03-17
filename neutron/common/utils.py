@@ -79,13 +79,14 @@ def ensure_dir(dir_path):
     """Ensure a directory with 755 permissions mode."""
     fileutils.ensure_tree(dir_path, mode=0o755)
 
-
+#将sigpipe修改为default
 def _subprocess_setup():
     # Python installs a SIGPIPE handler by default. This is usually not what
     # non-Python subprocesses expect.
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 
+#创建子进程
 def subprocess_popen(args, stdin=None, stdout=None, stderr=None, shell=False,
                      env=None, preexec_fn=_subprocess_setup, close_fds=True):
 
