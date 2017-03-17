@@ -142,6 +142,7 @@ class RouterInfo(object):
         self._update_routing_table(operation, route, self.ns_name)
 
     #根据old,new计算出哪些需要add,哪些需要delete，并将其更新。
+    #更新路由
     def routes_updated(self, old_routes, new_routes):
         adds, removes = helpers.diff_list_of_dict(old_routes,
                                                   new_routes)

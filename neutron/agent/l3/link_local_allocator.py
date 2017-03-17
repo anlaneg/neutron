@@ -28,7 +28,7 @@ class LinkLocalAddressPair(netaddr.IPNetwork):
         return (netaddr.IPNetwork("%s/%s" % (self.network, self.prefixlen)),
                 netaddr.IPNetwork("%s/%s" % (self[-1], self.prefixlen)))
 
-
+#申请一个不用的地址ipv4中的linklocal地址
 class LinkLocalAllocator(ItemAllocator):
     """Manages allocation of link local IP addresses.
 

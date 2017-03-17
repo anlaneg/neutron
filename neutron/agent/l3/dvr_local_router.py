@@ -580,7 +580,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
             self.create_dvr_fip_interfaces(ex_gw_port)
         super(DvrLocalRouter, self).process_external()
 
-    #创建agent
+    #创建fip路由器对应的接口
     def create_dvr_fip_interfaces(self, ex_gw_port):
         floating_ips = self.get_floating_ips()
         #找一个同一network的
@@ -612,6 +612,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                 self.fip_ns.create_rtr_2_fip_link(self)
                 self.routes_updated([], self.router['routes'])
 
+    #更新路由表
     def update_routing_table(self, operation, route):
         # TODO(Swami): The static routes should be added to the
         # specific namespace based on the availability of the

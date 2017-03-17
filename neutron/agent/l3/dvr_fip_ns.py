@@ -283,13 +283,16 @@ class FipNamespace(namespaces.Namespace):
         """Creates external route table and adds routing rules."""
         # TODO(Swami): Rename the _get_snat_idx function to some
         # generic name that can be used for SNAT and FIP
+        #fip_2_rtx是fip路由器上，到dvr路由器的一端veth上的ip地址
         rt_tbl_index = ri._get_snat_idx(fip_2_rtr)
+        #生成fpr接口名
         interface_name = self.get_ext_device_name(
             self.agent_gateway_port['id'])
         try:
             # The lock is used to make sure another thread doesn't call to
             # update the gateway route before we are done initializing things.
             with self._fip_port_lock(interface_name):
+                #为fip路由器更新网关（策略路由表为rt_tbl_index)
                 self._update_gateway_route(self.agent_gateway_port,
                                            interface_name,
                                            tbl_index=rt_tbl_index)
@@ -308,6 +311,7 @@ class FipNamespace(namespaces.Namespace):
 
         # Now add the filter match rule for the table.
         ip_rule = ip_lib.IPRule(namespace=self.get_name())
+        #自接口fip_2_rtr口进来的包，均查询表rt_tbl_index(相当于每个租户在fip中用一张路由表）
         ip_rule.rule.add(ip=str(fip_2_rtr.ip),
                          iif=fip_2_rtr_name,
                          table=rt_tbl_index,
@@ -336,7 +340,7 @@ class FipNamespace(namespaces.Namespace):
         # throw exceptions.  Unsubscribe this external network so that
         # the next call will trigger the interface to be plugged.
         if not ipd.exists():
-            #报错，ipd不存在
+            #报错，ip设置不存在
             LOG.warning(_LW('DVR: FIP gateway port with interface '
                             'name: %(device)s does not exist in the given '
                             'namespace: %(ns)s'), {'device': interface_name,
@@ -361,7 +365,7 @@ class FipNamespace(namespaces.Namespace):
                     #gateay不在subnet中，认为本机可访问此地址(比较怪，
                     #scope：路由的范围，主要是link，即是和本设备有关的直接联机
                     ipd.route.add_route(gw_ip, scope='link')
-                #添加默认路由
+                #为表tbl_index添加默认路由（去往gw_ip的需要自ipd设备出)
                 self._add_default_gateway_for_fip(gw_ip, ipd, tbl_index)
             else:
                 #删除gateway
@@ -373,34 +377,43 @@ class FipNamespace(namespaces.Namespace):
         if not device.addr.list(to=ip_cidr):
             device.addr.add(ip_cidr, add_broadcast=False)
 
+    #创建vrouter-2-fip的连接
     def create_rtr_2_fip_link(self, ri):
         """Create interface between router and Floating IP namespace."""
         LOG.debug("Create FIP link interfaces for router %s", ri.router_id)
-        rtr_2_fip_name = self.get_rtr_ext_device_name(ri.router_id)
-        fip_2_rtr_name = self.get_int_device_name(ri.router_id)
+        rtr_2_fip_name = self.get_rtr_ext_device_name(ri.router_id) #router-2-fip接口
+        fip_2_rtr_name = self.get_int_device_name(ri.router_id) #fip-2-router接口
         fip_ns_name = self.get_name()
 
         # add link local IP to interface
         if ri.rtr_fip_subnet is None:
             ri.rtr_fip_subnet = self.local_subnets.allocate(ri.router_id)
-        rtr_2_fip, fip_2_rtr = ri.rtr_fip_subnet.get_pair()
+        rtr_2_fip, fip_2_rtr = ri.rtr_fip_subnet.get_pair() #获取这一组地址
+        
+        #构造ipdevice
         rtr_2_fip_dev = ip_lib.IPDevice(rtr_2_fip_name, namespace=ri.ns_name)
         fip_2_rtr_dev = ip_lib.IPDevice(fip_2_rtr_name, namespace=fip_ns_name)
 
         if not rtr_2_fip_dev.exists():
             ip_wrapper = ip_lib.IPWrapper(namespace=ri.ns_name)
+            #通过veth连接两个namespace
             rtr_2_fip_dev, fip_2_rtr_dev = ip_wrapper.add_veth(rtr_2_fip_name,
                                                                fip_2_rtr_name,
                                                                fip_ns_name)
             mtu = ri.get_ex_gw_port().get('mtu')
             if mtu:
+                #设置相同的mtu
                 rtr_2_fip_dev.link.set_mtu(mtu)
                 fip_2_rtr_dev.link.set_mtu(mtu)
+            #设置admin up
             rtr_2_fip_dev.link.set_up()
             fip_2_rtr_dev.link.set_up()
 
+        #为veth设置ip地址
         self._add_cidr_to_device(rtr_2_fip_dev, str(rtr_2_fip))
         self._add_cidr_to_device(fip_2_rtr_dev, str(fip_2_rtr))
+        
+        #添加到外网的默认规则路由
         self._add_rtr_ext_route_rule_to_route_table(ri, fip_2_rtr,
                                                     fip_2_rtr_name)
 
