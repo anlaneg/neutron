@@ -57,6 +57,7 @@ class OpenFlowSwitchMixin(object):
                       actions="output:%s" % port,
                       **self._conv_args(kwargs))
 
+    #指定为普通的l2/l3交换模式
     def install_normal(self, table_id=0, priority=0, **kwargs):
         self.add_flow(table=table_id,
                       priority=priority,

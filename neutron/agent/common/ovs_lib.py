@@ -43,7 +43,9 @@ INVALID_OFPORT = -1
 UNASSIGNED_OFPORT = []
 
 # OVS bridge fail modes
+#此模式为，如果连接不上controller，则不更改流，以原有配置运行
 FAILMODE_SECURE = 'secure'
+#此模式为，如果连接不上controller,则退化为标准二层交换机
 FAILMODE_STANDALONE = 'standalone'
 
 ovs_conf.register_ovs_agent_opts()
@@ -105,6 +107,7 @@ class BaseOVS(object):
 
     def __init__(self):
         self.vsctl_timeout = cfg.CONF.ovs_vsctl_timeout
+        #构造ovsdb(按ovsdb.api文件中的约定，取impl_vsctl文件中的类）
         self.ovsdb = ovsdb.API.get(self)
 
     def add_manager(self, connection_uri):
@@ -175,7 +178,9 @@ class BaseOVS(object):
 class OVSBridge(BaseOVS):
     def __init__(self, br_name, datapath_type=constants.OVS_DATAPATH_SYSTEM):
         super(OVSBridge, self).__init__()
+        #桥名称
         self.br_name = br_name
+        #桥datapath类型
         self.datapath_type = datapath_type
         self._default_cookie = generate_random_cookie()
 
@@ -190,16 +195,20 @@ class OVSBridge(BaseOVS):
         self.ovsdb.set_controller(self.br_name,
                                   controllers).execute(check_error=True)
 
+    #移除掉controller
     def del_controller(self):
         self.ovsdb.del_controller(self.br_name).execute(check_error=True)
 
+    #获取controller
     def get_controller(self):
         return self.ovsdb.get_controller(self.br_name).execute(
             check_error=True)
 
+    #设置桥与controller失联时，采用哪种模式
     def _set_bridge_fail_mode(self, mode):
         self.ovsdb.set_fail_mode(self.br_name, mode).execute(check_error=True)
 
+    #设置为安全模式
     def set_secure_mode(self):
         self._set_bridge_fail_mode(FAILMODE_SECURE)
 
@@ -220,6 +229,7 @@ class OVSBridge(BaseOVS):
         self.ovsdb.db_add('Bridge', self.br_name,
                           'protocols', *protocols).execute(check_error=True)
 
+    #创建ovs桥
     def create(self, secure_mode=False):
         with self.ovsdb.transaction() as txn:
             txn.add(
@@ -229,10 +239,12 @@ class OVSBridge(BaseOVS):
             # need to ensure that this version is enabled ; we could reuse
             # add_protocols, but doing ovsdb.db_add avoids doing two
             # transactions
+            # 使用of10版本
             txn.add(
                 self.ovsdb.db_add('Bridge', self.br_name,
                                   'protocols', constants.OPENFLOW10))
             if secure_mode:
+                #默认配置为安全模式
                 txn.add(self.ovsdb.set_fail_mode(self.br_name,
                                                  FAILMODE_SECURE))
 
@@ -314,6 +326,7 @@ class OVSBridge(BaseOVS):
         if action == 'del' and {} in kwargs_list:
             # the 'del' case simplifies itself if kwargs_list has at least
             # one item that matches everything
+            #删除掉所有流表内容
             self.run_ofctl('%s-flows' % action, [])
         else:
             if action != 'del':
@@ -333,9 +346,11 @@ class OVSBridge(BaseOVS):
     def delete_flows(self, **kwargs):
         self.do_action_flows('del', [kwargs])
 
+    #执行类似于 ovs-ofctl ‘dump-flows table=3’
     def dump_flows_for_table(self, table):
         return self.dump_flows_for(table=table)
 
+    #执行dump-flows命令
     def dump_flows_for(self, **kwargs):
         retval = None
         if "cookie" in kwargs:
