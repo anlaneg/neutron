@@ -208,13 +208,14 @@ def update_port_on_error(core_plugin, context, port_id, revert_value):
             except Exception:
                 LOG.exception(_LE("Failed to update port: %s"), port_id)
 
-
+#合成名称(前缀，名称，哈希）
 def get_interface_name(name, prefix='', max_len=n_const.DEVICE_NAME_MAX_LEN):
     """Construct an interface name based on the prefix and name.
 
     The interface name can not exceed the maximum length passed in. Longer
     names are hashed to help ensure uniqueness.
     """
+    #合成name
     requested_name = prefix + name
 
     if len(requested_name) <= max_len:
@@ -223,12 +224,16 @@ def get_interface_name(name, prefix='', max_len=n_const.DEVICE_NAME_MAX_LEN):
     # We can't just truncate because interfaces may be distinguished
     # by an ident at the end. A hash over the name should be unique.
     # Leave part of the interface name on for easier identification
+    # 长度超限
     if (len(prefix) + INTERFACE_HASH_LEN) > max_len:
         raise ValueError(_("Too long prefix provided. New name would exceed "
                            "given length for an interface name."))
 
+    # 计算合法名称长度（最大长度 - 前缀长度 - 哈希长度）
     namelen = max_len - len(prefix) - INTERFACE_HASH_LEN
+    # 计算hash值
     hashed_name = hashlib.sha1(encodeutils.to_utf8(name))
+    #取合法name,加上前缀，加上哈希，合并为新名称
     new_name = ('%(prefix)s%(truncated)s%(hash)s' %
                 {'prefix': prefix, 'truncated': name[0:namelen],
                  'hash': hashed_name.hexdigest()[0:INTERFACE_HASH_LEN]})
@@ -237,4 +242,5 @@ def get_interface_name(name, prefix='', max_len=n_const.DEVICE_NAME_MAX_LEN):
                  "%(new_name)s to fit."),
              {'requested_name': requested_name,
               'limit': max_len, 'new_name': new_name})
+    #返回名称
     return new_name

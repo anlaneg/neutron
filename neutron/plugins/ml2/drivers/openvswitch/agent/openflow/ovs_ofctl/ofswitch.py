@@ -76,6 +76,7 @@ class OpenFlowSwitchMixin(object):
                       actions="drop",
                       **self._conv_args(kwargs))
 
+    #移除所有流
     def uninstall_flows(self, **kwargs):
         # NOTE(yamamoto): super() points to ovs_lib.OVSBridge.
         # See ovs_bridge.py how this class is actually used.

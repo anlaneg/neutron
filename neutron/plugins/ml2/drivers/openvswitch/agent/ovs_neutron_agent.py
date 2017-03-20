@@ -1114,11 +1114,16 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             br.set_secure_mode()
             br.setup_controllers(self.conf)
             if cfg.CONF.AGENT.drop_flows_on_start:
+                #删除所有流
                 br.uninstall_flows()
+            #添加默认流
             br.setup_default_table()
+            
+            #以每个network来设置br
             self.phys_brs[physical_network] = br
 
             # interconnect physical and integration bridges using veth/patches
+            # 合成集成桥与物理桥连接名称
             int_if_name = p_utils.get_interface_name(
                 bridge, prefix=constants.PEER_INTEGRATION_PREFIX)
             phys_if_name = p_utils.get_interface_name(
@@ -1127,14 +1132,18 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             # be same, so check only one of them.
             # Not logging error here, as the interface may not exist yet.
             # Type check is done to cleanup wrong interface if any.
+            # 获得接口类型
             int_type = self.int_br.db_get_val("Interface",
                 int_if_name, "type", log_errors=False)
             if self.use_veth_interconnection:
                 # Drop ports if the interface types doesn't match the
                 # configuration value.
                 if int_type == 'patch':
+                    #如果类型为patch口，则删除int_br上的对应port
                     self.int_br.delete_port(int_if_name)
+                    #物理桥也需要删除port
                     br.delete_port(phys_if_name)
+                #如果int_if_name存在
                 device = ip_lib.IPDevice(int_if_name)
                 if device.exists():
                     device.link.delete()
