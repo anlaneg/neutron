@@ -27,6 +27,7 @@ class OVSAgentBridge(ofswitch.OpenFlowSwitchMixin,
     """Common code for bridges used by OVS agent"""
 
     def setup_controllers(self, conf):
+        #直接处理为删除controller,当前处理为不配置controller
         self.del_controller()
 
     def drop_port(self, in_port):

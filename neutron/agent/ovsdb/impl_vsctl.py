@@ -29,6 +29,7 @@ from neutron.agent.ovsdb import api as ovsdb
 LOG = logging.getLogger(__name__)
 
 
+#将多个更改通过一个ovs-vsctl命令一次性下发
 class Transaction(ovsdb.Transaction):
     def __init__(self, context, check_error=False, log_errors=True, opts=None):
         self.context = context
@@ -40,23 +41,30 @@ class Transaction(ovsdb.Transaction):
             self.opts += opts
         self.commands = []
 
+    #添加命令
     def add(self, command):
         self.commands.append(command)
         return command
 
+    #提交所有命令
     def commit(self):
         args = []
         for cmd in self.commands:
             cmd.result = None
             args += cmd.vsctl_args()
+        # 执行命令
         res = self.run_vsctl(args)
         if res is None:
+            #无输出
             return
         res = res.replace(r'\\', '\\').splitlines()
+        #构造每个命令的输出
         for i, record in enumerate(res):
             self.commands[i].result = record
+        #返回每个命令的输出
         return [cmd.result for cmd in self.commands]
 
+    #执行ovs-vsctl命令,返回输出
     def run_vsctl(self, args):
         full_args = ["ovs-vsctl"] + self.opts + args
         try:
@@ -80,6 +88,7 @@ class BaseCommand(ovsdb.Command):
         self.opts = [] if opts is None else opts
         self.args = [] if args is None else args
 
+    #按事务执行命令
     def execute(self, check_error=False, log_errors=True):
         with Transaction(self.context, check_error=check_error,
                          log_errors=log_errors) as txn:
@@ -177,6 +186,7 @@ class BrExistsCommand(DbCommand):
                                                     log_errors=False)
 
 
+#ovsdb控制
 class OvsdbVsctl(ovsdb.API):
     def create_transaction(self, check_error=False, log_errors=True, **kwargs):
         return Transaction(self.context, check_error, log_errors, **kwargs)
@@ -196,6 +206,7 @@ class OvsdbVsctl(ovsdb.API):
                 'Open_vSwitch', '.', 'manager_options', '@manager']
         return BaseCommand(self.context, '--id=@manager', args=args)
 
+    #添加br
     def add_br(self, name, may_exist=True, datapath_type=None):
         opts = ['--may-exist'] if may_exist else None
         params = [name]
@@ -204,10 +215,12 @@ class OvsdbVsctl(ovsdb.API):
                        'datapath_type=%s' % datapath_type]
         return BaseCommand(self.context, 'add-br', opts, params)
 
+    #删除br
     def del_br(self, name, if_exists=True):
         opts = ['--if-exists'] if if_exists else None
         return BaseCommand(self.context, 'del-br', opts, [name])
 
+    #检查br是否存在（通过执行list　$br-name命令）
     def br_exists(self, name):
         return BrExistsCommand(self.context, 'list', args=['Bridge', name])
 
@@ -279,12 +292,14 @@ class OvsdbVsctl(ovsdb.API):
         return BaseCommand(self.context, 'set-controller',
                            args=[bridge] + list(controllers))
 
+    #删除掉controller
     def del_controller(self, bridge):
         return BaseCommand(self.context, 'del-controller', args=[bridge])
 
     def get_controller(self, bridge):
         return MultiLineCommand(self.context, 'get-controller', args=[bridge])
 
+    #设置失效模式
     def set_fail_mode(self, bridge, mode):
         return BaseCommand(self.context, 'set-fail-mode', args=[bridge, mode])
 

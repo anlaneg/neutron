@@ -33,21 +33,30 @@ from neutron.plugins.ml2.drivers.openvswitch.agent.openflow.ovs_ofctl \
 class OVSIntegrationBridge(ovs_bridge.OVSAgentBridge):
     """openvswitch agent br-int specific logic."""
 
+    #集成桥默认配置
     def setup_default_table(self):
+        #标记为normal状态
         self.setup_canary_table()
+        #将表０下发为normal状态
         self.install_normal()
+        #将arp_spoof表置为drop状态（防arp攻击）
         self.install_drop(table_id=constants.ARP_SPOOF_TABLE)
 
+    #为canary_table中加入drop action
     def setup_canary_table(self):
         self.install_drop(constants.CANARY_TABLE)
 
+    #通过检查canary_table表中的flow，获知ovs状态
     def check_canary_table(self):
         canary_flows = self.dump_flows(constants.CANARY_TABLE)
+        #流已丢失，说明重启了
         if canary_flows == '':
             return constants.OVS_RESTARTED
+        #没有输出，说明ovs挂掉了
         elif canary_flows is None:
             return constants.OVS_DEAD
         else:
+            #有值，正常情况，说明ovs还在掌握中
             return constants.OVS_NORMAL
 
     def provision_local_vlan(self, port, lvid, segmentation_id):

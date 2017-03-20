@@ -979,6 +979,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                                          log_errors=log_errors)
             self.int_br.drop_port(in_port=port.ofport)
 
+    #配置集成桥
     def setup_integration_br(self):
         '''Setup the integration bridge.
 
@@ -987,16 +988,22 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         # ovs_lib.OVSBridge.create() will run
         #   ovs-vsctl -- --may-exist add-br BRIDGE_NAME
         # which does nothing if bridge already exists.
+        #　尝试着创建集成桥，并将设置为安全模式，删除掉已有的所有controller
+        #　这样通过本地agent来下发流表
         self.int_br.create()
         self.int_br.set_secure_mode()
         self.int_br.setup_controllers(self.conf)
 
         if self.conf.AGENT.drop_flows_on_start:
+            # 启动时，删除掉流表（默认为False)
             # Delete the patch port between br-int and br-tun if we're deleting
             # the flows on br-int, so that traffic doesn't get flooded over
             # while flows are missing.
+            #删除掉br-int与br-tun之间的patch口
             self.int_br.delete_port(self.conf.OVS.int_peer_patch_port)
+            #删除掉所有流
             self.int_br.uninstall_flows()
+        #集成桥下发默认流表
         self.int_br.setup_default_table()
 
     def setup_ancillary_bridges(self, integ_br, tun_br):
@@ -1081,13 +1088,16 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         self.phys_ofports = {}
         ip_wrapper = ip_lib.IPWrapper()
         ovs = ovs_lib.BaseOVS()
+        #获取系统所有的桥
         ovs_bridges = ovs.get_bridges()
+        #遍历配置的物理桥映射(physical_network 物理网络名称,bridge　桥名称)
         for physical_network, bridge in six.iteritems(bridge_mappings):
             LOG.info(_LI("Mapping physical network %(physical_network)s to "
                          "bridge %(bridge)s"),
                      {'physical_network': physical_network,
                       'bridge': bridge})
             # setup physical bridge
+            #指定了物理桥，但桥没有创建，直接挂掉
             if bridge not in ovs_bridges:
                 LOG.error(_LE("Bridge %(bridge)s for physical network "
                               "%(physical_network)s does not exist. Agent "
@@ -1095,6 +1105,8 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                           {'physical_network': physical_network,
                            'bridge': bridge})
                 sys.exit(1)
+            
+            #初始化物理桥
             br = self.br_phys_cls(bridge)
             # The bridge already exists, so create won't recreate it, but will
             # handle things like changing the datapath_type
@@ -1749,6 +1761,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                 port_info.get('removed') or
                 port_info.get('updated'))
 
+    #通过检查canary表的流，来感知ovs的状态
     def check_ovs_status(self):
         # Check for the canary flow
         status = self.int_br.check_canary_table()
@@ -1941,7 +1954,9 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         failed_devices_retries_map = {}
         while self._check_and_handle_signal():
             if self.fullsync:
+                #需要做一个全同部
                 LOG.info(_LI("rpc_loop doing a full sync."))
+                #标记后面需要做全同步，这里将任务已接收，故fullsync置为false
                 sync = True
                 self.fullsync = False
             port_info = {}
@@ -1950,7 +1965,10 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             LOG.debug("Agent rpc_loop - iteration:%d started",
                       self.iter_num)
             ovs_status = self.check_ovs_status()
+            
             if ovs_status == constants.OVS_RESTARTED:
+                #ovs已重启，所有流信息丢失，重新配置
+                #1.创建集成桥，为其配置默认配置
                 self.setup_integration_br()
                 self.setup_physical_bridges(self.bridge_mappings)
                 if self.enable_tunneling:
@@ -1980,10 +1998,12 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                     polling_manager.stop()
                     polling_manager.start()
             elif ovs_status == constants.OVS_DEAD:
+                #ovs现在挂掉了，我们联系不上它
                 # Agent doesn't apply any operations when ovs is dead, to
                 # prevent unexpected failure or crash. Sleep and continue
                 # loop in which ovs status will be checked periodically.
                 port_stats = self.get_port_stats({}, {})
+                #在这里睡一会，等会再检查ovs的状态，等待其恢复
                 self.loop_count_and_wait(start, port_stats)
                 continue
             # Notify the plugin of tunnel IP
