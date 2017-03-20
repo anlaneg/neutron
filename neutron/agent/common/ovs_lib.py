@@ -175,8 +175,8 @@ class BaseOVS(object):
 class OVSBridge(BaseOVS):
     def __init__(self, br_name, datapath_type=constants.OVS_DATAPATH_SYSTEM):
         super(OVSBridge, self).__init__()
-        self.br_name = br_name
-        self.datapath_type = datapath_type
+        self.br_name = br_name #处理哪个桥
+        self.datapath_type = datapath_type #默认datapath为system
         self._default_cookie = generate_random_cookie()
 
     @property
@@ -264,6 +264,7 @@ class OVSBridge(BaseOVS):
     def delete_port(self, port_name):
         self.ovsdb.del_port(port_name, self.br_name).execute()
 
+    #执行ofctl命令，子命令，子命令对应的参数，标准输入
     def run_ofctl(self, cmd, args, process_input=None):
         full_args = ["ovs-ofctl", cmd, self.br_name] + args
         # TODO(kevinbenton): This error handling is really brittle and only
@@ -272,6 +273,7 @@ class OVSBridge(BaseOVS):
         # take appropriate action based on the type of error.
         for i in range(1, 11):
             try:
+                #执行ovs-ofctl命令，传入的输出入为process_input
                 return utils.execute(full_args, run_as_root=True,
                                      process_input=process_input)
             except Exception as e:
@@ -324,6 +326,7 @@ class OVSBridge(BaseOVS):
                          for kw in kwargs_list]
             self.run_ofctl('%s-flows' % action, ['-'], '\n'.join(flow_strs))
 
+    #添加流
     def add_flow(self, **kwargs):
         self.do_action_flows('add', [kwargs])
 
@@ -696,6 +699,7 @@ def _build_flow_expr_str(flow_dict, cmd):
     actions = None
 
     if cmd == 'add':
+        #超时，失配超时，优先级
         flow_expr_arr.append("hard_timeout=%s" %
                              flow_dict.pop('hard_timeout', '0'))
         flow_expr_arr.append("idle_timeout=%s" %
