@@ -810,6 +810,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
     def add_router_interface(self, context, router_id, interface_info):
         # 1.通过路由器id,拿到路由器
         router = self._get_router(context, router_id)
+        # 2.用于区分是通过port来创建还是通过subnet来创建
         add_by_port, add_by_sub = self._validate_interface_info(interface_info)
         device_owner = self._get_device_owner(context, router_id)
 
