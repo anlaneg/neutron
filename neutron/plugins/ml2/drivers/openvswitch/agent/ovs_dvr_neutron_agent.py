@@ -144,6 +144,7 @@ class OVSDVRNeutronAgent(object):
             self.get_dvr_mac_address()
         self.conf = cfg.CONF
 
+    #安装dvr流表
     def setup_dvr_flows(self):
         self.setup_dvr_flows_on_integ_br()
         self.setup_dvr_flows_on_tun_br()
@@ -177,15 +178,18 @@ class OVSDVRNeutronAgent(object):
             LOG.error(_LE('DVR: Failed to obtain a valid local '
                           'DVR MAC address'))
 
+        # 如果mac地址获取失败，则退出
         if not self.in_distributed_mode():
             sys.exit(1)
 
+    #获取自身主机上的dvr mac地址
     def get_dvr_mac_address_with_retry(self):
         # Get the local DVR MAC Address from the Neutron Server.
         # This is the first place where we contact the server on startup
         # so retry in case it's not ready to respond
         for retry_count in reversed(range(5)):
             try:
+                #获取自身主机上的dvr mac地址
                 details = self.plugin_rpc.get_dvr_mac_address_by_host(
                     self.context, self.host)
             except oslo_messaging.MessagingTimeout as e:
@@ -208,6 +212,7 @@ class OVSDVRNeutronAgent(object):
         LOG.info(_LI("L2 Agent operating in DVR Mode with MAC %s"),
                  self.dvr_mac_address)
         # Remove existing flows in integration bridge
+        # 如果启动时需要移除所有流，则移除所有流定义
         if self.conf.AGENT.drop_flows_on_start:
             self.int_br.uninstall_flows()
 
@@ -215,15 +220,19 @@ class OVSDVRNeutronAgent(object):
         self.int_br.setup_canary_table()
 
         # Insert 'drop' action as the default for Table DVR_TO_SRC_MAC
+        # 添加drop action在表DVR_TO_SRC_MAC
         self.int_br.install_drop(table_id=constants.DVR_TO_SRC_MAC, priority=1)
 
+        # 在表DVR_TO_SRC_MAC_VLAN中添加drop action
         self.int_br.install_drop(table_id=constants.DVR_TO_SRC_MAC_VLAN,
                                  priority=1)
 
         # Insert 'normal' action as the default for Table LOCAL_SWITCHING
+        # 在表0中添加normal action
         self.int_br.install_normal(table_id=constants.LOCAL_SWITCHING,
                                    priority=1)
 
+        # 集成桥在local_switching表中暂时丢所有入接口物理桥的报文
         for physical_network in self.bridge_mappings:
             self.int_br.install_drop(table_id=constants.LOCAL_SWITCHING,
                                      priority=2,
@@ -250,6 +259,7 @@ class OVSDVRNeutronAgent(object):
         '''Setup up initial dvr flows into br-phys'''
 
         for physical_network in self.bridge_mappings:
+            #如果入接口为物理网桥，则跳到DVR_PROCESS_VLAN表处理
             self.phys_brs[physical_network].install_goto(
                 in_port=self.phys_ofports[physical_network],
                 priority=2,
@@ -293,11 +303,14 @@ class OVSDVRNeutronAgent(object):
         self.tun_br.remove_dvr_mac_tun(mac=mac)
 
     def _add_dvr_mac(self, mac):
+        #针对每个物理桥，为其添加dvr mac处理
         for physical_network in self.bridge_mappings:
             self._add_dvr_mac_for_phys_br(physical_network, mac)
+        #如果开启了tunnel 需要为tunnel桥添加dvr处理
         if self.enable_tunneling:
             self._add_dvr_mac_for_tun_br(mac)
         LOG.debug("Added DVR MAC flow for %s", mac)
+        #缓存dvr mac地址
         self.registered_dvr_macs.add(mac)
 
     def _remove_dvr_mac(self, mac):
@@ -306,16 +319,20 @@ class OVSDVRNeutronAgent(object):
         if self.enable_tunneling:
             self._remove_dvr_mac_for_tun_br(mac)
         LOG.debug("Removed DVR MAC flow for %s", mac)
+        #移除缓存的dvr mac地址
         self.registered_dvr_macs.remove(mac)
 
     def setup_dvr_mac_flows_on_all_brs(self):
+        #获取系统所有dvr路由器的mac地址
         dvr_macs = self.plugin_rpc.get_dvr_mac_address_list(self.context)
         LOG.debug("L2 Agent DVR: Received these MACs: %r", dvr_macs)
         for mac in dvr_macs:
             if mac['mac_address'] == self.dvr_mac_address:
                 continue
+            #添加dvr mac地址
             self._add_dvr_mac(mac['mac_address'])
 
+    # 处理dvr mac地址更新
     def dvr_mac_address_update(self, dvr_macs):
         if not self.dvr_mac_address:
             LOG.debug("Self mac unknown, ignoring this "

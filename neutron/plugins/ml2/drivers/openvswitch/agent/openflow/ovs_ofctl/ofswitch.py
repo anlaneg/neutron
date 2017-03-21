@@ -64,6 +64,7 @@ class OpenFlowSwitchMixin(object):
                       actions="normal",
                       **self._conv_args(kwargs))
 
+    # 添加跳转规则
     def install_goto(self, dest_table_id, table_id=0, priority=0, **kwargs):
         self.add_flow(table=table_id,
                       priority=priority,

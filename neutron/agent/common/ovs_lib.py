@@ -399,6 +399,7 @@ class OVSBridge(BaseOVS):
 
         return self.add_port(port_name, *attrs)
 
+    #创建本端patch口，并设置其对端名称为remote_name
     def add_patch_port(self, local_name, remote_name):
         attrs = [('type', 'patch'),
                  ('options', {'peer': remote_name})]

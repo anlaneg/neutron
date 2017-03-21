@@ -616,18 +616,23 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         return DEVICE_OWNER_ROUTER_INTF
 
     def _validate_interface_info(self, interface_info, for_removal=False):
+        #是否指明了port_id
         port_id_specified = interface_info and 'port_id' in interface_info
+        #是否指明了subnet_id
         subnet_id_specified = interface_info and 'subnet_id' in interface_info
         if not (port_id_specified or subnet_id_specified):
+            #两者都没指明，报错
             msg = _("Either subnet_id or port_id must be specified")
             raise n_exc.BadRequest(resource='router', msg=msg)
         for key in ('port_id', 'subnet_id'):
             if key not in interface_info:
                 continue
+            #确认为uuid格式
             err = validators.validate_uuid(interface_info[key])
             if err:
                 raise n_exc.BadRequest(resource='router', msg=err)
         if not for_removal:
+            #不容许同时指定
             if port_id_specified and subnet_id_specified:
                 msg = _("Cannot specify both subnet-id and port-id")
                 raise n_exc.BadRequest(resource='router', msg=msg)
@@ -645,11 +650,14 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         :raises: PortInUse if the device_id is not the same as the port's one.
         :raises: BadRequest if the port has no fixed IP.
         """
+        #通过port_id索引到具体的port配置
         port = self._core_plugin.get_port(context, port_id)
+        #如果port对应的设备与传入的不符，报错
         if port['device_id'] != device_id:
             raise n_exc.PortInUse(net_id=port['network_id'],
                                   port_id=port['id'],
                                   device_id=port['device_id'])
+        #本来是来创建的，但引火烧身，现在发现，数据库里存放的，没有配置ip,报错
         if not port['fixed_ips']:
             msg = _('Router port must have at least one fixed IP')
             raise n_exc.BadRequest(resource='router', msg=msg)
@@ -749,6 +757,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
     def _add_interface_by_subnet(self, context, router, subnet_id, owner):
         subnet = self._core_plugin.get_subnet(context, subnet_id)
         if not subnet['gateway_ip']:
+            #如果subnet没有配置gateway_ip，则不容许其连接到路由器（subnet是容许不配置gateway_ip的）
             msg = _('Subnet for router interface must have a gateway IP')
             raise n_exc.BadRequest(resource='router', msg=msg)
         if (subnet['ip_version'] == 6 and subnet['ipv6_ra_mode'] is None
@@ -777,7 +786,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
 
         port_data = {'tenant_id': subnet['tenant_id'],
                      'network_id': subnet['network_id'],
-                     'fixed_ips': [fixed_ip],
+                     'fixed_ips': [fixed_ip], #让路由器使用subnet的fixed_ip
                      'admin_state_up': True,
                      'device_id': router.id,
                      'device_owner': owner,
@@ -799,6 +808,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
 
     @db_api.retry_if_session_inactive()
     def add_router_interface(self, context, router_id, interface_info):
+        # 1.通过路由器id,拿到路由器
         router = self._get_router(context, router_id)
         add_by_port, add_by_sub = self._validate_interface_info(interface_info)
         device_owner = self._get_device_owner(context, router_id)
@@ -808,17 +818,20 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         cleanup_port = False
 
         if add_by_port:
+            #指定了port_id,将指定port绑定到路由器上
             port_id = interface_info['port_id']
             port = self._check_router_port(context, port_id, '')
             revert_value = {'device_id': '',
                             'device_owner': port['device_owner']}
             with p_utils.update_port_on_error(
                     self._core_plugin, context, port_id, revert_value):
+                #更新port为路由器所有
                 port, subnets = self._add_interface_by_port(
                     context, router, port_id, device_owner)
         # add_by_subnet is not used here, because the validation logic of
         # _validate_interface_info ensures that either of add_by_* is True.
         else:
+            #指定了subnet_id,通过subnet创建interface
             port, subnets, new_router_intf = self._add_interface_by_subnet(
                     context, router, interface_info['subnet_id'], device_owner)
             cleanup_port = new_router_intf  # only cleanup port we created
@@ -1815,6 +1828,7 @@ class L3_NAT_db_mixin(L3_NAT_dbonly_mixin, L3RpcNotifierMixin):
         notifier.info(context, router_event,
                       {'router_interface': router_interface_info})
 
+    # 添加路由器接口
     def add_router_interface(self, context, router_id, interface_info):
         router_interface_info = super(
             L3_NAT_db_mixin, self).add_router_interface(

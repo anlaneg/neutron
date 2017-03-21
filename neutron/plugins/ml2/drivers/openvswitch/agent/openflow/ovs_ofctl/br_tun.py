@@ -50,19 +50,25 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
     dvr_process_table_id = constants.DVR_PROCESS
     dvr_process_next_table_id = constants.PATCH_LV_TO_TUN
 
+    # 先画出tunnel的匹配路径，1.将集成桥来的流引向vlan2tunnel表;2.对vlan2tunnel表细分
+    # arp处理，单播处理，flood处理 3.定义学习远端信息表 ; 4.将arp,单播的默认表项定义为flood
     def setup_default_table(self, patch_int_ofport, arp_responder_enabled):
         # Table 0 (default) will sort incoming traffic depending on in_port
         with self.deferred() as deferred_br:
+            #　在表０添加规则，要求入接口为集成桥来的包，则前往PATCH_LV_TO_TUN表重查
             deferred_br.add_flow(priority=1,
                                  in_port=patch_int_ofport,
                                  actions="resubmit(,%s)" %
                                  constants.PATCH_LV_TO_TUN)
+            #先临时禁用流量处理
             deferred_br.add_flow(priority=0, actions="drop")
 
+            #　如果开启了arp响应
             if arp_responder_enabled:
                 # ARP broadcast-ed request go to the local ARP_RESPONDER
                 # table to be locally resolved
-                # REVISIT(yamamoto): add arp_op=arp.ARP_REQUEST matcher?
+                # REVISIT(yamamoto): add arp_op=arp.ARP_REQUEST matcher?、
+                # 如果在表PATCH_LV_TO_TUN表中遇到arp广播报文，则重查表ARP_RESPONDER
                 deferred_br.add_flow(table=constants.PATCH_LV_TO_TUN,
                                      priority=1,
                                      proto='arp',
@@ -73,6 +79,7 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
             # PATCH_LV_TO_TUN table will handle packets coming from patch_int
             # unicasts go to table UCAST_TO_TUN where remote addresses are
             # learnt
+            #　如果在表PATCH_LV_TO_TUN中遇到目的地为单播的报文，则重查表UCAST_TO_TUN
             deferred_br.add_flow(table=constants.PATCH_LV_TO_TUN,
                                  priority=0,
                                  dl_dst="00:00:00:00:00:00/01:00:00:00:00:00",
@@ -81,6 +88,7 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
 
             # Broadcasts/multicasts go to table FLOOD_TO_TUN that handles
             # flooding
+            #　如果在表PATCH_LV_TO_TUN中遇到目的地为组播的报文，则重查表FLOOD_TO_TUN
             deferred_br.add_flow(table=constants.PATCH_LV_TO_TUN,
                                  priority=0,
                                  dl_dst="01:00:00:00:00:00/01:00:00:00:00:00",
@@ -90,6 +98,7 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
             # Tables [tunnel_type]_TUN_TO_LV will set lvid depending on tun_id
             # for each tunnel type, and resubmit to table LEARN_FROM_TUN where
             # remote mac addresses will be learnt
+            # 暂时禁用gre,vxlan,GENEVE各表丢包
             for tunnel_type in constants.TUNNEL_NETWORK_TYPES:
                 deferred_br.add_flow(table=constants.TUN_TABLE[tunnel_type],
                                      priority=0, actions="drop")
@@ -110,6 +119,7 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
                             {'cookie': self.default_cookie,
                              'table': constants.UCAST_TO_TUN})
             # Once remote mac addresses are learnt, output packet to patch_int
+            # 学习远端地址，并指定出接口（这个需要查资料，不懂上面的格式）
             deferred_br.add_flow(table=constants.LEARN_FROM_TUN,
                                  priority=1,
                                  actions="learn(%s),output:%s" %
@@ -119,6 +129,7 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
             # remote mac addresses will be learned. For now, just add a
             # default flow that will resubmit unknown unicasts to table
             #  FLOOD_TO_TUN to treat them as broadcasts/multicasts
+            # 如果不命中时，需要跳到FLOOD_TO_TUN表
             deferred_br.add_flow(table=constants.UCAST_TO_TUN,
                                  priority=0,
                                  actions="resubmit(,%s)" %
@@ -127,6 +138,7 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
             if arp_responder_enabled:
                 # If none of the ARP entries correspond to the requested IP,
                 # the broadcast-ed packet is resubmitted to the flooding table
+                # 如果不命中，则跳到FLOOD_TO_TUN表
                 deferred_br.add_flow(table=constants.ARP_RESPONDER,
                                      priority=0,
                                      actions="resubmit(,%s)" %
@@ -134,6 +146,7 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
 
         # FLOOD_TO_TUN will handle flooding in tunnels based on lvid,
         # for now, add a default drop action
+        #　暂时禁止FLOOD_TO_TUN表对外发包
         self.install_drop(table_id=constants.FLOOD_TO_TUN)
 
     def provision_local_vlan(self, network_type, lvid, segmentation_id,

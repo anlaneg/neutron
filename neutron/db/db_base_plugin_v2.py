@@ -499,6 +499,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                 raise exc.InvalidInput(error_message=error_message)
 
         if validators.is_attr_set(s.get('gateway_ip')):
+            #如果subnet配置了gateway_ip就校验
             self._validate_ip_version(ip_ver, s['gateway_ip'], 'gateway_ip')
             is_gateway_not_valid = (
                 ipam.utils.check_gateway_invalid_in_subnet(

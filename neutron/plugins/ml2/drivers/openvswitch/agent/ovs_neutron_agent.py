@@ -148,6 +148,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
 
         self.use_veth_interconnection = ovs_conf.use_veth_interconnection
         self.veth_mtu = agent_conf.veth_mtu
+        # 将可用的本地vlan处理为1－4094
         self.available_local_vlans = set(moves.range(p_const.MIN_VLAN_TAG,
                                                      p_const.MAX_VLAN_TAG))
         self.tunnel_types = agent_conf.tunnel_types or []
@@ -354,6 +355,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         self.available_local_vlans.update(self._local_vlan_hints.values())
         self._local_vlan_hints = {}
 
+    # tun_br_ofports 变更reset
     def _reset_tunnel_ofports(self):
         self.tun_br_ofports = {p_const.TYPE_GENEVE: {},
                                p_const.TYPE_GRE: {},
@@ -607,6 +609,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         int_br.provision_local_vlan(port=int_port, lvid=lvid,
                                     segmentation_id=segmentation_id)
 
+    #分配本地vlan
     def provision_local_vlan(self, net_uuid, network_type, physical_network,
                              segmentation_id):
         '''Provisions a local VLAN.
@@ -622,20 +625,26 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         # will already be assigned, so check for that here before assigning a
         # new one.
         try:
+            #如果在vlan manager中可以找到net_uuid的配置，则返回
             lvm = self.vlan_manager.get(net_uuid)
             lvid = lvm.vlan
         except vlanmanager.MappingNotFound:
+            # 没有找到net_uuid的配置
             lvid = self._local_vlan_hints.pop(net_uuid, None)
             if lvid is None:
+                #又确认一遍，确实没有，检查是否有可用的本地vlan,分一个出来
                 if not self.available_local_vlans:
                     LOG.error(_LE("No local VLAN available for net-id=%s"),
                               net_uuid)
                     return
+                #没配一个可用的vlan出来
                 lvid = self.available_local_vlans.pop()
+            #将这个vlan信息及segment信息映射到此network上。
             self.vlan_manager.add(
                 net_uuid, lvid, network_type, physical_network,
                 segmentation_id)
 
+        #设置本地vlan使用
         LOG.info(_LI("Assigning %(vlan_id)s as local vlan for "
                      "net-id=%(net_uuid)s"),
                  {'vlan_id': lvid, 'net_uuid': net_uuid})
@@ -1032,6 +1041,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             ancillary_bridges.append(br)
         return ancillary_bridges
 
+    #初始化tunnel桥，实现tunnel桥与集成桥相连
     def setup_tunnel_br(self, tun_br_name=None):
         '''(re)initialize the tunnel bridge.
 
@@ -1041,22 +1051,31 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         :param tun_br_name: the name of the tunnel bridge.
         '''
         if not self.tun_br:
+            #为tunnel桥创建对象
             self.tun_br = self.br_tun_cls(tun_br_name)
 
         # tun_br.create() won't recreate bridge if it exists, but will handle
         # cases where something like datapath_type has changed
+        # 创建tunnel 桥，并配置为安全模式
         self.tun_br.create(secure_mode=True)
+        # 删除所有controller
         self.tun_br.setup_controllers(self.conf)
+        # 如果集成桥上不存在“集成桥连tunnel桥“的接口
+        # 或者 自身的此口编号是无效的
         if (not self.int_br.port_exists(self.conf.OVS.int_peer_patch_port) or
                 self.patch_tun_ofport == ovs_lib.INVALID_OFPORT):
+            #创建“集成桥连tunnel桥“的接口，并设置对端
             self.patch_tun_ofport = self.int_br.add_patch_port(
                 self.conf.OVS.int_peer_patch_port,
                 self.conf.OVS.tun_peer_patch_port)
+        #　如果tunnel桥上不存在“tunnel桥连集成桥“的接口，或者自身的此编号是无效的
         if (not self.tun_br.port_exists(self.conf.OVS.tun_peer_patch_port) or
                 self.patch_int_ofport == ovs_lib.INVALID_OFPORT):
+            #创建“tunnel桥到集成桥“的接口，并设置对端
             self.patch_int_ofport = self.tun_br.add_patch_port(
                 self.conf.OVS.tun_peer_patch_port,
                 self.conf.OVS.int_peer_patch_port)
+        #错误检测
         if ovs_lib.INVALID_OFPORT in (self.patch_tun_ofport,
                                       self.patch_int_ofport):
             LOG.error(_LE("Failed to create OVS patch port. Cannot have "
@@ -1064,6 +1083,8 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                           "version of OVS does not support tunnels or patch "
                           "ports. Agent terminated!"))
             sys.exit(1)
+        
+        #依据配置决定是否要清空tunnel桥上的所有流
         if self.conf.AGENT.drop_flows_on_start:
             self.tun_br.uninstall_flows()
 
@@ -1075,6 +1096,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         self.tun_br.setup_default_table(self.patch_int_ofport,
                                         self.arp_responder_enabled)
 
+    #配置物理桥
     def setup_physical_bridges(self, bridge_mappings):
         '''Setup the physical network bridges.
 
@@ -1091,6 +1113,8 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         #获取系统所有的桥
         ovs_bridges = ovs.get_bridges()
         #遍历配置的物理桥映射(physical_network 物理网络名称,bridge　桥名称)
+        #使物理桥与br-int相连，当前支持两种方式的相连（veth,patch口），临时禁止
+        #从物理桥来的报文被丢弃
         for physical_network, bridge in six.iteritems(bridge_mappings):
             LOG.info(_LI("Mapping physical network %(physical_network)s to "
                          "bridge %(bridge)s"),
@@ -1135,17 +1159,20 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             # 获得接口类型
             int_type = self.int_br.db_get_val("Interface",
                 int_if_name, "type", log_errors=False)
+            #如果采用veth连接方式
             if self.use_veth_interconnection:
                 # Drop ports if the interface types doesn't match the
                 # configuration value.
                 if int_type == 'patch':
-                    #如果类型为patch口，则删除int_br上的对应port
+                    #如果当前使用的类型为patch口，类型不一致，需要删除重建，
+                    #则先删除int_br上的对应port
                     self.int_br.delete_port(int_if_name)
                     #物理桥也需要删除port
                     br.delete_port(phys_if_name)
-                #如果int_if_name存在
+                #如果之前已存在veth口，则检查如果$int_if_name接口存在
                 device = ip_lib.IPDevice(int_if_name)
                 if device.exists():
+                    #则删除设备，并重新创建
                     device.link.delete()
                     # Give udev a chance to process its rules here, to avoid
                     # race conditions between commands launched by udev rules
@@ -1153,12 +1180,14 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                     utils.execute(['udevadm', 'settle', '--timeout=10'])
                 int_veth, phys_veth = ip_wrapper.add_veth(int_if_name,
                                                           phys_if_name)
+                #为集成桥和物理桥添加两端的端口
                 int_ofport = self.int_br.add_port(int_if_name)
                 phys_ofport = br.add_port(phys_if_name)
             else:
                 # Drop ports if the interface type doesn't match the
                 # configuration value
                 if int_type == 'veth':
+                    #如果当前使用的类型为veth,类型不一致，需要删除重建
                     self.int_br.delete_port(int_if_name)
                     br.delete_port(phys_if_name)
 
@@ -1166,33 +1195,41 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                 # exist we leave them alone, otherwise we create them but don't
                 # connect them until after the drop rules are in place.
                 if self.int_br.port_exists(int_if_name):
+                    #已存在，则获取接口编号
                     int_ofport = self.int_br.get_port_ofport(int_if_name)
                 else:
+                    #不存在，则创建接口，并返回编号
                     int_ofport = self.int_br.add_patch_port(
                         int_if_name, constants.NONEXISTENT_PEER)
+                #以同样的方式处理物理桥上的接口
                 if br.port_exists(phys_if_name):
                     phys_ofport = br.get_port_ofport(phys_if_name)
                 else:
                     phys_ofport = br.add_patch_port(
                         phys_if_name, constants.NONEXISTENT_PEER)
 
+            #记录编号
             self.int_ofports[physical_network] = int_ofport
             self.phys_ofports[physical_network] = phys_ofport
 
             # block all untranslated traffic between bridges
+            #　先定义为入接口的报文丢弃
             self.int_br.drop_port(in_port=int_ofport)
             br.drop_port(in_port=phys_ofport)
 
             if self.use_veth_interconnection:
                 # enable veth to pass traffic
+                # 使接口up
                 int_veth.link.set_up()
                 phys_veth.link.set_up()
                 if self.veth_mtu:
                     # set up mtu size for veth interfaces
+                    # 设置接口mtu
                     int_veth.link.set_mtu(self.veth_mtu)
                     phys_veth.link.set_mtu(self.veth_mtu)
             else:
                 # associate patch ports to pass traffic
+                #　实现patch口连接
                 self.int_br.set_db_attribute('Interface', int_if_name,
                                              'options', {'peer': phys_if_name})
                 br.set_db_attribute('Interface', phys_if_name,
@@ -1447,6 +1484,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                           "local_ip=%(lip)s remote_ip=%(rip)s"),
                       {'lip': self.local_ip, 'rip': remote_ip})
             return 0
+        # 添加tunnel口
         ofport = br.add_tunnel_port(port_name,
                                     remote_ip,
                                     self.local_ip,
@@ -1720,6 +1758,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
 
         try:
             for tunnel_type in self.tunnel_types:
+                #拉取指定tunnel类型的信息
                 details = self.plugin_rpc.tunnel_sync(self.context,
                                                       self.local_ip,
                                                       tunnel_type,
@@ -1979,13 +2018,18 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                 #ovs已重启，所有流信息丢失，重新配置
                 #1.创建集成桥，为其配置默认配置
                 self.setup_integration_br()
+                #2.实现物理桥与集成桥相连，并暂时禁止物理桥流来发向集成桥
                 self.setup_physical_bridges(self.bridge_mappings)
                 if self.enable_tunneling:
                     self._reset_tunnel_ofports()
+                    #3.创建tunnel桥，并设置tunnel桥的默认流
                     self.setup_tunnel_br()
                     self.setup_tunnel_br_flows()
+                    #4.标记tunnel全同步
                     tunnel_sync = True
+                # 如果开启分布式路由
                 if self.enable_distributed_routing:
+                    #内部成员reset
                     self.dvr_agent.reset_ovs_parameters(self.int_br,
                                                  self.tun_br,
                                                  self.patch_int_ofport,
@@ -2018,6 +2062,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             # Notify the plugin of tunnel IP
             if self.enable_tunneling and tunnel_sync:
                 try:
+                    #拉起tunnel配置
                     tunnel_sync = self.tunnel_sync()
                 except Exception:
                     LOG.exception(

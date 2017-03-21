@@ -100,6 +100,8 @@ class OVSIntegrationBridge(ovs_bridge.OVSAgentBridge):
                           dl_dst=dst_mac)
 
     def add_dvr_mac_vlan(self, mac, port):
+        #在表local_switching中，如果入接口为port,且源mac地址为$mac,则跳到表
+        #DVR_TO_SRC_MAC_VLAN处理
         self.install_goto(table_id=constants.LOCAL_SWITCHING,
                           priority=4,
                           in_port=port,

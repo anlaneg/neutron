@@ -59,6 +59,7 @@ class LocalVLANMapping(object):
         return id(self)
 
 
+#本地vlan管理
 class LocalVlanManager(object):
     """Singleton manager that maps internal VLAN mapping to external network
     segmentation ids.
@@ -87,6 +88,7 @@ class LocalVlanManager(object):
     def add(self, net_id, vlan, network_type, physical_network,
             segmentation_id, vif_ports=None):
         if net_id in self.mapping:
+            #如果已存在，则报错
             raise MappingAlreadyExists(net_id=net_id)
         self.mapping[net_id] = LocalVLANMapping(
             vlan, network_type, physical_network, segmentation_id, vif_ports)
@@ -97,12 +99,14 @@ class LocalVlanManager(object):
                 return network_id
         raise VifIdNotFound(vif_id=vif_id)
 
+    #获取对应net_id的vlan配置
     def get(self, net_id):
         try:
             return self.mapping[net_id]
         except KeyError:
             raise MappingNotFound(net_id=net_id)
 
+    # 丢掉net_id的vlan维护
     def pop(self, net_id):
         try:
             return self.mapping.pop(net_id)
