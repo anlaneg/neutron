@@ -141,6 +141,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
 
         self.fullsync = False
         # init bridge classes with configured datapath type.
+        # 按类型$datapath_type,生成桥实例
         self.br_int_cls, self.br_phys_cls, self.br_tun_cls = (
             functools.partial(bridge_classes[b],
                               datapath_type=ovs_conf.datapath_type)
@@ -432,6 +433,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                   {'network_id': network_id,
                    'ports': self.network_ports[network_id]})
 
+    #从旧的networks中移除具体一个port
     def _clean_network_ports(self, port_id):
         for port_set in self.network_ports.values():
             if port_id in port_set:
@@ -1606,6 +1608,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                 # The port disappeared and cannot be processed
                 LOG.info(_LI("Port %s was not found on the integration bridge "
                              "and will therefore not be processed"), device)
+                #记住哪些跳过的设备
                 skipped_devices.append(device)
                 continue
 
@@ -1636,6 +1639,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         return (skipped_devices, need_binding_devices,
                 failed_devices)
 
+    #更新port-id的network-id
     def _update_port_network(self, port_id, network_id):
         self._clean_network_ports(port_id)
         self.network_ports[network_id].add(port_id)
