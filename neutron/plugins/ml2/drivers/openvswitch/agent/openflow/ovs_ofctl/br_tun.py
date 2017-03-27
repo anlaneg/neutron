@@ -172,6 +172,8 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
 
     def install_flood_to_tun(self, vlan, tun_id, ports, deferred_br=None):
         br = deferred_br if deferred_br else self
+        #针对表FLOOD_TO_TUN,如果vlan为$vlan,则剥去vlan,设置隧道口id号
+        #并自$ports口输出
         br.mod_flow(table=constants.FLOOD_TO_TUN,
                     dl_vlan=vlan,
                     actions="strip_vlan,set_tunnel:%s,output:%s" %
@@ -226,6 +228,8 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
                             dl_vlan=vlan,
                             nw_dst='%s' % ip)
 
+    #设置tunnel 流量，如果入接口为port,则查询表constants.TUN_TABLE[network_type]
+    #确定处理。
     def setup_tunnel_port(self, network_type, port, deferred_br=None):
         br = deferred_br if deferred_br else self
         br.add_flow(priority=1,
@@ -233,6 +237,7 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
                     actions="resubmit(,%s)" %
                     constants.TUN_TABLE[network_type])
 
+    #删除对in_port的下发的所有流
     def cleanup_tunnel_port(self, port, deferred_br=None):
         br = deferred_br if deferred_br else self
         br.delete_flows(in_port=port)

@@ -382,12 +382,14 @@ class OVSBridge(BaseOVS):
         attrs = [('type', tunnel_type)]
         # TODO(twilson) This is an OrderedDict solely to make a test happy
         options = collections.OrderedDict()
+        #检查是否定制了udp port,定制了就包含此port
         vxlan_uses_custom_udp_port = (
             tunnel_type == p_const.TYPE_VXLAN and
             vxlan_udp_port != p_const.VXLAN_UDP_PORT
         )
         if vxlan_uses_custom_udp_port:
             options['dst_port'] = vxlan_udp_port
+            
         options['df_default'] = str(dont_fragment).lower()
         options['remote_ip'] = remote_ip
         options['local_ip'] = local_ip
@@ -397,6 +399,7 @@ class OVSBridge(BaseOVS):
             options['csum'] = str(tunnel_csum).lower()
         attrs.append(('options', options))
 
+        #创建port，并设置属性
         return self.add_port(port_name, *attrs)
 
     #创建本端patch口，并设置其对端名称为remote_name
@@ -409,6 +412,7 @@ class OVSBridge(BaseOVS):
         # get the interface name list for this bridge
         return self.ovsdb.list_ifaces(self.br_name).execute(check_error=True)
 
+    #列出桥上所有port名称
     def get_port_name_list(self):
         # get the port name list for this bridge
         return self.ovsdb.list_ports(self.br_name).execute(check_error=True)
@@ -481,6 +485,7 @@ class OVSBridge(BaseOVS):
 
     def get_vif_port_set(self):
         edge_ports = set()
+        #列出所有Interface,并相应给定的相应列
         results = self.get_ports_attributes(
             'Interface', columns=['name', 'external_ids', 'ofport'],
             if_exists=True)

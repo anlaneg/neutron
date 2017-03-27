@@ -151,7 +151,9 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         # 将可用的本地vlan处理为1－4094
         self.available_local_vlans = set(moves.range(p_const.MIN_VLAN_TAG,
                                                      p_const.MAX_VLAN_TAG))
+        #配置的要采用的隧道类型
         self.tunnel_types = agent_conf.tunnel_types or []
+        #是否启用l2　pop功能
         self.l2_pop = agent_conf.l2_population
         # TODO(ethuleau): Change ARP responder so it's not dependent on the
         #                 ML2 l2 population mechanism driver.
@@ -161,6 +163,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         host = self.conf.host
         self.agent_id = 'ovs-agent-%s' % host
 
+        #依据配置获知，是否启用了隧道
         self.enable_tunneling = bool(self.tunnel_types)
 
         # Validate agent configurations
@@ -172,16 +175,20 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         self.int_br = self.br_int_cls(ovs_conf.integration_bridge)
         self.setup_integration_br()
         # Stores port update notifications for processing in main rpc loop
+        # 用于存储收到被更新通知的port
         self.updated_ports = set()
         # Stores port delete notifications
+        # 用于存储收到被删除通知的port
         self.deleted_ports = set()
 
+        #用于存储给定network中的所有ports{映射表，用于记录每个network中有哪些port)
         self.network_ports = collections.defaultdict(set)
         # keeps association between ports and ofports to detect ofport change
         self.vifname_to_ofport_map = {}
         self.setup_rpc()
         self.bridge_mappings = self._parse_bridge_mappings(
             ovs_conf.bridge_mappings)
+        #配置物理桥
         self.setup_physical_bridges(self.bridge_mappings)
         self.vlan_manager = vlanmanager.LocalVlanManager()
 
@@ -357,6 +364,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
 
     # tun_br_ofports 变更reset
     def _reset_tunnel_ofports(self):
+        #记录的是每种隧道类型，去往某个remote ip的port-id是什么
         self.tun_br_ofports = {p_const.TYPE_GENEVE: {},
                                p_const.TYPE_GRE: {},
                                p_const.TYPE_VXLAN: {}}
@@ -394,6 +402,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             connection, constants.EXTENSION_DRIVER_TYPE,
             self.agent_api)
 
+    #记录port被更新
     def port_update(self, context, **kwargs):
         port = kwargs.get('port')
         # Put the port identifier in the updated_ports set.
@@ -403,12 +412,14 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         self.updated_ports.add(port['id'])
         LOG.debug("port_update message processed for port %s", port['id'])
 
+    #记录port被删除（如果port被移除，需要考虑之前刚收到Port的更新事件)
     def port_delete(self, context, **kwargs):
         port_id = kwargs.get('port_id')
         self.deleted_ports.add(port_id)
         self.updated_ports.discard(port_id)
         LOG.debug("port_delete message processed for port %s", port_id)
 
+    #　收到network更新事件后，检查缓存的此network中的所有port，将其加入到updated_ports表中
     def network_update(self, context, **kwargs):
         network_id = kwargs['network']['id']
         for port_id in self.network_ports[network_id]:
@@ -451,45 +462,63 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         # more secure
         self.sg_agent.remove_devices_filter(deleted_ports)
 
+    #处理tunnel口配置变化，按配置参数，响应类型变化，ip变化
     def tunnel_update(self, context, **kwargs):
         LOG.debug("tunnel_update received")
+        #如果没有启用隧道，不处理
         if not self.enable_tunneling:
             return
         tunnel_ip = kwargs.get('tunnel_ip')
         tunnel_type = kwargs.get('tunnel_type')
+        
         if not tunnel_type:
+            #没有指定隧道类型，不处理
             LOG.error(_LE("No tunnel_type specified, cannot create tunnels"))
             return
         if tunnel_type not in self.tunnel_types:
+            #指定了不认识的隧道类型，不处理
             LOG.error(_LE("tunnel_type %s not supported by agent"),
                       tunnel_type)
             return
         if tunnel_ip == self.local_ip:
+            #指定的隧道ip,非我们本机ip，不处理
             return
+        
+        #获取tunnel的名称
         tun_name = self.get_tunnel_name(tunnel_type, self.local_ip, tunnel_ip)
         if tun_name is None:
+            #tunnel名称获取失败，不处理
             return
+        
         if not self.l2_pop:
+            #如果没有启用l2_pop,创建tunnel口
             self._setup_tunnel_port(self.tun_br, tun_name, tunnel_ip,
                                     tunnel_type)
+            #设置flood到tunnel
             self._setup_tunnel_flood_flow(self.tun_br, tunnel_type)
 
+    #处理隧道口删除
     def tunnel_delete(self, context, **kwargs):
         LOG.debug("tunnel_delete received")
         if not self.enable_tunneling:
+            #未启用tunnel不处理
             return
         tunnel_ip = kwargs.get('tunnel_ip')
         if not tunnel_ip:
+            #未指定tunnel_ip报错，不处理
             LOG.error(_LE("No tunnel_ip specified, cannot delete tunnels"))
             return
         tunnel_type = kwargs.get('tunnel_type')
         if not tunnel_type:
+            #未指定隧道类型
             LOG.error(_LE("No tunnel_type specified, cannot delete tunnels"))
             return
         if tunnel_type not in self.tunnel_types:
+            #隧道类型不认识
             LOG.error(_LE("tunnel_type %s not supported by agent"),
                       tunnel_type)
             return
+        #用远端ip找到对应的tunnel port
         ofport = self.tun_br_ofports[tunnel_type].get(tunnel_ip)
         self.cleanup_tunnel_port(self.tun_br, ofport, tunnel_type)
 
@@ -1321,14 +1350,16 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         # if a port was added and then removed or viceversa since the agent
         # can't know the order of the operations, check the status of the port
         # to determine if the port was added or deleted
-        added_ports = {p['name'] for p in events['added']}
-        removed_ports = {p['name'] for p in events['removed']}
-        ports_removed_and_added = added_ports & removed_ports
+        added_ports = {p['name'] for p in events['added']} #添加ports
+        removed_ports = {p['name'] for p in events['removed']} #移除ports
+        ports_removed_and_added = added_ports & removed_ports #添加及删除port
         for p in ports_removed_and_added:
             if ovs_lib.BaseOVS().port_exists(p):
+                #从removed里排除掉，当前在ovsdb中的
                 events['removed'] = [e for e in events['removed']
                                      if e['name'] != p]
             else:
+                #从added中排除掉，当前不在ovsdb中的
                 events['added'] = [e for e in events['added']
                                    if e['name'] != p]
 
@@ -1471,8 +1502,10 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             LOG.debug("No VIF port for port %s defined on agent.", port_id)
         return port_needs_binding
 
+    #设置tunnel口，port_name 接口名，remote_ip 远端ip地址，tunnel_type 隧道类型
     def _setup_tunnel_port(self, br, port_name, remote_ip, tunnel_type):
         try:
+            #ip协议必须匹配
             if (netaddr.IPAddress(self.local_ip).version !=
                 netaddr.IPAddress(remote_ip).version):
                 LOG.error(_LE("IP version mismatch, cannot create tunnel: "
@@ -1484,22 +1517,27 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                           "local_ip=%(lip)s remote_ip=%(rip)s"),
                       {'lip': self.local_ip, 'rip': remote_ip})
             return 0
+        
         # 添加tunnel口
-        ofport = br.add_tunnel_port(port_name,
-                                    remote_ip,
-                                    self.local_ip,
-                                    tunnel_type,
-                                    self.vxlan_udp_port,
-                                    self.dont_fragment,
-                                    self.tunnel_csum)
+        ofport = br.add_tunnel_port(port_name,#按口名称
+                                    remote_ip,#远端ip
+                                    self.local_ip,#本端ip
+                                    tunnel_type,#隧道类型
+                                    self.vxlan_udp_port,#vxlan udp端口号
+                                    self.dont_fragment,#是否不分片
+                                    self.tunnel_csum)#是否要求重算udp checksum
+        
+        #创建失败处理
         if ofport == ovs_lib.INVALID_OFPORT:
             LOG.error(_LE("Failed to set-up %(type)s tunnel port to %(ip)s"),
                       {'type': tunnel_type, 'ip': remote_ip})
             return 0
 
+        #指明tunnel_type类型去向remote_ip的端口号是ofport
         self.tun_br_ofports[tunnel_type][remote_ip] = ofport
         # Add flow in default table to resubmit to the right
         # tunneling table (lvid will be set in the latter)
+        #设置为自此口进来的流，需要去查tunnel表
         br.setup_tunnel_port(tunnel_type, ofport)
         return ofport
 
@@ -1509,6 +1547,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             # Update flooding flows to include the new tunnel
             for vlan_mapping in self.vlan_manager:
                 if vlan_mapping.network_type == tunnel_type:
+                    #将vlan剥去，将tunnel id设置为segemntation,并输出去ofports口
                     br.install_flood_to_tun(vlan_mapping.vlan,
                                             vlan_mapping.segmentation_id,
                                             ofports)
@@ -1518,10 +1557,12 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             network_type, self.local_ip, remote_ip)
         if port_name is None:
             return 0
+        #配置tunnel port口
         ofport = self._setup_tunnel_port(br,
                                          port_name,
                                          remote_ip,
                                          network_type)
+        #设置为flood到tunnel口
         self._setup_tunnel_flood_flow(br, network_type)
         return ofport
 
@@ -1535,10 +1576,12 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             items = list(self.tun_br_ofports[tunnel_type].items())
             for remote_ip, ofport in items:
                 if ofport == tun_ofport:
+                    #删除隧道口
                     port_name = self.get_tunnel_name(
                         tunnel_type, self.local_ip, remote_ip)
                     br.delete_port(port_name)
                     br.cleanup_tunnel_port(ofport)
+                    #移除远端ip
                     self.tun_br_ofports[tunnel_type].pop(remote_ip, None)
 
     def treat_devices_added_or_updated(self, devices, ovs_restarted):
@@ -1772,10 +1815,12 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                                 tunnel_type, self.local_ip, remote_ip)
                             if tun_name is None:
                                 continue
+                            #设置tunnel口
                             self._setup_tunnel_port(self.tun_br,
                                                     tun_name,
                                                     tunnel['ip_address'],
                                                     tunnel_type)
+                    #无l2pop时，执行flood
                     self._setup_tunnel_flood_flow(self.tun_br, tunnel_type)
         except Exception as e:
             LOG.debug("Unable to sync tunnel IP %(local_ip)s: %(e)s",
@@ -1783,6 +1828,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             return True
         return False
 
+    #通过remote_ip来构通不同的tunnel名称
     @classmethod
     def get_tunnel_name(cls, network_type, local_ip, remote_ip):
         # This string is used to build port and interface names in OVS.
@@ -1868,6 +1914,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         # AlwaysPoll used by windows implementations
         # REVISIT (rossella_s) This needs to be reworked to hide implementation
         # details regarding polling in BasePollingManager subclasses
+        # linux 系统'get_events'不为None,故相应分支linux不走
         if sync or not (hasattr(polling_manager, 'get_events')):
             if sync:
                 LOG.info(_LI("Agent out of sync with plugin!"))
@@ -2002,7 +2049,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         failed_devices_retries_map = {}
         while self._check_and_handle_signal():
             if self.fullsync:
-                #需要做一个全同部
+                #需要做一个全同步
                 LOG.info(_LI("rpc_loop doing a full sync."))
                 #标记后面需要做全同步，这里将任务已接收，故fullsync置为false
                 sync = True
