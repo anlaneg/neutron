@@ -20,6 +20,7 @@ import sys
 import time
 
 from neutron_lib import constants
+from neutron_lib import context
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_service import loopingcall
@@ -39,7 +40,6 @@ from neutron.callbacks import resources as local_resources
 from neutron.common import config as common_config
 from neutron.common import constants as n_const
 from neutron.common import topics
-from neutron import context
 from neutron.plugins.ml2.drivers.agent import _agent_manager_base as amb
 from neutron.plugins.ml2.drivers.agent import capabilities
 from neutron.plugins.ml2.drivers.agent import config as cagt_config  # noqa
@@ -245,7 +245,8 @@ class CommonAgentLoop(service.Service):
                 segment = amb.NetworkSegment(
                     device_details.get('network_type'),
                     device_details['physical_network'],
-                    device_details.get('segmentation_id')
+                    device_details.get('segmentation_id'),
+                    device_details.get('mtu')
                 )
                 network_id = device_details['network_id']
                 self.rpc_callbacks.add_network(network_id, segment)

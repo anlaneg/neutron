@@ -18,7 +18,6 @@ import time
 import uuid
 
 from neutron_lib import exceptions
-from oslo_utils import excutils
 from ovs.db import idl
 from ovs import jsonrpc
 from ovs import poller
@@ -84,7 +83,7 @@ def row_by_record(idl_, table, record):
     if rl.table is None:
         raise ValueError(_("Table %s can only be queried by UUID") % table)
     if rl.column is None:
-        return t.rows.values()[0]
+        return next(iter(t.rows.values()))
     row = row_by_value(idl_, rl.table, rl.column, record)
     if rl.uuid_column:
         rows = getattr(row, rl.uuid_column)
@@ -118,24 +117,25 @@ def _get_schema_helper(connection, schema_name):
     return idl.SchemaHelper(None, resp.result)
 
 
-def get_schema_helper(connection, schema_name, retry=True):
+def get_schema_helper(connection, schema_name, retry=True,
+                      try_add_manager=True):
     try:
         return _get_schema_helper(connection, schema_name)
     except Exception:
-        with excutils.save_and_reraise_exception(reraise=False) as ctx:
-            if not retry:
-                ctx.reraise = True
-            # We may have failed due to set-manager not being called
-            helpers.enable_connection_uri(connection)
+        if not retry:
+            raise
+        # We may have failed due to set-manager not being called
+        if try_add_manager:
+            helpers.enable_connection_uri(connection, set_timeout=True)
 
-            # There is a small window for a race, so retry up to a second
-            @tenacity.retry(wait=tenacity.wait_exponential(multiplier=0.01),
-                            stop=tenacity.stop_after_delay(1),
-                            reraise=True)
-            def do_get_schema_helper():
-                return _get_schema_helper(connection, schema_name)
+        # There is a small window for a race, so retry up to a second
+        @tenacity.retry(wait=tenacity.wait_exponential(multiplier=0.01),
+                        stop=tenacity.stop_after_delay(1),
+                        reraise=True)
+        def do_get_schema_helper():
+            return _get_schema_helper(connection, schema_name)
 
-            return do_get_schema_helper()
+        return do_get_schema_helper()
 
 
 def wait_for_change(_idl, timeout, seqno=None):
@@ -268,7 +268,7 @@ def db_replace_record(obj):
     api.Command object.
     """
     if isinstance(obj, collections.Mapping):
-        for k, v in six.iteritems(obj):
+        for k, v in obj.items():
             if isinstance(v, api.Command):
                 obj[k] = v.result
     elif (isinstance(obj, collections.Sequence)

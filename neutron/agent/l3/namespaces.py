@@ -127,7 +127,7 @@ class RouterNamespace(Namespace):
     @check_ns_existence
     def delete(self):
         ns_ip = ip_lib.IPWrapper(namespace=self.name)
-        for d in ns_ip.get_devices(exclude_loopback=True):
+        for d in ns_ip.get_devices():
             if d.name.startswith(INTERNAL_DEV_PREFIX):
                 # device is on default bridge
                 #qr口删除

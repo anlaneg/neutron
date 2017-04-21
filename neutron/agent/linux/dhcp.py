@@ -78,7 +78,7 @@ class DictModel(dict):
             else:
                 return item
 
-        for key, value in six.iteritems(self):
+        for key, value in self.items():
             if isinstance(value, (list, tuple)):
                 # Keep the same type but convert dicts to DictModels
                 self[key] = type(value)(
@@ -1337,7 +1337,7 @@ class DeviceManager(object):
         ns_ip = ip_lib.IPWrapper(namespace=network.namespace)
         if not ns_ip.netns.exists(network.namespace):
             return
-        for d in ns_ip.get_devices(exclude_loopback=True):
+        for d in ns_ip.get_devices():
             # delete all devices except current active DHCP port device
             if d.name != skip_dev_name:
                 LOG.debug("Found stale device %s, deleting", d.name)

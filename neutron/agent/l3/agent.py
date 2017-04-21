@@ -16,6 +16,7 @@
 import eventlet
 import netaddr
 from neutron_lib import constants as lib_const
+from neutron_lib import context as n_context
 from oslo_config import cfg
 from oslo_context import context as common_context
 from oslo_log import log as logging
@@ -53,7 +54,6 @@ from neutron.common import ipv6_utils
 from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron.common import utils
-from neutron import context as n_context
 from neutron import manager
 
 LOG = logging.getLogger(__name__)
@@ -209,25 +209,21 @@ class L3NATAgent(ha.AgentMixin,
                 self.neutron_service_plugins = (
                     self.plugin_rpc.get_service_plugin_list(self.context))
             except oslo_messaging.RemoteError as e:
-                with excutils.save_and_reraise_exception() as ctx:
-                    ctx.reraise = False
-                    LOG.warning(_LW('l3-agent cannot check service plugins '
-                                    'enabled at the neutron server when '
-                                    'startup due to RPC error. It happens '
-                                    'when the server does not support this '
-                                    'RPC API. If the error is '
-                                    'UnsupportedVersion you can ignore this '
-                                    'warning. Detail message: %s'), e)
+                LOG.warning(_LW('l3-agent cannot check service plugins '
+                                'enabled at the neutron server when '
+                                'startup due to RPC error. It happens '
+                                'when the server does not support this '
+                                'RPC API. If the error is '
+                                'UnsupportedVersion you can ignore this '
+                                'warning. Detail message: %s'), e)
                 self.neutron_service_plugins = None
             except oslo_messaging.MessagingTimeout as e:
-                with excutils.save_and_reraise_exception() as ctx:
-                    ctx.reraise = False
-                    LOG.warning(_LW('l3-agent cannot contact neutron server '
-                                    'to retrieve service plugins enabled. '
-                                    'Check connectivity to neutron server. '
-                                    'Retrying... '
-                                    'Detailed message: %(msg)s.'), {'msg': e})
-                    continue
+                LOG.warning(_LW('l3-agent cannot contact neutron server '
+                                'to retrieve service plugins enabled. '
+                                'Check connectivity to neutron server. '
+                                'Retrying... '
+                                'Detailed message: %(msg)s.'), {'msg': e})
+                continue
             break
 
         self.init_extension_manager(self.plugin_rpc)
@@ -350,7 +346,20 @@ class L3NATAgent(ha.AgentMixin,
 
         self.router_info[router_id] = ri
 
-        ri.initialize(self.process_monitor)
+        # If initialize() fails, cleanup and retrigger complete sync
+        try:
+            ri.initialize(self.process_monitor)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                del self.router_info[router_id]
+                LOG.exception(_LE('Error while initializing router %s'),
+                              router_id)
+                self.namespaces_manager.ensure_router_cleanup(router_id)
+                try:
+                    ri.delete()
+                except Exception:
+                    LOG.exception(_LE('Error while deleting router %s'),
+                                  router_id)
 
     def _safe_router_removed(self, router_id):
         """Try to delete a router and return True if successful."""
@@ -593,7 +602,7 @@ class L3NATAgent(ha.AgentMixin,
                             lib_const.L3_AGENT_MODE_DVR_SNAT)
                         if ext_net_id:
                             ns_manager.keep_ext_net(ext_net_id)
-                        elif is_snat_agent:
+                        elif is_snat_agent and not r.get('ha'):
                             ns_manager.ensure_snat_cleanup(r['id'])
                     # For HA routers check that DB state matches actual state
                     if r.get('ha'):

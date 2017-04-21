@@ -18,7 +18,6 @@ import pprint
 from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import fixture
 
-from neutron.common import utils
 from neutron import objects
 from neutron.tests import base as test_base
 
@@ -34,6 +33,7 @@ object_data = {
     'AutoAllocatedTopology': '1.0-74642e58c53bf3610dc224c59f81b242',
     'DistributedPortBinding': '1.0-39c0d17b281991dcb66716fee5a8bef2',
     'DNSNameServer': '1.0-bf87a85327e2d812d1666ede99d9918b',
+    'ExternalNetwork': '1.0-53d885e033cb931f9bb3bdd6bbe3f0ce',
     'ExtraDhcpOpt': '1.0-632f689cbeb36328995a7aed1d0a78d3',
     'FlatAllocation': '1.0-bf666f24f4642b047eeca62311fbcb41',
     'Flavor': '1.0-82194de5c9aafce08e8527bb7977f5c6',
@@ -51,10 +51,11 @@ object_data = {
     'Network': '1.0-f2f6308f79731a767b92b26b0f4f3849',
     'NetworkDNSDomain': '1.0-420db7910294608534c1e2e30d6d8319',
     'NetworkPortSecurity': '1.0-b30802391a87945ee9c07582b4ff95e3',
-    'NetworkSegment': '1.0-40707ef6bd9a0bf095038158d995cc7d',
-    'Port': '1.0-638f6b09a3809ebd8b2b46293f56871b',
+    'NetworkSegment': '1.0-57b7f2960971e3b95ded20cbc59244a8',
+    'Port': '1.1-5bf48d12a7bf7f5b7a319e8003b437a5',
     'PortBinding': '1.0-3306deeaa6deb01e33af06777d48d578',
     'PortBindingLevel': '1.0-de66a4c61a083b8f34319fa9dde5b060',
+    'PortDataPlaneStatus': '1.0-25be74bda46c749653a10357676c0ab2',
     'PortDNS': '1.0-201cf6d057fde75539c3d1f2bbf05902',
     'PortSecurity': '1.0-b30802391a87945ee9c07582b4ff95e3',
     'ProviderResourceAssociation': '1.0-05ab2d5a3017e5ce9dd381328f285f34',
@@ -64,8 +65,13 @@ object_data = {
     'QosMinimumBandwidthRule': '1.2-314c3419f4799067cc31cc319080adff',
     'QosRuleType': '1.2-e6fd08fcca152c339cbd5e9b94b1b8e7',
     'QosPolicy': '1.4-50460f619c34428ec5651916e938e5a0',
+    'Quota': '1.0-6bb6a0f1bd5d66a2134ffa1a61873097',
+    'QuotaUsage': '1.0-6fbf820368681aac7c5d664662605cf9',
+    'Reservation': '1.0-49929fef8e82051660342eed51b48f2a',
+    'ResourceDelta': '1.0-a980b37e0a52618b5af8db29af18be76',
     'Route': '1.0-a9883a63b416126f9e345523ec09483b',
     'RouterExtraAttributes': '1.0-ef8d61ae2864f0ec9af0ab7939cab318',
+    'RouterL3AgentBinding': '1.0-c5ba6c95e3a4c1236a55f490cd67da82',
     'RouterRoute': '1.0-07fc5337c801fb8c6ccfbcc5afb45907',
     'SecurityGroup': '1.0-e26b90c409b31fd2e3c6fcec402ac0b9',
     'SecurityGroupRule': '1.0-e9b8dace9d48b936c62ad40fe1f339d5',
@@ -76,6 +82,7 @@ object_data = {
     'SubnetPoolPrefix': '1.0-13c15144135eb869faa4a76dc3ee3b6c',
     'SubnetServiceType': '1.0-05ae4cdb2a9026a697b143926a1add8c',
     'SubPort': '1.0-72c8471068db1f0491b5480fe49b52bb',
+    'Tag': '1.0-1a0d20379920ffa3cebfd3e016d2f7a0',
     'Trunk': '1.1-aa3922b39e37fbb89886c2ee8715cf49',
     'VlanAllocation': '1.0-72636c1b7d5c8eef987bd09666e64f3e',
     'VxlanAllocation': '1.0-934638cd32d00f81d6fbf93c8eb5755a',
@@ -89,7 +96,7 @@ class TestObjectVersions(test_base.BaseTestCase):
         super(TestObjectVersions, self).setUp()
         # NOTE(ihrachys): seed registry with all objects under neutron.objects
         # before validating the hashes
-        utils.import_modules_recursively(os.path.dirname(objects.__file__))
+        objects.register_objects()
 
     def test_versions(self):
         checker = fixture.ObjectVersionChecker(
