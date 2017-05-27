@@ -22,15 +22,16 @@ import eventlet
 import mock
 import netaddr
 from neutron_lib import constants
+from neutron_lib import context
 from neutron_lib import exceptions as lib_exc
 from neutron_lib.plugins import directory
 from neutron_lib.utils import helpers
+from neutron_lib.utils import net
 from oslo_concurrency import lockutils
 from oslo_config import cfg
 from oslo_utils import importutils
 from oslo_utils import netutils
 from oslo_utils import uuidutils
-import six
 from sqlalchemy import orm
 import testtools
 from testtools import matchers
@@ -47,13 +48,13 @@ from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
 from neutron.common import test_lib
 from neutron.common import utils
-from neutron import context
 from neutron.db import api as db_api
 from neutron.db import db_base_plugin_common
 from neutron.db import ipam_backend_mixin
 from neutron.db.models import l3 as l3_models
 from neutron.db.models import securitygroup as sg_models
 from neutron.db import models_v2
+from neutron.db import rbac_db_models
 from neutron.db import standard_attr
 from neutron.ipam import exceptions as ipam_exc
 from neutron.tests import base
@@ -123,10 +124,10 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
         cfg.CONF.set_override(
             'service_plugins',
             [test_lib.test_config.get(key, default)
-             for key, default in six.iteritems(service_plugins or {})]
+             for key, default in (service_plugins or {}).items()]
         )
 
-        cfg.CONF.set_override('base_mac', "12:34:56:78:90:ab")
+        cfg.CONF.set_override('base_mac', "12:34:56:78:00:00")
         cfg.CONF.set_override('max_dns_nameservers', 2)
         cfg.CONF.set_override('max_subnet_host_routes', 2)
         self.api = router.APIRouter()
@@ -946,6 +947,21 @@ class TestPortsV2(NeutronDbPluginV2TestCase):
             self.assertIn('mac_address', port['port'])
             self._delete('ports', port['port']['id'])
 
+    def test_create_port_None_values(self):
+        with self.network() as network:
+            keys = ['device_owner', 'name', 'device_id']
+            for key in keys:
+                # test with each as None and rest as ''
+                kwargs = {k: '' for k in keys}
+                kwargs[key] = None
+                self._create_port(self.fmt,
+                                  network['network']['id'],
+                                  webob.exc.HTTPClientError.code,
+                                  tenant_id='tenant_id',
+                                  fixed_ips=[],
+                                  set_context=False,
+                                  **kwargs)
+
     def test_create_port_public_network_with_ip(self):
         with self.network(shared=True) as network:
             ip_net = netaddr.IPNetwork('10.0.0.0/24')
@@ -1522,6 +1538,22 @@ fixed_ips=ip_address%%3D%s&fixed_ips=ip_address%%3D%s&fixed_ips=subnet_id%%3D%s
         res = req.get_response(self.api)
         self.assertEqual(webob.exc.HTTPNoContent.code, res.status_int)
 
+    def test_delete_network_port_exists_owned_by_network_race(self):
+        res = self._create_network(fmt=self.fmt, name='net',
+                                   admin_state_up=True)
+        network = self.deserialize(self.fmt, res)
+        network_id = network['network']['id']
+        self._create_port(self.fmt, network_id,
+                          device_owner=constants.DEVICE_OWNER_DHCP)
+        # skip first port delete to simulate create after auto clean
+        plugin = directory.get_plugin()
+        p = mock.patch.object(plugin, 'delete_port')
+        mock_del_port = p.start()
+        mock_del_port.side_effect = lambda *a, **k: p.stop()
+        req = self.new_delete_request('networks', network_id)
+        res = req.get_response(self.api)
+        self.assertEqual(webob.exc.HTTPNoContent.code, res.status_int)
+
     def test_update_port_delete_ip(self):
         with self.subnet() as subnet:
             with self.port(subnet=subnet) as port:
@@ -1666,25 +1698,29 @@ fixed_ips=ip_address%%3D%s&fixed_ips=ip_address%%3D%s&fixed_ips=subnet_id%%3D%s
             gateway_ip=constants.ATTR_NOT_SPECIFIED) as subnet:
             with self.port(subnet=subnet) as port:
                 ips = port['port']['fixed_ips']
+                ip_address = '2607:f0d0:1002:51::5'
                 self.assertEqual(1, len(ips))
                 port_mac = port['port']['mac_address']
+                subnet_id = subnet['subnet']['id']
                 subnet_cidr = subnet['subnet']['cidr']
                 eui_addr = str(netutils.get_ipv6_addr_by_EUI64(subnet_cidr,
                                                                port_mac))
                 self.assertEqual(ips[0]['ip_address'], eui_addr)
-                self.assertEqual(ips[0]['subnet_id'], subnet['subnet']['id'])
+                self.assertEqual(ips[0]['subnet_id'], subnet_id)
 
-                data = {'port': {'fixed_ips': [{'subnet_id':
-                                                subnet['subnet']['id'],
-                                                'ip_address':
-                                                '2607:f0d0:1002:51::5'}]}}
+                data = {'port': {'fixed_ips': [{'subnet_id': subnet_id,
+                                                'ip_address': ip_address}]}}
                 req = self.new_update_request('ports', data,
                                               port['port']['id'])
                 res = req.get_response(self.api)
                 err = self.deserialize(self.fmt, res)
                 self.assertEqual(webob.exc.HTTPClientError.code,
                                  res.status_int)
-                self.assertEqual('InvalidInput', err['NeutronError']['type'])
+                self.assertEqual('AllocationOnAutoAddressSubnet',
+                                 err['NeutronError']['type'])
+                msg = str(ipam_exc.AllocationOnAutoAddressSubnet(
+                    ip=ip_address, subnet_id=subnet_id))
+                self.assertEqual(err['NeutronError']['message'], msg)
 
     def test_requested_duplicate_mac(self):
         with self.port() as port:
@@ -1713,7 +1749,7 @@ fixed_ips=ip_address%%3D%s&fixed_ips=ip_address%%3D%s&fixed_ips=subnet_id%%3D%s
         # simulate duplicate mac generation to make sure DBDuplicate is retried
         responses = ['12:34:56:78:00:00', '12:34:56:78:00:00',
                      '12:34:56:78:00:01']
-        with mock.patch('neutron.common.utils.get_random_mac',
+        with mock.patch.object(net, 'get_random_mac',
                         side_effect=responses) as grand_mac:
             with self.subnet() as s:
                 with self.port(subnet=s) as p1, self.port(subnet=s) as p2:
@@ -2157,6 +2193,44 @@ fixed_ips=ip_address%%3D%s&fixed_ips=ip_address%%3D%s&fixed_ips=subnet_id%%3D%s
         self.assertEqual(self._calc_ipv6_addr_by_EUI64(port, subnet_v6),
                          ips[0]['ip_address'])
 
+    def test_update_port_with_new_ipv6_slaac_subnet_in_fixed_ips(self):
+        """Test port update with a new IPv6 SLAAC subnet in fixed IPs."""
+        res = self._create_network(fmt=self.fmt, name='net',
+                                   admin_state_up=True)
+        network = self.deserialize(self.fmt, res)
+        # Create a port using an IPv4 subnet and an IPv6 SLAAC subnet
+        subnet_v4 = self._make_subnet(self.fmt, network, gateway='10.0.0.1',
+                                      cidr='10.0.0.0/24', ip_version=4)
+        subnet_v6 = self._make_v6_subnet(network, constants.IPV6_SLAAC)
+        res = self._create_port(self.fmt, net_id=network['network']['id'])
+        port = self.deserialize(self.fmt, res)
+        self.assertEqual(2, len(port['port']['fixed_ips']))
+        # Update port to have only IPv4 address
+        ips = [{'subnet_id': subnet_v4['subnet']['id']},
+               {'subnet_id': subnet_v6['subnet']['id'],
+                'delete_subnet': True}]
+        data = {'port': {'fixed_ips': ips}}
+        req = self.new_update_request('ports', data,
+                                      port['port']['id'])
+        res = self.deserialize(self.fmt, req.get_response(self.api))
+        # Port should only have an address corresponding to IPv4 subnet
+        ips = res['port']['fixed_ips']
+        self.assertEqual(1, len(ips))
+        self.assertEqual(subnet_v4['subnet']['id'], ips[0]['subnet_id'])
+        # Now update port and request an additional address on the IPv6 SLAAC
+        # subnet.
+        ips.append({'subnet_id': subnet_v6['subnet']['id']})
+        data = {'port': {'fixed_ips': ips}}
+        req = self.new_update_request('ports', data,
+                                      port['port']['id'])
+        res = self.deserialize(self.fmt, req.get_response(self.api))
+        ips = res['port']['fixed_ips']
+        # Port should have IPs on both IPv4 and IPv6 subnets
+        self.assertEqual(2, len(ips))
+        self.assertEqual(set([subnet_v4['subnet']['id'],
+                              subnet_v6['subnet']['id']]),
+                         set([ip['subnet_id'] for ip in ips]))
+
     def test_update_port_excluding_ipv6_slaac_subnet_from_fixed_ips(self):
         """Test port update excluding IPv6 SLAAC subnet from fixed ips."""
         res = self._create_network(fmt=self.fmt, name='net',
@@ -2548,8 +2622,7 @@ class TestNetworksV2(NeutronDbPluginV2TestCase):
                                           network['network']['id'])
             req.environ['neutron.context'] = context.Context('', 'somebody')
             res = req.get_response(self.api)
-            # The API layer always returns 404 on updates in place of 403
-            self.assertEqual(webob.exc.HTTPNotFound.code, res.status_int)
+            self.assertEqual(403, res.status_int)
 
     def test_update_network_set_shared(self):
         with self.network(shared=False) as network:
@@ -4468,10 +4541,10 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                     # this protection only applies to router ports so we need
                     # to make this port belong to a router
                     ctx = context.get_admin_context()
-                    with ctx.session.begin():
+                    with db_api.context_manager.writer.using(ctx):
                         router = l3_models.Router()
                         ctx.session.add(router)
-                    with ctx.session.begin():
+                    with db_api.context_manager.writer.using(ctx):
                         rp = l3_models.RouterPort(router_id=router.id,
                                                   port_id=port['port']['id'])
                         ctx.session.add(rp)
@@ -4481,7 +4554,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                     res = req.get_response(self.api)
                     self.assertEqual(409, res.status_int)
                     # should work fine if it's not a router port
-                    with ctx.session.begin():
+                    with db_api.context_manager.writer.using(ctx):
                         ctx.session.delete(rp)
                         ctx.session.delete(router)
                     res = req.get_response(self.api)
@@ -6040,6 +6113,31 @@ class TestSubnetPoolsV2(NeutronDbPluginV2TestCase):
 
 class DbModelMixin(object):
     """DB model tests."""
+    def test_make_network_dict_outside_engine_facade_manager(self):
+        mock.patch.object(directory, 'get_plugin').start()
+        ctx = context.get_admin_context()
+        with db_api.context_manager.writer.using(ctx):
+            network = models_v2.Network(name="net_net", status="OK",
+                                        admin_state_up=True)
+            ctx.session.add(network)
+            with db_api.autonested_transaction(ctx.session):
+                sg = sg_models.SecurityGroup(name='sg', description='sg')
+                ctx.session.add(sg)
+            # ensure db rels aren't loaded until commit for network object
+            # by sharing after a nested transaction
+            ctx.session.add(
+                rbac_db_models.NetworkRBAC(object_id=network.id,
+                                           action='access_as_shared',
+                                           tenant_id=network.tenant_id,
+                                           target_tenant='*')
+            )
+            net2 = models_v2.Network(name="net_net2", status="OK",
+                                     admin_state_up=True)
+            ctx.session.add(net2)
+        pl = db_base_plugin_common.DbBasePluginCommon()
+        self.assertTrue(pl._make_network_dict(network, context=ctx)['shared'])
+        self.assertFalse(pl._make_network_dict(net2, context=ctx)['shared'])
+
     def test_repr(self):
         """testing the string representation of 'model' classes."""
         network = models_v2.Network(name="net_net", status="OK",
@@ -6057,7 +6155,7 @@ class DbModelMixin(object):
         self.assertEqual(final_exp, actual_repr_output)
 
     def _make_security_group_and_rule(self, ctx):
-        with ctx.session.begin():
+        with db_api.context_manager.writer.using(ctx):
             sg = sg_models.SecurityGroup(name='sg', description='sg')
             rule = sg_models.SecurityGroupRule(
                 security_group=sg, port_range_min=1,
@@ -6069,7 +6167,7 @@ class DbModelMixin(object):
         return sg, rule
 
     def _make_floating_ip(self, ctx, port_id):
-        with ctx.session.begin():
+        with db_api.context_manager.writer.using(ctx):
             flip = l3_models.FloatingIP(floating_ip_address='1.2.3.4',
                                         floating_network_id='somenet',
                                         floating_port_id=port_id)
@@ -6077,7 +6175,7 @@ class DbModelMixin(object):
         return flip
 
     def _make_router(self, ctx):
-        with ctx.session.begin():
+        with db_api.context_manager.writer.using(ctx):
             router = l3_models.Router()
             ctx.session.add(router)
         return router
@@ -6160,7 +6258,7 @@ class DbModelMixin(object):
 
         def _lock_blocked_name_update():
             ctx = context.get_admin_context()
-            with ctx.session.begin():
+            with db_api.context_manager.writer.using(ctx):
                 thing = ctx.session.query(model).filter_by(id=dbid).one()
                 thing.bump_revision()
                 thing.name = 'newname'
@@ -6175,7 +6273,7 @@ class DbModelMixin(object):
             while not self._blocked_on_lock:
                 eventlet.sleep(0)
             ctx = context.get_admin_context()
-            with ctx.session.begin():
+            with db_api.context_manager.writer.using(ctx):
                 thing = ctx.session.query(model).filter_by(id=dbid).one()
                 thing.bump_revision()
                 thing.description = 'a description'
@@ -6248,7 +6346,7 @@ class DbModelMixin(object):
 
 class DbModelTenantTestCase(DbModelMixin, testlib_api.SqlTestCase):
     def _make_network(self, ctx):
-        with ctx.session.begin():
+        with db_api.context_manager.writer.using(ctx):
             network = models_v2.Network(name="net_net", status="OK",
                                         tenant_id='dbcheck',
                                         admin_state_up=True)
@@ -6256,7 +6354,7 @@ class DbModelTenantTestCase(DbModelMixin, testlib_api.SqlTestCase):
         return network
 
     def _make_subnet(self, ctx, network_id):
-        with ctx.session.begin():
+        with db_api.context_manager.writer.using(ctx):
             subnet = models_v2.Subnet(name="subsub", ip_version=4,
                                       tenant_id='dbcheck',
                                       cidr='turn_down_for_what',
@@ -6274,7 +6372,7 @@ class DbModelTenantTestCase(DbModelMixin, testlib_api.SqlTestCase):
         return port
 
     def _make_subnetpool(self, ctx):
-        with ctx.session.begin():
+        with db_api.context_manager.writer.using(ctx):
             subnetpool = models_v2.SubnetPool(
                 ip_version=4, default_prefixlen=4, min_prefixlen=4,
                 max_prefixlen=4, shared=False, default_quota=4,
@@ -6287,7 +6385,7 @@ class DbModelTenantTestCase(DbModelMixin, testlib_api.SqlTestCase):
 
 class DbModelProjectTestCase(DbModelMixin, testlib_api.SqlTestCase):
     def _make_network(self, ctx):
-        with ctx.session.begin():
+        with db_api.context_manager.writer.using(ctx):
             network = models_v2.Network(name="net_net", status="OK",
                                         project_id='dbcheck',
                                         admin_state_up=True)
@@ -6295,7 +6393,7 @@ class DbModelProjectTestCase(DbModelMixin, testlib_api.SqlTestCase):
         return network
 
     def _make_subnet(self, ctx, network_id):
-        with ctx.session.begin():
+        with db_api.context_manager.writer.using(ctx):
             subnet = models_v2.Subnet(name="subsub", ip_version=4,
                                       project_id='dbcheck',
                                       cidr='turn_down_for_what',
@@ -6313,7 +6411,7 @@ class DbModelProjectTestCase(DbModelMixin, testlib_api.SqlTestCase):
         return port
 
     def _make_subnetpool(self, ctx):
-        with ctx.session.begin():
+        with db_api.context_manager.writer.using(ctx):
             subnetpool = models_v2.SubnetPool(
                 ip_version=4, default_prefixlen=4, min_prefixlen=4,
                 max_prefixlen=4, shared=False, default_quota=4,
@@ -6451,10 +6549,10 @@ class DbOperationBoundMixin(object):
 
     def setUp(self, *args, **kwargs):
         super(DbOperationBoundMixin, self).setUp(*args, **kwargs)
-        self._db_execute_count = 0
+        self._recorded_statements = []
 
-        def _event_incrementer(*args, **kwargs):
-            self._db_execute_count += 1
+        def _event_incrementer(conn, clauseelement, *args, **kwargs):
+            self._recorded_statements.append(str(clauseelement))
 
         engine = db_api.context_manager.writer.get_engine()
         db_api.sqla_listen(engine, 'after_execute', _event_incrementer)
@@ -6468,7 +6566,7 @@ class DbOperationBoundMixin(object):
         context_ = self._get_context()
         return {'set_context': True, 'tenant_id': context_.tenant}
 
-    def _list_and_count_queries(self, resource, query_params=None):
+    def _list_and_record_queries(self, resource, query_params=None):
         kwargs = {'neutron_context': self._get_context()}
         if query_params:
             kwargs['query_params'] = query_params
@@ -6476,23 +6574,28 @@ class DbOperationBoundMixin(object):
         # otherwise the first list after a create will be different than
         # a subsequent list with no create.
         self._list(resource, **kwargs)
-        self._db_execute_count = 0
+        self._recorded_statements = []
         self.assertNotEqual([], self._list(resource, **kwargs))
-        query_count = self._db_execute_count
         # sanity check to make sure queries are being observed
-        self.assertNotEqual(0, query_count)
-        return query_count
+        self.assertNotEqual(0, len(self._recorded_statements))
+        return list(self._recorded_statements)
 
     def _assert_object_list_queries_constant(self, obj_creator, plural,
                                              filters=None):
         obj_creator()
-        before_count = self._list_and_count_queries(plural)
+        before_queries = self._list_and_record_queries(plural)
         # one more thing shouldn't change the db query count
         obj = list(obj_creator().values())[0]
-        after_count = self._list_and_count_queries(plural)
-        self.assertEqual(before_count, after_count)
+        after_queries = self._list_and_record_queries(plural)
+        self.assertEqual(len(before_queries), len(after_queries),
+                         self._qry_fail_msg(before_queries, after_queries))
         # using filters shouldn't change the count either
         if filters:
             query_params = "&".join(["%s=%s" % (f, obj[f]) for f in filters])
-            after_count = self._list_and_count_queries(plural, query_params)
-            self.assertEqual(before_count, after_count)
+            after_queries = self._list_and_record_queries(plural, query_params)
+            self.assertEqual(len(before_queries), len(after_queries),
+                             self._qry_fail_msg(before_queries, after_queries))
+
+    def _qry_fail_msg(self, before, after):
+        return "\n".join(["queries before:"] + before +
+                         ["queries after:"] + after)

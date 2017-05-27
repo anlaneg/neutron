@@ -15,6 +15,7 @@
 
 import abc
 
+from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as const
 from oslo_log import log
 import six
@@ -22,7 +23,6 @@ import six
 from neutron._i18n import _LW
 from neutron.callbacks import resources
 from neutron.db import provisioning_blocks
-from neutron.extensions import portbindings
 from neutron.plugins.common import constants as p_constants
 from neutron.plugins.ml2 import driver_api as api
 
@@ -233,10 +233,10 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase):
         network_type = segment[api.NETWORK_TYPE]
         if network_type not in allowed_network_types:
             LOG.debug(
-                'Network %(network_id)s is of type %(network_type)s '
+                'Segment %(id)s is of type %(network_type)s '
                 'but agent %(agent)s or mechanism driver only '
                 'support %(allowed_network_types)s.',
-                {'network_id': segment['id'],
+                {'id': segment['id'],
                  'network_type': network_type,
                  'agent': agent['host'],
                  'allowed_network_types': allowed_network_types})
@@ -246,12 +246,12 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase):
             physnet = segment[api.PHYSICAL_NETWORK]
             if not self.physnet_in_mappings(physnet, mappings):
                 LOG.debug(
-                    'Network %(network_id)s is connected to physical '
+                    'Segment %(id)s is connected to physical '
                     'network %(physnet)s, but agent %(agent)s reported '
                     'physical networks %(mappings)s. '
                     'The physical network must be configured on the '
                     'agent if binding is to succeed.',
-                    {'network_id': segment['id'],
+                    {'id': segment['id'],
                      'physnet': physnet,
                      'agent': agent['host'],
                      'mappings': mappings})

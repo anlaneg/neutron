@@ -13,7 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import six
 from tempest.lib.common.utils import data_utils
 from tempest.lib import decorators
 from tempest.lib import exceptions as lib_exc
@@ -83,7 +82,7 @@ class QuotasTest(QuotasTestBase):
 
         # Change quotas for tenant
         quota_set = self._setup_quotas(tenant_id, **new_quotas)
-        for key, value in six.iteritems(new_quotas):
+        for key, value in new_quotas.items():
             self.assertEqual(value, quota_set[key])
 
         # Confirm our tenant is listed among tenants with non default quotas
@@ -91,13 +90,14 @@ class QuotasTest(QuotasTestBase):
         found = False
         for qs in non_default_quotas['quotas']:
             if qs['tenant_id'] == tenant_id:
+                self.assertEqual(tenant_id, qs['project_id'])
                 found = True
         self.assertTrue(found)
 
         # Confirm from API quotas were changed as requested for tenant
         quota_set = self.admin_client.show_quotas(tenant_id)
         quota_set = quota_set['quota']
-        for key, value in six.iteritems(new_quotas):
+        for key, value in new_quotas.items():
             self.assertEqual(value, quota_set[key])
 
         # Reset quotas to default and confirm

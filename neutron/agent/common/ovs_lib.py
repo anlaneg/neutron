@@ -16,6 +16,7 @@
 import collections
 import itertools
 import operator
+import random
 import time
 import uuid
 
@@ -23,7 +24,6 @@ from debtcollector import removals
 from neutron_lib import exceptions
 from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_utils import excutils
 import six
 import tenacity
 
@@ -48,6 +48,9 @@ FAILMODE_SECURE = 'secure'
 #此模式为，如果连接不上controller,则退化为标准二层交换机
 FAILMODE_STANDALONE = 'standalone'
 
+# special values for cookies
+COOKIE_ANY = object()
+
 ovs_conf.register_ovs_agent_opts()
 
 LOG = logging.getLogger(__name__)
@@ -57,18 +60,16 @@ OVS_DEFAULT_CAPS = {
     'iface_types': [],
 }
 
+_SENTINEL = object()
 
-def _ofport_result_pending(result):
+
+def _ovsdb_result_pending(result):
     """Return True if ovs-vsctl indicates the result is still pending."""
     # ovs-vsctl can return '[]' for an ofport that has not yet been assigned
-    try:
-        int(result)
-        return False
-    except (ValueError, TypeError):
-        return True
+    return result == []
 
 
-def _ofport_retry(fn):
+def _ovsdb_retry(fn):
     """Decorator for retrying when OVS has yet to assign an ofport.
 
     The instance's vsctl_timeout is used as the max waiting time. This relies
@@ -79,7 +80,7 @@ def _ofport_retry(fn):
         self = args[0]
         new_fn = tenacity.retry(
             reraise=True,
-            retry=tenacity.retry_if_result(_ofport_result_pending),
+            retry=tenacity.retry_if_result(_ovsdb_result_pending),
             wait=tenacity.wait_exponential(multiplier=0.01, max=1),
             stop=tenacity.stop_after_delay(
                 self.vsctl_timeout))(fn)
@@ -110,8 +111,21 @@ class BaseOVS(object):
         #构造ovsdb(按ovsdb.api文件中的约定，取impl_vsctl文件中的类）
         self.ovsdb = ovsdb.API.get(self)
 
-    def add_manager(self, connection_uri):
-        self.ovsdb.add_manager(connection_uri).execute()
+    def add_manager(self, connection_uri, timeout=_SENTINEL):
+        """Have ovsdb-server listen for manager connections
+
+        :param connection_uri: Manager target string
+        :param timeout: The Manager probe_interval timeout value
+                        (defaults to ovs_vsctl_timeout)
+        """
+        if timeout is _SENTINEL:
+            timeout = cfg.CONF.ovs_vsctl_timeout
+        with self.ovsdb.transaction() as txn:
+            txn.add(self.ovsdb.add_manager(connection_uri))
+            if timeout:
+                txn.add(
+                    self.ovsdb.db_set('Manager', connection_uri,
+                                      ('inactivity_probe', timeout * 1000)))
 
     def get_manager(self):
         return self.ovsdb.get_manager().execute()
@@ -306,7 +320,7 @@ class OVSBridge(BaseOVS):
     def remove_all_flows(self):
         self.run_ofctl("del-flows", [])
 
-    @_ofport_retry
+    @_ovsdb_retry
     def _get_port_ofport(self, port_name):
         return self.db_get_val("Interface", port_name, "ofport")
 
@@ -320,21 +334,54 @@ class OVSBridge(BaseOVS):
                           port_name)
         return ofport
 
+    def get_port_mac(self, port_name):
+        """Get the port's mac address.
+
+        This is especially useful when the port is not a neutron port.
+        E.g. networking-sfc needs the MAC address of "patch-tun
+        """
+        return self.db_get_val("Interface", port_name, "mac_in_use")
+
+    @_ovsdb_retry
+    def _get_datapath_id(self):
+        return self.db_get_val('Bridge', self.br_name, 'datapath_id')
+
     def get_datapath_id(self):
-        return self.db_get_val('Bridge',
-                               self.br_name, 'datapath_id')
+        try:
+            return self._get_datapath_id()
+        except tenacity.RetryError:
+            # if ovs fails to find datapath_id then something is likely to be
+            # broken here
+            LOG.exception("Timed out retrieving datapath_id on bridge %s.",
+                          self.br_name)
+            raise RuntimeError('No datapath_id on bridge %s' % self.br_name)
 
     def do_action_flows(self, action, kwargs_list):
+        for kw in kwargs_list:
+            if action is 'del':
+                if kw.get('cookie') == COOKIE_ANY:
+                    # special value COOKIE_ANY was provided, unset
+                    # cookie to match flows whatever their cookie is
+                    kw.pop('cookie')
+                    if kw.get('cookie_mask'):  # non-zero cookie mask
+                        raise Exception("cookie=COOKIE_ANY but cookie_mask "
+                                        "set to %s" % kw.get('cookie_mask'))
+                elif 'cookie' in kw:
+                    # a cookie was specified, use it
+                    kw['cookie'] = check_cookie_mask(kw['cookie'])
+                else:
+                    # nothing was specified about cookies, use default
+                    kw['cookie'] = "%d/-1" % self._default_cookie
+            else:
+                if 'cookie' not in kw:
+                    kw['cookie'] = self._default_cookie
+
         if action == 'del' and {} in kwargs_list:
             # the 'del' case simplifies itself if kwargs_list has at least
             # one item that matches everything
             #删除掉所有流表内容
             self.run_ofctl('%s-flows' % action, [])
         else:
-            if action != 'del':
-                for kw in kwargs_list:
-                    if 'cookie' not in kw:
-                        kw['cookie'] = self._default_cookie
             flow_strs = [_build_flow_expr_str(kw, action)
                          for kw in kwargs_list]
             self.run_ofctl('%s-flows' % action, ['-'], '\n'.join(flow_strs))
@@ -420,17 +467,6 @@ class OVSBridge(BaseOVS):
     def get_port_stats(self, port_name):
         return self.db_get_val("Interface", port_name, "statistics")
 
-    def get_xapi_iface_id(self, xs_vif_uuid):
-        args = ["xe", "vif-param-get", "param-name=other-config",
-                "param-key=nicira-iface-id", "uuid=%s" % xs_vif_uuid]
-        try:
-            return utils.execute(args, run_as_root=True).strip()
-        except Exception as e:
-            with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Unable to execute %(cmd)s. "
-                              "Exception: %(exception)s"),
-                          {'cmd': args, 'exception': e})
-
     def get_ports_attributes(self, table, columns=None, ports=None,
                              check_error=True, log_errors=True,
                              if_exists=False):
@@ -455,14 +491,6 @@ class OVSBridge(BaseOVS):
                 continue
             if "iface-id" in external_ids and "attached-mac" in external_ids:
                 p = VifPort(name, ofport, external_ids["iface-id"],
-                            external_ids["attached-mac"], self)
-                edge_ports.append(p)
-            elif ("xs-vif-uuid" in external_ids and
-                  "attached-mac" in external_ids):
-                # if this is a xenserver and iface-id is not automatically
-                # synced to OVS from XAPI, we grab it from XAPI directly
-                iface_id = self.get_xapi_iface_id(external_ids["xs-vif-uuid"])
-                p = VifPort(name, ofport, iface_id,
                             external_ids["attached-mac"], self)
                 edge_ports.append(p)
 
@@ -505,10 +533,6 @@ class OVSBridge(BaseOVS):
     def portid_from_external_ids(self, external_ids):
         if 'iface-id' in external_ids:
             return external_ids['iface-id']
-        if 'xs-vif-uuid' in external_ids:
-            iface_id = self.get_xapi_iface_id(
-                external_ids['xs-vif-uuid'])
-            return iface_id
 
     def get_port_tag_dict(self):
         """Get a dict of port names and associated vlan tags.
@@ -738,7 +762,7 @@ def _build_flow_expr_str(flow_dict, cmd):
             raise exceptions.InvalidInput(error_message=msg)
         actions = "actions=%s" % flow_dict.pop('actions')
 
-    for key, value in six.iteritems(flow_dict):
+    for key, value in flow_dict.items():
         if key == 'proto':
             flow_expr_arr.append(value)
         else:
@@ -751,10 +775,12 @@ def _build_flow_expr_str(flow_dict, cmd):
 
 
 def generate_random_cookie():
-    return uuid.uuid4().int & UINT64_BITMASK
+    # The OpenFlow spec forbids use of -1
+    return random.randrange(UINT64_BITMASK)
 
 
 def check_cookie_mask(cookie):
+    cookie = str(cookie)
     if '/' not in cookie:
         return cookie + '/-1'
     else:

@@ -42,6 +42,13 @@ class QosRuleObjectTestCase(neutron_test_base.BaseTestCase):
             device_owner=constants.DEVICE_OWNER_ROUTER_INTF,
             expected_result=False)
 
+    def test_should_apply_to_port_with_network_port_and_only_net_policy(self):
+        self._test_should_apply_to_port(
+            rule_policy_id=POLICY_ID_B,
+            port_policy_id=None,
+            device_owner=constants.DEVICE_OWNER_ROUTER_INTF,
+            expected_result=False)
+
     def test_should_apply_to_port_with_network_port_and_port_policy(self):
         self._test_should_apply_to_port(
             rule_policy_id=POLICY_ID_A,
@@ -50,9 +57,18 @@ class QosRuleObjectTestCase(neutron_test_base.BaseTestCase):
             expected_result=True)
 
     def test_should_apply_to_port_with_compute_port_and_net_policy(self):
+        # NOTE(ralonsoh): in this case the port has a port QoS policy; the
+        # network QoS policy can't be applied.
         self._test_should_apply_to_port(
             rule_policy_id=POLICY_ID_B,
             port_policy_id=POLICY_ID_A,
+            device_owner=DEVICE_OWNER_COMPUTE,
+            expected_result=False)
+
+    def test_should_apply_to_port_with_compute_port_and_only_net_policy(self):
+        self._test_should_apply_to_port(
+            rule_policy_id=POLICY_ID_B,
+            port_policy_id=None,
             device_owner=DEVICE_OWNER_COMPUTE,
             expected_result=True)
 
@@ -61,6 +77,34 @@ class QosRuleObjectTestCase(neutron_test_base.BaseTestCase):
             rule_policy_id=POLICY_ID_A,
             port_policy_id=POLICY_ID_A,
             device_owner=DEVICE_OWNER_COMPUTE,
+            expected_result=True)
+
+    def test_should_apply_to_port_with_router_gw_port_and_net_policy(self):
+        self._test_should_apply_to_port(
+            rule_policy_id=POLICY_ID_B,
+            port_policy_id=POLICY_ID_A,
+            device_owner=constants.DEVICE_OWNER_ROUTER_GW,
+            expected_result=False)
+
+    def test_should_apply_to_port_with_router_gw_port_and_port_policy(self):
+        self._test_should_apply_to_port(
+            rule_policy_id=POLICY_ID_A,
+            port_policy_id=POLICY_ID_A,
+            device_owner=constants.DEVICE_OWNER_ROUTER_GW,
+            expected_result=True)
+
+    def test_should_apply_to_port_with_agent_gw_port_and_net_policy(self):
+        self._test_should_apply_to_port(
+            rule_policy_id=POLICY_ID_B,
+            port_policy_id=POLICY_ID_A,
+            device_owner=constants.DEVICE_OWNER_AGENT_GW,
+            expected_result=False)
+
+    def test_should_apply_to_port_with_agent_gw_port_and_port_policy(self):
+        self._test_should_apply_to_port(
+            rule_policy_id=POLICY_ID_A,
+            port_policy_id=POLICY_ID_A,
+            device_owner=constants.DEVICE_OWNER_AGENT_GW,
             expected_result=True)
 
 
@@ -100,13 +144,6 @@ class QosDscpMarkingRuleObjectTestCase(test_base.BaseObjectIfaceTestCase):
         self.assertRaises(exception.IncompatibleObjectVersion,
                      dscp_rule.obj_to_primitive, '1.0')
 
-    def test_dscp_object_version(self):
-        dscp_rule = rule.QosDscpMarkingRule()
-
-        prim = dscp_rule.obj_to_primitive('1.1')
-
-        self.assertTrue(prim)
-
 
 class QosDscpMarkingRuleDbObjectTestCase(test_base.BaseDbObjectTestCase,
                                          testlib_api.SqlTestCase):
@@ -133,13 +170,6 @@ class QosMinimumBandwidthRuleObjectTestCase(test_base.BaseObjectIfaceTestCase):
         for version in ['1.0', '1.1']:
             self.assertRaises(exception.IncompatibleObjectVersion,
                               min_bw_rule.obj_to_primitive, version)
-
-    def test_min_bw_object_version(self):
-        min_bw_rule = rule.QosMinimumBandwidthRule()
-
-        prim = min_bw_rule.obj_to_primitive('1.2')
-
-        self.assertTrue(prim)
 
 
 class QosMinimumBandwidthRuleDbObjectTestCase(test_base.BaseDbObjectTestCase,

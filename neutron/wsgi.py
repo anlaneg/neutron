@@ -22,7 +22,7 @@ import sys
 import time
 
 import eventlet.wsgi
-from neutron.conf import wsgi as wsgi_config
+from neutron_lib import context
 from neutron_lib import exceptions as exception
 from oslo_config import cfg
 import oslo_i18n
@@ -41,7 +41,7 @@ import webob.exc
 from neutron._i18n import _, _LE, _LI
 from neutron.common import config
 from neutron.common import exceptions as n_exc
-from neutron import context
+from neutron.conf import wsgi as wsgi_config
 from neutron.db import api
 from neutron import worker as neutron_worker
 
@@ -221,6 +221,7 @@ class Server(object):
                              max_size=self.num_threads,
                              log=LOG,
                              keepalive=CONF.wsgi_keep_alive,
+                             log_format=CONF.wsgi_log_format,
                              socket_timeout=self.client_socket_timeout)
 
 
@@ -410,7 +411,7 @@ class RequestDeserializer(object):
         """Extract necessary pieces of the request.
 
         :param request: Request object
-        :returns tuple of expected controller action name, dictionary of
+        :returns: tuple of expected controller action name, dictionary of
                  keyword arguments to pass to the controller, the expected
                  content type of the response
 

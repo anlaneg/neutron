@@ -18,7 +18,9 @@ import contextlib
 import datetime
 
 import mock
+from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
+from neutron_lib import context as n_context
 from neutron_lib.plugins import directory
 from oslo_config import cfg
 from oslo_utils import importutils
@@ -28,7 +30,6 @@ from sqlalchemy import orm
 import testscenarios
 import testtools
 
-from neutron import context as n_context
 from neutron.db import db_base_plugin_v2 as db_v2
 from neutron.db import l3_db
 from neutron.db import l3_dvr_ha_scheduler_db
@@ -40,7 +41,6 @@ from neutron.db.models import l3agent as rb_model
 from neutron.db.models import l3ha as l3ha_model
 from neutron.extensions import l3
 from neutron.extensions import l3agentscheduler as l3agent
-from neutron.extensions import portbindings
 from neutron import manager
 from neutron.scheduler import l3_agent_scheduler
 from neutron.tests import base
@@ -1059,8 +1059,8 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
         directory.add_plugin(constants.L3, l3plugin)
         with mock.patch.object(l3plugin, 'get_dvr_routers_to_remove',
                                return_value=routers_to_remove),\
-                mock.patch.object(l3plugin, '_get_floatingip_on_port',
-                                  return_value=fip):
+                mock.patch.object(l3plugin, '_get_floatingips_by_port_id',
+                                  return_value=[fip] if fip else []):
             l3_dvrscheduler_db._notify_l3_agent_port_update(
                 'port', 'after_update', mock.ANY, **kwargs)
             if routers_to_remove:
@@ -1108,8 +1108,8 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
                                return_value=[{'agent_id': 'foo_agent',
                                               'router_id': 'foo_id',
                                               'host': source_host}]),\
-                mock.patch.object(l3plugin, '_get_floatingip_on_port',
-                                  return_value=None):
+                mock.patch.object(l3plugin, '_get_floatingips_by_port_id',
+                                  return_value=[]):
             l3_dvrscheduler_db._notify_l3_agent_port_update(
                 'port', 'after_update', plugin, **kwargs)
 

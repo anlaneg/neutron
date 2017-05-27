@@ -13,8 +13,9 @@
 #    under the License.
 
 import netaddr
-from tempest.common.utils.linux import remote_client
+from oslo_log import log as logging
 from tempest.common import waiters
+from tempest.lib.common import ssh
 from tempest.lib.common.utils import data_utils
 from tempest.lib import decorators
 from tempest import test
@@ -24,6 +25,7 @@ from neutron.tests.tempest import config
 from neutron.tests.tempest.scenario import base
 from neutron.tests.tempest.scenario import constants
 
+LOG = logging.getLogger(__name__)
 CONF = config.CONF
 
 CONFIGURE_VLAN_INTERFACE_COMMANDS = (
@@ -121,11 +123,10 @@ class TrunkTest(base.BaseTempestTestCase):
         server, fip = self._create_server_with_fip(parent_port['id'])
         self.addCleanup(self._detach_and_delete_trunk, server, trunk)
 
-        server_ssh_client = remote_client.RemoteClient(
+        server_ssh_client = ssh.Client(
             fip['floating_ip_address'],
             CONF.validation.image_ssh_user,
-            pkey=self.keypair['private_key'],
-            server=server)
+            pkey=self.keypair['private_key'])
 
         return {
             'server': server,
@@ -237,7 +238,23 @@ class TrunkTest(base.BaseTempestTestCase):
             # Configure VLAN interfaces on server
             command = CONFIGURE_VLAN_INTERFACE_COMMANDS % {'tag': vlan_tag}
             server['ssh_client'].exec_command(command)
+            out = server['ssh_client'].exec_command('ip addr list')
+            LOG.debug("Interfaces on server %s: %s", server, out)
 
-        # Ping from server1 to server2 via VLAN interface
-        servers[0]['ssh_client'].ping_host(
-            servers[1]['subport']['fixed_ips'][0]['ip_address'])
+        # Ping from server1 to server2 via VLAN interface should fail because
+        # we haven't allowed ICMP
+        self.check_remote_connectivity(
+            servers[0]['ssh_client'],
+            servers[1]['subport']['fixed_ips'][0]['ip_address'],
+            should_succeed=False
+        )
+        # allow intra-securitygroup traffic
+        self.client.create_security_group_rule(
+            security_group_id=self.secgroup['security_group']['id'],
+            direction='ingress', ethertype='IPv4', protocol='icmp',
+            remote_group_id=self.secgroup['security_group']['id'])
+        self.check_remote_connectivity(
+            servers[0]['ssh_client'],
+            servers[1]['subport']['fixed_ips'][0]['ip_address'],
+            should_succeed=True
+        )

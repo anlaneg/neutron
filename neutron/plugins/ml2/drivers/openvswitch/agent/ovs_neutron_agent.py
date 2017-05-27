@@ -22,7 +22,9 @@ import sys
 import time
 
 import netaddr
+from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as n_const
+from neutron_lib import context
 from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -31,7 +33,6 @@ from oslo_service import loopingcall
 from oslo_service import systemd
 from oslo_utils import netutils
 from osprofiler import profiler
-import six
 from six import moves
 
 from neutron._i18n import _, _LE, _LI, _LW
@@ -53,8 +54,6 @@ from neutron.common import config
 from neutron.common import constants as c_const
 from neutron.common import topics
 from neutron.conf.agent import xenapi_conf
-from neutron import context
-from neutron.extensions import portbindings
 from neutron.plugins.common import constants as p_const
 from neutron.plugins.common import utils as p_utils
 from neutron.plugins.ml2.drivers.agent import capabilities
@@ -151,8 +150,8 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         self.veth_mtu = agent_conf.veth_mtu
         # 将可用的本地vlan处理为1－4094
         self.available_local_vlans = set(moves.range(p_const.MIN_VLAN_TAG,
-                                                     p_const.MAX_VLAN_TAG))
         #配置的要采用的隧道类型
+                                                     p_const.MAX_VLAN_TAG + 1))
         self.tunnel_types = agent_conf.tunnel_types or []
         #是否启用l2　pop功能
         self.l2_pop = agent_conf.l2_population
@@ -867,6 +866,9 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                 other_config['tag'] = str(lvm.vlan)
                 self.int_br.set_db_attribute(
                     "Port", port.port_name, "other_config", other_config)
+                # Uninitialized port has tag set to []
+                if cur_info['tag']:
+                    self.int_br.uninstall_flows(in_port=port.ofport)
 
     def _bind_devices(self, need_binding_ports):
         devices_up = []
@@ -891,9 +893,6 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
                 LOG.debug("Port %s was deleted concurrently, skipping it",
                           port.port_name)
                 continue
-            # Uninitialized port has tag set to []
-            if cur_tag and cur_tag != lvm.vlan:
-                self.int_br.uninstall_flows(in_port=port.ofport)
             if self.prevent_arp_spoofing:
                 self.setup_arp_spoofing_protection(self.int_br,
                                                    port, port_detail)
@@ -1042,7 +1041,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             #删除掉br-int与br-tun之间的patch口
             self.int_br.delete_port(self.conf.OVS.int_peer_patch_port)
             #删除掉所有流
-            self.int_br.uninstall_flows()
+            self.int_br.uninstall_flows(cookie=ovs_lib.COOKIE_ANY)
         #集成桥下发默认流表
         self.int_br.setup_default_table()
 
@@ -1117,7 +1116,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         
         #依据配置决定是否要清空tunnel桥上的所有流
         if self.conf.AGENT.drop_flows_on_start:
-            self.tun_br.uninstall_flows()
+            self.tun_br.uninstall_flows(cookie=ovs_lib.COOKIE_ANY)
 
     def setup_tunnel_br_flows(self):
         '''Setup the tunnel bridge.
@@ -1146,7 +1145,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         #遍历配置的物理桥映射(physical_network 物理网络名称,bridge　桥名称)
         #使物理桥与br-int相连，当前支持两种方式的相连（veth,patch口），临时禁止
         #从物理桥来的报文被丢弃
-        for physical_network, bridge in six.iteritems(bridge_mappings):
+        for physical_network, bridge in bridge_mappings.items():
             LOG.info(_LI("Mapping physical network %(physical_network)s to "
                          "bridge %(bridge)s"),
                      {'physical_network': physical_network,
@@ -1170,7 +1169,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
             br.setup_controllers(self.conf)
             if cfg.CONF.AGENT.drop_flows_on_start:
                 #删除所有流
-                br.uninstall_flows()
+                br.uninstall_flows(cookie=ovs_lib.COOKIE_ANY)
             #添加默认流
             br.setup_default_table()
             
@@ -2215,6 +2214,9 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
     def _handle_sigterm(self, signum, frame):
         self.catch_sigterm = True
         if self.quitting_rpc_timeout:
+            LOG.info(
+                _LI('SIGTERM received, capping RPC timeout by %d seconds.'),
+                self.quitting_rpc_timeout)
             self.set_rpc_timeout(self.quitting_rpc_timeout)
 
     def _handle_sighup(self, signum, frame):
@@ -2237,7 +2239,7 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
     def set_rpc_timeout(self, timeout):
         for rpc_api in (self.plugin_rpc, self.sg_plugin_rpc,
                         self.dvr_plugin_rpc, self.state_rpc):
-            rpc_api.client.timeout = timeout
+            rpc_api.client.set_max_timeout(timeout)
 
     def _check_agent_configurations(self):
         if (self.enable_distributed_routing and self.enable_tunneling

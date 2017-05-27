@@ -15,11 +15,11 @@
 import mock
 from oslo_config import cfg
 
-from neutron.agent.common import config
 from neutron.agent.linux import dhcp
 from neutron.agent.linux import interface
 from neutron.agent.linux import ip_lib
 from neutron.common import utils as common_utils
+from neutron.conf.agent import common as config
 from neutron.conf.agent import dhcp as dhcp_conf
 from neutron.conf import common as common_conf
 from neutron.tests import base as tests_base
@@ -75,15 +75,16 @@ class TestDhcp(functional_base.BaseSudoTestCase):
                             "10:22:33:44:55:69",
                             namespace="qdhcp-foo_id")
         ipw = ip_lib.IPWrapper(namespace="qdhcp-foo_id")
-        devices = ipw.get_devices(exclude_loopback=True)
+        devices = ipw.get_devices()
         self.addCleanup(ipw.netns.delete, 'qdhcp-foo_id')
-        self.assertEqual(2, len(devices))
+        self.assertEqual(sorted(["tapfoo_id2", "tapfoo_id3"]),
+                         sorted(map(str, devices)))
         # setting up dhcp for the network
         dev_mgr.setup(tests_base.AttributeDict(network))
         common_utils.wait_until_true(
-            lambda: 1 == len(ipw.get_devices(exclude_loopback=True)),
+            lambda: 1 == len(ipw.get_devices()),
             timeout=5,
             sleep=0.1,
             exception=RuntimeError("only one non-loopback device must remain"))
-        devices = ipw.get_devices(exclude_loopback=True)
+        devices = ipw.get_devices()
         self.assertEqual("tapfoo_port_id", devices[0].name)
