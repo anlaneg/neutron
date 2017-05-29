@@ -21,6 +21,8 @@ import itertools
 import eventlet
 import mock
 import netaddr
+from neutron_lib.callbacks import exceptions
+from neutron_lib.callbacks import registry
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib import exceptions as lib_exc
@@ -41,8 +43,6 @@ import neutron
 from neutron.api import api_common
 from neutron.api import extensions
 from neutron.api.v2 import router
-from neutron.callbacks import exceptions
-from neutron.callbacks import registry
 from neutron.common import constants as n_const
 from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
@@ -102,6 +102,7 @@ def _get_create_db_method(resource):
 class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
     fmt = 'json'
     resource_prefix_map = {}
+    block_dhcp_notifier = True
 
     def setUp(self, plugin=None, service_plugins=None,
               ext_mgr=None):
@@ -119,6 +120,9 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
         if not plugin:
             plugin = DB_PLUGIN_KLASS
 
+        if self.block_dhcp_notifier:
+            mock.patch('neutron.api.rpc.agentnotifiers.dhcp_rpc_agent_api.'
+                       'DhcpAgentNotifyAPI').start()
         # Update the plugin
         self.setup_coreplugin(plugin, load_plugins=False)
         cfg.CONF.set_override(
@@ -205,13 +209,13 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
         )
 
     def new_show_request(self, resource, id, fmt=None,
-                         subresource=None, fields=None):
+                         subresource=None, fields=None, sub_id=None):
         if fields:
             params = "&".join(["fields=%s" % x for x in fields])
         else:
             params = None
         return self._req('GET', resource, None, fmt, id=id,
-                         params=params, subresource=subresource)
+                         params=params, subresource=subresource, sub_id=sub_id)
 
     def new_delete_request(self, resource, id, fmt=None, subresource=None,
                            sub_id=None, data=None):
@@ -226,14 +230,14 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
         )
 
     def new_update_request(self, resource, data, id, fmt=None,
-                           subresource=None, context=None):
+                           subresource=None, context=None, sub_id=None):
         return self._req(
             'PUT', resource, data, fmt, id=id, subresource=subresource,
-            context=context
+            sub_id=sub_id, context=context
         )
 
     def new_action_request(self, resource, data, id, action, fmt=None,
-                           subresource=None):
+                           subresource=None, sub_id=None):
         return self._req(
             'PUT',
             resource,
@@ -241,7 +245,8 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
             fmt,
             id=id,
             action=action,
-            subresource=subresource
+            subresource=subresource,
+            sub_id=sub_id
         )
 
     def deserialize(self, content_type, response):
@@ -1373,14 +1378,19 @@ fixed_ips=ip_address%%3D%s&fixed_ips=ip_address%%3D%s&fixed_ips=subnet_id%%3D%s
         req = self.new_update_request('ports', data, port['id'])
         return req.get_response(self.api), new_mac
 
-    def _check_v6_auto_address_address(self, port, subnet):
-        if ipv6_utils.is_auto_address_subnet(subnet['subnet']):
-            port_mac = port['port']['mac_address']
-            subnet_cidr = subnet['subnet']['cidr']
-            eui_addr = str(netutils.get_ipv6_addr_by_EUI64(subnet_cidr,
-                                                           port_mac))
-            self.assertEqual(port['port']['fixed_ips'][0]['ip_address'],
-                             eui_addr)
+    def _verify_ips_after_mac_change(self, orig_port, new_port):
+        for fip in orig_port['port']['fixed_ips']:
+            subnet = self._show('subnets', fip['subnet_id'])
+            if ipv6_utils.is_auto_address_subnet(subnet['subnet']):
+                port_mac = new_port['port']['mac_address']
+                subnet_cidr = subnet['subnet']['cidr']
+                eui_addr = str(netutils.get_ipv6_addr_by_EUI64(subnet_cidr,
+                                                               port_mac))
+                fip = {'ip_address': eui_addr,
+                       'subnet_id': subnet['subnet']['id']}
+            self.assertIn(fip, new_port['port']['fixed_ips'])
+        self.assertEqual(len(orig_port['port']['fixed_ips']),
+                         len(new_port['port']['fixed_ips']))
 
     def check_update_port_mac(
             self, expected_status=webob.exc.HTTPOk.code,
@@ -1399,8 +1409,11 @@ fixed_ips=ip_address%%3D%s&fixed_ips=ip_address%%3D%s&fixed_ips=subnet_id%%3D%s
                 result = self.deserialize(self.fmt, res)
                 self.assertIn('port', result)
                 self.assertEqual(new_mac, result['port']['mac_address'])
-                if subnet and subnet['subnet']['ip_version'] == 6:
-                    self._check_v6_auto_address_address(port, subnet)
+                if updated_fixed_ips is None:
+                    self._verify_ips_after_mac_change(port, result)
+                else:
+                    self.assertEqual(len(updated_fixed_ips),
+                         len(result['port']['fixed_ips']))
             else:
                 error = self.deserialize(self.fmt, res)
                 self.assertEqual(expected_error,
@@ -1458,13 +1471,27 @@ fixed_ips=ip_address%%3D%s&fixed_ips=ip_address%%3D%s&fixed_ips=subnet_id%%3D%s
                                        updated_fixed_ips=updated_fixed_ips)
 
     def test_update_port_mac_v6_slaac(self):
-        with self.subnet(gateway_ip='fe80::1',
+        with self.network() as n:
+            pass
+        # add a couple of v4 networks to ensure they aren't interferred with
+        with self.subnet(network=n) as v4_1, \
+                self.subnet(network=n, cidr='7.0.0.0/24') as v4_2:
+            pass
+        with self.subnet(network=n,
+                         gateway_ip='fe80::1',
                          cidr='2607:f0d0:1002:51::/64',
                          ip_version=6,
                          ipv6_address_mode=constants.IPV6_SLAAC) as subnet:
             self.assertTrue(
                 ipv6_utils.is_auto_address_subnet(subnet['subnet']))
-            self.check_update_port_mac(subnet=subnet)
+            fixed_ips_req = {
+                'fixed_ips': [{'subnet_id': subnet['subnet']['id']},
+                              {'subnet_id': v4_1['subnet']['id']},
+                              {'subnet_id': v4_1['subnet']['id']},
+                              {'subnet_id': v4_2['subnet']['id']},
+                              {'subnet_id': v4_2['subnet']['id']}]
+            }
+            self.check_update_port_mac(subnet=subnet, host_arg=fixed_ips_req)
 
     def test_update_port_mac_bad_owner(self):
         self.check_update_port_mac(
@@ -1550,6 +1577,36 @@ fixed_ips=ip_address%%3D%s&fixed_ips=ip_address%%3D%s&fixed_ips=subnet_id%%3D%s
         p = mock.patch.object(plugin, 'delete_port')
         mock_del_port = p.start()
         mock_del_port.side_effect = lambda *a, **k: p.stop()
+        req = self.new_delete_request('networks', network_id)
+        res = req.get_response(self.api)
+        self.assertEqual(webob.exc.HTTPNoContent.code, res.status_int)
+
+    def test_delete_network_port_exists_owned_by_network_port_not_found(self):
+        """Tests that we continue to gracefully delete the network even if
+        a neutron:dhcp-owned port was deleted concurrently.
+        """
+        res = self._create_network(fmt=self.fmt, name='net',
+                                   admin_state_up=True)
+        network = self.deserialize(self.fmt, res)
+        network_id = network['network']['id']
+        self._create_port(self.fmt, network_id,
+                          device_owner=constants.DEVICE_OWNER_DHCP)
+        # Raise PortNotFound when trying to delete the port to simulate a
+        # concurrent delete race; note that we actually have to delete the port
+        # "out of band" otherwise deleting the network will fail because of
+        # constraints in the data model.
+        plugin = directory.get_plugin()
+        orig_delete = plugin.delete_port
+
+        def fake_delete_port(context, id):
+            # Delete the port for real from the database and then raise
+            # PortNotFound to simulate the race.
+            self.assertIsNone(orig_delete(context, id))
+            raise lib_exc.PortNotFound(port_id=id)
+
+        p = mock.patch.object(plugin, 'delete_port')
+        mock_del_port = p.start()
+        mock_del_port.side_effect = fake_delete_port
         req = self.new_delete_request('networks', network_id)
         res = req.get_response(self.api)
         self.assertEqual(webob.exc.HTTPNoContent.code, res.status_int)

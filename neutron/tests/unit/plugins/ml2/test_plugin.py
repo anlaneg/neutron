@@ -22,6 +22,10 @@ import webob
 
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as pnet
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import exceptions as c_exc
+from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib import exceptions as exc
@@ -30,10 +34,6 @@ from oslo_db import exception as db_exc
 from oslo_utils import uuidutils
 
 from neutron._i18n import _
-from neutron.callbacks import events
-from neutron.callbacks import exceptions as c_exc
-from neutron.callbacks import registry
-from neutron.callbacks import resources
 from neutron.common import utils
 from neutron.db import agents_db
 from neutron.db import api as db_api
@@ -818,7 +818,7 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
                 mock_gbl.assert_called_once_with(mock.ANY, port_id, mock.ANY)
 
     def _add_fake_dhcp_agent(self):
-        agent = mock.Mock(configurations='{"notifies_port_ready": true}')
+        agent = mock.Mock()
         plugin = directory.get_plugin()
         self.get_dhcp_mock = mock.patch.object(
             plugin, 'get_dhcp_agents_hosting_networks',
@@ -2097,6 +2097,28 @@ class TestMl2AllowedAddressPairs(Ml2PluginV2TestCase,
                                      group='ml2')
         super(test_pair.TestAllowedAddressPairs, self).setUp(
             plugin=PLUGIN_NAME)
+
+
+class TestMl2PortSecurity(Ml2PluginV2TestCase):
+
+    def setUp(self):
+        config.cfg.CONF.set_override('extension_drivers',
+                                     ['port_security'],
+                                     group='ml2')
+        config.cfg.CONF.set_override('enable_security_group',
+                                     False,
+                                     group='SECURITYGROUP')
+        super(TestMl2PortSecurity, self).setUp()
+
+    def test_port_update_without_security_groups(self):
+        with self.port() as port:
+            plugin = directory.get_plugin()
+            ctx = context.get_admin_context()
+            self.assertTrue(port['port']['port_security_enabled'])
+            updated_port = plugin.update_port(
+                ctx, port['port']['id'],
+                {'port': {'port_security_enabled': False}})
+            self.assertFalse(updated_port['port_security_enabled'])
 
 
 class TestMl2HostsNetworkAccess(Ml2PluginV2TestCase):

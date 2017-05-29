@@ -161,6 +161,13 @@ class InvalidSharedSetting(e.Conflict):
                 "%(network)s. Multiple tenants are using it.")
 
 
+class QoSRuleParameterConflict(e.Conflict):
+    message = _("Unable to add the rule with value %(rule_value)s to the "
+                "policy %(policy_id)s as the existing rule of type "
+                "%(existing_rule)s restricts the bandwidth to "
+                "%(existing_value)s.")
+
+
 class InvalidExtensionEnv(e.BadRequest):
     message = _("Invalid extension environment: %(reason)s.")
 
@@ -203,6 +210,11 @@ class VxlanNetworkUnsupported(e.NeutronException):
 
 class DuplicatedExtension(e.NeutronException):
     message = _("Found duplicate extension: %(alias)s.")
+
+
+class DriverCallError(e.MultipleExceptions):
+    def __init__(self, exc_list=None):
+        super(DriverCallError, self).__init__(exc_list or [])
 
 
 class DeviceIDNotOwnedByTenant(e.Conflict):

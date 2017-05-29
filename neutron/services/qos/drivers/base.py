@@ -15,10 +15,10 @@
 # under the License.
 
 from neutron_lib.api import validators as lib_validators
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import registry
 from oslo_log import log as logging
 
-from neutron.callbacks import events
-from neutron.callbacks import registry
 from neutron.services.qos import qos_consts
 
 LOG = logging.getLogger(__name__)
@@ -110,6 +110,17 @@ class DriverBase(object):
                       rules.
         """
 
+    def create_policy_precommit(self, context, policy):
+        """Create policy precommit.
+
+        This method can be implemented by the specific driver subclass
+        to handle the precommit event of a policy that is being created.
+
+        :param context: current running context information
+        :param policy: a QoSPolicy object being created, which will have no
+                      rules.
+        """
+
     def update_policy(self, context, policy):
         """Update policy invocation.
 
@@ -120,11 +131,31 @@ class DriverBase(object):
         :param policy: a QoSPolicy object being updated.
         """
 
+    def update_policy_precommit(self, context, policy):
+        """Update policy precommit.
+
+        This method can be implemented by the specific driver subclass
+        to handle update precommit event of a policy that is being updated.
+
+        :param context: current running context information
+        :param policy: a QoSPolicy object being updated.
+        """
+
     def delete_policy(self, context, policy):
         """Delete policy invocation.
 
         This method can be implemented by the specific driver subclass
         to delete the backend policy where necessary.
+
+        :param context: current running context information
+        :param policy: a QoSPolicy object being deleted
+        """
+
+    def delete_policy_precommit(self, context, policy):
+        """Delete policy precommit.
+
+        This method can be implemented by the specific driver subclass
+        to handle delete precommit event of a policy that is being deleted.
 
         :param context: current running context information
         :param policy: a QoSPolicy object being deleted

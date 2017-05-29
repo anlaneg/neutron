@@ -23,6 +23,9 @@ import time
 
 import netaddr
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.callbacks import events as callback_events
+from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources as callback_resources
 from neutron_lib import constants as n_const
 from neutron_lib import context
 from neutron_lib.utils import helpers
@@ -47,9 +50,6 @@ from neutron.agent import securitygroups_rpc as agent_sg_rpc
 from neutron.api.rpc.callbacks import resources
 from neutron.api.rpc.handlers import dvr_rpc
 from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
-from neutron.callbacks import events as callback_events
-from neutron.callbacks import registry
-from neutron.callbacks import resources as callback_resources
 from neutron.common import config
 from neutron.common import constants as c_const
 from neutron.common import topics
@@ -80,7 +80,7 @@ class _mac_mydialect(netaddr.mac_unix):
     word_fmt = '%.2x'
 
 
-class OVSPluginApi(agent_rpc.PluginApi):
+class OVSPluginApi(agent_rpc.CacheBackedPluginApi):
     pass
 
 
@@ -371,6 +371,8 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
 
     def setup_rpc(self):
         self.plugin_rpc = OVSPluginApi(topics.PLUGIN)
+        # allow us to receive port_update/delete callbacks from the cache
+        self.plugin_rpc.register_legacy_notification_callbacks(self)
         self.sg_plugin_rpc = sg_rpc.SecurityGroupServerRpcApi(topics.PLUGIN)
         self.dvr_plugin_rpc = dvr_rpc.DVRServerRpcApi(topics.PLUGIN)
         self.state_rpc = agent_rpc.PluginReportStateAPI(topics.REPORTS)
@@ -378,13 +380,10 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         # RPC network init
         self.context = context.get_admin_context_without_session()
         # Define the listening consumers for the agent
-        consumers = [[topics.PORT, topics.UPDATE],
-                     [topics.PORT, topics.DELETE],
-                     [constants.TUNNEL, topics.UPDATE],
+        consumers = [[constants.TUNNEL, topics.UPDATE],
                      [constants.TUNNEL, topics.DELETE],
                      [topics.SECURITY_GROUP, topics.UPDATE],
-                     [topics.DVR, topics.UPDATE],
-                     [topics.NETWORK, topics.UPDATE]]
+                     [topics.DVR, topics.UPDATE]]
         if self.l2_pop:
             consumers.append([topics.L2POPULATION, topics.UPDATE])
         self.connection = agent_rpc.create_consumers([self],

@@ -27,6 +27,7 @@ NETWORK_TYPE = 'network_type'
 PHYSICAL_NETWORK = 'physical_network'
 SEGMENTATION_ID = 'segmentation_id'
 MTU = 'mtu'
+NETWORK_ID = 'network_id'
 
 # The following keys are used in the binding level dictionaries
 # available via the binding_levels and original_binding_levels
@@ -979,10 +980,10 @@ class MechanismDriver(object):
         pass
 
     def get_workers(self):
-        """Get any NeutronWorker instances that should have their own process
+        """Get any worker instances that should have their own process
 
         Any driver that needs to run processes separate from the API or RPC
-        workers, can return a sequence of NeutronWorker instances.
+        workers, can return a sequence of worker instances.
         """
         return ()
 

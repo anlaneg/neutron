@@ -20,6 +20,10 @@ import copy
 import mock
 import netaddr
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import exceptions
+from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources
 from neutron_lib import constants as lib_constants
 from neutron_lib import context
 from neutron_lib import exceptions as n_exc
@@ -34,10 +38,6 @@ from webob import exc
 from neutron.api.rpc.agentnotifiers import l3_rpc_agent_api
 from neutron.api.rpc.handlers import l3_rpc
 from neutron.api.v2 import attributes
-from neutron.callbacks import events
-from neutron.callbacks import exceptions
-from neutron.callbacks import registry
-from neutron.callbacks import resources
 from neutron.db import _resource_extend as resource_extend
 from neutron.db import common_db_mixin
 from neutron.db import db_base_plugin_v2
@@ -571,6 +571,7 @@ class ExtraAttributesMixinTestCase(testlib_api.SqlTestCase):
     def setUp(self):
         super(ExtraAttributesMixinTestCase, self).setUp()
         self.mixin = l3_attrs_db.ExtraAttributesMixin()
+        directory.add_plugin(lib_constants.L3, self.mixin)
         self.ctx = context.get_admin_context()
         self.router = l3_models.Router()
         with self.ctx.session.begin():
@@ -2561,6 +2562,16 @@ class L3NatTestCaseBase(L3NatTestCaseMixin):
                         fip2_r2_res = associate_and_assert(fip2, p2)
                         self.assertEqual(fip2_r2_res, r2['router']['id'])
 
+    def test_floatingip_update_different_port_owner_as_admin(self):
+        with self.subnet() as private_sub:
+            with self.floatingip_no_assoc(private_sub) as fip:
+                with self.port(subnet=private_sub, tenant_id='other') as p:
+                    body = self._update('floatingips', fip['floatingip']['id'],
+                                        {'floatingip':
+                                         {'port_id': p['port']['id']}})
+                    self.assertEqual(p['port']['id'],
+                                     body['floatingip']['port_id'])
+
     def test_floatingip_port_delete(self):
         with self.subnet() as private_sub:
             with self.floatingip_no_assoc(private_sub) as fip:
@@ -3253,7 +3264,7 @@ class L3NatTestCaseBase(L3NatTestCaseMixin):
         # make sure the callback is registered.
         registry.subscribe(
             l3_db.L3RpcNotifierMixin._notify_subnet_gateway_ip_update,
-            resources.SUBNET_GATEWAY,
+            resources.SUBNET,
             events.AFTER_UPDATE)
         with mock.patch.object(plugin.l3_rpc_notifier,
                                'routers_updated') as chk_method:

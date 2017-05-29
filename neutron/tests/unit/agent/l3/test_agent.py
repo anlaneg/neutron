@@ -275,6 +275,23 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
             check.assert_called_once_with(ha_id,
                                           n_const.HA_ROUTER_STATE_STANDBY)
 
+    def test_periodic_sync_routers_task_not_check_ha_state_for_router(self):
+        # DVR-only agent should not trigger ha state check
+        self.conf.set_override('agent_mode', lib_constants.L3_AGENT_MODE_DVR)
+        agent = l3_agent.L3NATAgentWithStateReport(HOSTNAME, self.conf)
+        ha_id = _uuid()
+        active_routers = [
+            {'id': ha_id,
+             n_const.HA_ROUTER_STATE_KEY: n_const.HA_ROUTER_STATE_STANDBY,
+             'ha': True},
+            {'id': _uuid()}]
+        self.plugin_api.get_router_ids.return_value = [r['id'] for r
+                                                       in active_routers]
+        self.plugin_api.get_routers.return_value = active_routers
+        with mock.patch.object(agent, 'check_ha_state_for_router') as check:
+            agent.periodic_sync_routers_task(agent.context)
+            self.assertFalse(check.called)
+
     def test_periodic_sync_routers_task_raise_exception(self):
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
         self.plugin_api.get_router_ids.return_value = ['fake_id']
@@ -360,8 +377,10 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                 driver, 'destroy_monitored_metadata_proxy') as destroy_proxy:
             agent.periodic_sync_routers_task(agent.context)
 
-            expected_calls = [mock.call(mock.ANY, r_id, agent.conf)
-                              for r_id in stale_router_ids]
+            expected_calls = [
+                mock.call(
+                    mock.ANY, r_id, agent.conf, namespaces.NS_PREFIX + r_id)
+                for r_id in stale_router_ids]
             self.assertEqual(len(stale_router_ids), destroy_proxy.call_count)
             destroy_proxy.assert_has_calls(expected_calls, any_order=True)
 
@@ -2168,7 +2187,8 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                 if enableflag:
                     destroy_proxy.assert_called_with(mock.ANY,
                                                      router_id,
-                                                     mock.ANY)
+                                                     mock.ANY,
+                                                     'qrouter-' + router_id)
                 else:
                     self.assertFalse(destroy_proxy.call_count)
 

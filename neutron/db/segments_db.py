@@ -10,13 +10,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources
 from oslo_log import log as logging
 from oslo_utils import uuidutils
 
 from neutron._i18n import _LI
-from neutron.callbacks import events
-from neutron.callbacks import registry
-from neutron.callbacks import resources
 from neutron.db import api as db_api
 from neutron.db.models import segment as segments_model
 from neutron.objects import base as base_obj
@@ -27,6 +27,7 @@ LOG = logging.getLogger(__name__)
 NETWORK_TYPE = segments_model.NetworkSegment.network_type.name
 PHYSICAL_NETWORK = segments_model.NetworkSegment.physical_network.name
 SEGMENTATION_ID = segments_model.NetworkSegment.segmentation_id.name
+NETWORK_ID = segments_model.NetworkSegment.network_id.name
 
 
 def _make_segment_dict(obj):
@@ -34,7 +35,8 @@ def _make_segment_dict(obj):
     return {'id': obj.id,
             NETWORK_TYPE: obj.network_type,
             PHYSICAL_NETWORK: obj.physical_network,
-            SEGMENTATION_ID: obj.segmentation_id}
+            SEGMENTATION_ID: obj.segmentation_id,
+            NETWORK_ID: obj.network_id}
 
 
 def add_network_segment(context, network_id, segment, segment_index=0,

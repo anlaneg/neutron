@@ -29,7 +29,6 @@ from neutron.agent.ovsdb import api as ovsdb
 LOG = logging.getLogger(__name__)
 
 
-#将多个更改通过一个ovs-vsctl命令一次性下发
 class Transaction(ovsdb.Transaction):
     def __init__(self, context, check_error=False, log_errors=True, opts=None):
         self.context = context
@@ -188,6 +187,10 @@ class BrExistsCommand(DbCommand):
 
 #ovsdb控制
 class OvsdbVsctl(ovsdb.API):
+    def __init__(self, context):
+        super(OvsdbVsctl, self).__init__()
+        self.context = context
+
     def create_transaction(self, check_error=False, log_errors=True, **kwargs):
         return Transaction(self.context, check_error, log_errors, **kwargs)
 

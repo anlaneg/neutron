@@ -26,6 +26,7 @@ import os.path
 import eventlet.timeout
 import fixtures
 import mock
+from neutron_lib.callbacks import manager as registry_manager
 from neutron_lib import fixture
 from oslo_concurrency.fixture import lockutils
 from oslo_config import cfg
@@ -42,11 +43,10 @@ from neutron._i18n import _
 from neutron.agent.linux import external_process
 from neutron.api.rpc.callbacks.consumer import registry as rpc_consumer_reg
 from neutron.api.rpc.callbacks.producer import registry as rpc_producer_reg
-from neutron.callbacks import manager as registry_manager
-from neutron.callbacks import registry
 from neutron.common import config
 from neutron.common import rpc as n_rpc
 from neutron.db import _model_query as model_query
+from neutron.db import _resource_extend as resource_extend
 from neutron.db import agentschedulers_db
 from neutron.db import api as db_api
 from neutron import manager
@@ -113,7 +113,7 @@ def _catch_timeout(f):
     def func(self, *args, **kwargs):
         try:
             return f(self, *args, **kwargs)
-        except eventlet.timeout.Timeout as e:
+        except eventlet.Timeout as e:
             self.fail('Execution of this test timed out: %s' % e)
     return func
 
@@ -168,6 +168,7 @@ class DietTestCase(base.BaseTestCase):
         self.addCleanup(mock.patch.stopall)
 
         self.addCleanup(self.reset_model_query_hooks)
+        self.addCleanup(self.reset_resource_extend_functions)
 
         self.addOnException(self.check_for_systemexit)
         self.orig_pid = os.getpid()
@@ -177,6 +178,10 @@ class DietTestCase(base.BaseTestCase):
     @staticmethod
     def reset_model_query_hooks():
         model_query._model_query_hooks = {}
+
+    @staticmethod
+    def reset_resource_extend_functions():
+        resource_extend._resource_extend_functions = {}
 
     def addOnException(self, handler):
 
@@ -201,7 +206,7 @@ class DietTestCase(base.BaseTestCase):
 
     @contextlib.contextmanager
     def assert_max_execution_time(self, max_execution_time=5):
-        with eventlet.timeout.Timeout(max_execution_time, False):
+        with eventlet.Timeout(max_execution_time, False):
             yield
             return
         self.fail('Execution of this test timed out')
@@ -296,7 +301,10 @@ class BaseTestCase(DietTestCase):
 
         self.setup_rpc_mocks()
         self.setup_config()
-        self.setup_test_registry_instance()
+
+        self._callback_manager = registry_manager.CallbacksManager()
+        self.useFixture(fixture.CallbackRegistryFixture(
+            callback_manager=self._callback_manager))
         # Give a private copy of the directory to each test.
         self.useFixture(fixture.PluginDirectoryFixture())
 
@@ -363,12 +371,6 @@ class BaseTestCase(DietTestCase):
 
         self.addCleanup(n_rpc.cleanup)
         n_rpc.init(CONF)
-
-    def setup_test_registry_instance(self):
-        """Give a private copy of the registry to each test."""
-        self._callback_manager = registry_manager.CallbacksManager()
-        mock.patch.object(registry, '_get_callback_manager',
-                          return_value=self._callback_manager).start()
 
     def setup_config(self, args=None):
         """Tests that need a non-default config can override this method."""

@@ -283,7 +283,7 @@ class RootHelperProcess(subprocess.Popen):
         utils.execute(['kill', '-%d' % sig, pid], run_as_root=True)
 
     def read_stdout(self, timeout=None):
-        return self._read_stream(self.stdout, timeout)
+        return self._read_stream(self.stdout, timeout).decode('utf-8')
 
     @staticmethod
     def _read_stream(stream, timeout):
@@ -294,7 +294,7 @@ class RootHelperProcess(subprocess.Popen):
         return stream.readline()
 
     def writeline(self, data):
-        self.stdin.write(data + os.linesep)
+        self.stdin.write((data + os.linesep).encode('utf-8'))
         self.stdin.flush()
 
     def _wait_for_child_process(self, timeout=CHILD_PROCESS_TIMEOUT,

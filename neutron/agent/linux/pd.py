@@ -17,6 +17,9 @@ import functools
 import signal
 
 import eventlet
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources
 from neutron_lib import constants as n_const
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -25,9 +28,6 @@ import six
 from stevedore import driver
 
 from neutron._i18n import _, _LE
-from neutron.callbacks import events
-from neutron.callbacks import registry
-from neutron.callbacks import resources
 from neutron.common import constants as l3_constants
 from neutron.common import utils
 
@@ -191,10 +191,14 @@ class PrefixDelegation(object):
     def remove_stale_ri_ifname(self, router_id, stale_ifname):
         router = self.routers.get(router_id)
         if router is not None:
-            for subnet_id, pd_info in six.iteriterms(router['subnets']):
+            subnet_to_delete = None
+            for subnet_id, pd_info in six.iteritems(router['subnets']):
                 if pd_info.ri_ifname == stale_ifname:
                     self._delete_pd(router, pd_info)
-                    del router['subnets'][subnet_id]
+                    subnet_to_delete = subnet_id
+                    break
+            if subnet_to_delete:
+                del router['subnets'][subnet_to_delete]
 
     @staticmethod
     def _get_lla(mac):

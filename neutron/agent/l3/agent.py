@@ -15,6 +15,9 @@
 
 import eventlet
 import netaddr
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources
 from neutron_lib import constants as lib_const
 from neutron_lib import context as n_context
 from oslo_config import cfg
@@ -45,9 +48,6 @@ from neutron.agent.linux import ip_lib
 from neutron.agent.linux import pd
 from neutron.agent.metadata import driver as metadata_driver
 from neutron.agent import rpc as agent_rpc
-from neutron.callbacks import events
-from neutron.callbacks import registry
-from neutron.callbacks import resources
 from neutron.common import constants as l3_constants
 from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
@@ -583,6 +583,10 @@ class L3NATAgent(ha.AgentMixin,
         timestamp = timeutils.utcnow()
         router_ids = []
         chunk = []
+        is_snat_agent = (self.conf.agent_mode ==
+                         lib_const.L3_AGENT_MODE_DVR_SNAT)
+        is_dvr_only_agent = (self.conf.agent_mode ==
+                             lib_const.L3_AGENT_MODE_DVR)
         try:
             router_ids = self.plugin_rpc.get_router_ids(context)
             # fetch routers by chunks to reduce the load on server and to
@@ -598,14 +602,12 @@ class L3NATAgent(ha.AgentMixin,
                         # need to keep fip namespaces as well
                         ext_net_id = (r['external_gateway_info'] or {}).get(
                             'network_id')
-                        is_snat_agent = (self.conf.agent_mode ==
-                            lib_const.L3_AGENT_MODE_DVR_SNAT)
                         if ext_net_id:
                             ns_manager.keep_ext_net(ext_net_id)
                         elif is_snat_agent and not r.get('ha'):
                             ns_manager.ensure_snat_cleanup(r['id'])
                     # For HA routers check that DB state matches actual state
-                    if r.get('ha'):
+                    if r.get('ha') and not is_dvr_only_agent:
                         self.check_ha_state_for_router(
                             r['id'], r.get(l3_constants.HA_ROUTER_STATE_KEY))
                     update = queue.RouterUpdate(

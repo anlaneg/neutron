@@ -52,8 +52,9 @@ Service side design
 * neutron.services.qos.drivers.base:
   the interface class for pluggable QoS drivers that are used to update
   backends about new {create, update, delete} events on any rule or policy
-  change. The drivers also declare which QoS rules, VIF drivers and VNIC
-  types are supported.
+  change, including precommit events that some backends could need for
+  synchronization reason. The drivers also declare which QoS rules,
+  VIF drivers and VNIC types are supported.
 
 * neutron.core_extensions.base:
   Contains an interface class to implement core resource (port/network)
@@ -100,12 +101,14 @@ For a list of all rule types, see:
 neutron.services.qos.qos_consts.VALID_RULE_TYPES.
 
 The list of supported QoS rule types exposed by neutron is calculated as
-the common subset of rules supported by all active QoS drivers.
+set of rules supported by at least one active QoS driver.
 
 Note: the list of supported rule types reported by core plugin is not enforced
-when accessing QoS rule resources. This is mostly because then we would not be
-able to create rules while at least one of the QoS driver in gate lacks
-support for the rules we're trying to test.
+when accessing QoS rule resources.
+
+When a policy is attached to a port or a network, or when a rule is created or updated,
+core plugins may validate write requests against their backends, and invalidate requests
+that don't make sense or can't be implemented by affected backends.
 
 
 Database models
@@ -151,8 +154,10 @@ QoS versioned objects
 For QoS, the following neutron objects are implemented:
 
 * QosPolicy: directly maps to the conceptual policy resource, as defined above.
-* QosBandwidthLimitRule: defines the instance-egress bandwidth limit rule
-  type, characterized by a max kbps and a max burst kbits.
+* QosBandwidthLimitRule: defines the bandwidth limit rule, characterized by a
+  max_kbps parameter and a max_burst_kbits parameter. This rule also has a
+  direction parameter to set the traffic direction, from the instance point of
+  view.
 * QosDscpMarkingRule: defines the DSCP rule type, characterized by an even integer
   between 0 and 56.  These integers are the result of the bits in the DiffServ section
   of the IP header, and only certain configurations are valid.  As a result, the list
@@ -265,6 +270,22 @@ interface:
 * Open vSwitch (QosOVSAgentDriver);
 * SR-IOV (QosSRIOVAgentDriver);
 * Linux bridge (QosLinuxbridgeAgentDriver).
+
+Table of Neutron backends, supported rules and traffic direction (from the VM
+point of view)
+::
+
+    +----------------------+----------------+----------------+----------------+
+    | Rule \ Backend       | Open vSwitch   | SR-IOV         | Linux Bridge   |
+    +----------------------+----------------+----------------+----------------+
+    | Bandwidth Limit      | Egress         | Egress (1)     | Egress         |
+    +----------------------+----------------+----------------+----------------+
+    | Minimum Bandwidth    | -              | Egress         | -              |
+    +----------------------+----------------+----------------+----------------+
+    | DSCP Marking         | Egress         | -              | Egress         |
+    +----------------------+----------------+----------------+----------------+
+
+    (1) Max burst parameter is skipped because it's not supported by ip tool.
 
 
 Open vSwitch

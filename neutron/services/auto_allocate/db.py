@@ -14,6 +14,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import exceptions as n_exc
 from neutron_lib.plugins import directory
@@ -21,9 +24,6 @@ from oslo_log import log as logging
 
 from neutron._i18n import _, _LE
 from neutron.api.v2 import attributes
-from neutron.callbacks import events
-from neutron.callbacks import registry
-from neutron.callbacks import resources
 from neutron.common import exceptions as c_exc
 from neutron.db import _resource_extend as resource_extend
 from neutron.db import _utils as db_utils
@@ -40,13 +40,6 @@ from neutron.services.auto_allocate import exceptions
 LOG = logging.getLogger(__name__)
 IS_DEFAULT = 'is_default'
 CHECK_REQUIREMENTS = 'dry-run'
-
-
-def _extend_external_network_default(core_plugin, net_res, net_db):
-    """Add is_default field to 'show' response."""
-    if net_db.external is not None:
-        net_res[IS_DEFAULT] = net_db.external.is_default
-    return net_res
 
 
 @db_api.retry_if_session_inactive()
@@ -78,10 +71,8 @@ def _ensure_external_network_default_value_callback(
         obj.update()
 
 
+@resource_extend.has_resource_extenders
 class AutoAllocatedTopologyMixin(common_db_mixin.CommonDbMixin):
-
-    resource_extend.register_funcs(
-        attributes.NETWORKS, [_extend_external_network_default])
 
     def __new__(cls, *args, **kwargs):
         # NOTE(kevinbenton): we subscribe on object construction because
@@ -115,6 +106,14 @@ class AutoAllocatedTopologyMixin(common_db_mixin.CommonDbMixin):
         if not getattr(self, '_l3_plugin', None):
             self._l3_plugin = directory.get_plugin(constants.L3)
         return self._l3_plugin
+
+    @staticmethod
+    @resource_extend.extends([attributes.NETWORKS])
+    def _extend_external_network_default(net_res, net_db):
+        """Add is_default field to 'show' response."""
+        if net_db.external is not None:
+            net_res[IS_DEFAULT] = net_db.external.is_default
+        return net_res
 
     def get_auto_allocated_topology(self, context, tenant_id, fields=None):
         """Return tenant's network associated to auto-allocated topology.
