@@ -16,6 +16,7 @@
 import copy
 
 from eventlet import greenthread
+from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import port_security as psec
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net
@@ -28,6 +29,7 @@ from neutron_lib import constants as const
 from neutron_lib import exceptions as exc
 from neutron_lib.exceptions import port_security as psec_exc
 from neutron_lib.plugins import directory
+from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
 from oslo_db import exception as os_db_exception
 from oslo_log import helpers as log_helpers
@@ -74,14 +76,12 @@ from neutron.db import subnet_service_type_db_models as service_type_db
 from neutron.db import vlantransparent_db
 from neutron.extensions import allowedaddresspairs as addr_pair
 from neutron.extensions import availability_zone as az_ext
-from neutron.extensions import extra_dhcp_opt as edo_ext
 from neutron.extensions import multiprovidernet as mpnet
 from neutron.extensions import providernet as provider
 from neutron.extensions import vlantransparent
 from neutron.plugins.ml2.common import exceptions as ml2_exc
 from neutron.plugins.ml2 import config  # noqa
 from neutron.plugins.ml2 import db
-from neutron.plugins.ml2 import driver_api as api
 from neutron.plugins.ml2 import driver_context
 from neutron.plugins.ml2.extensions import qos as qos_ext
 from neutron.plugins.ml2 import managers
@@ -1594,23 +1594,53 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         return {d: self._bind_port_if_needed(pctx) if pctx else None
                 for d, pctx in result.items()}
 
-    @utils.transaction_guard
-    @db_api.retry_if_session_inactive()
     def update_port_status(self, context, port_id, status, host=None,
                            network=None):
         """
         Returns port_id (non-truncated uuid) if the port exists.
         Otherwise returns None.
-        network can be passed in to avoid another get_network call if
-        one was already performed by the caller.
+        'network' is deprecated and has no effect
         """
-        updated = False
-        with db_api.context_manager.writer.using(context):
-            port = db.get_port(context, port_id)
-            if not port:
+        full = db.partial_port_ids_to_full_ids(context, [port_id])
+        if port_id not in full:
+            return None
+        port_id = full[port_id]
+        return self.update_port_statuses(
+            context, {port_id: status}, host)[port_id]
+
+    @utils.transaction_guard
+    @db_api.retry_if_session_inactive()
+    def update_port_statuses(self, context, port_id_to_status, host=None):
+        result = {}
+        port_ids = port_id_to_status.keys()
+        port_dbs_by_id = db.get_port_db_objects(context, port_ids)
+        for port_id, status in port_id_to_status.items():
+            if not port_dbs_by_id.get(port_id):
                 LOG.debug("Port %(port)s update to %(val)s by agent not found",
                           {'port': port_id, 'val': status})
-                return None
+                result[port_id] = None
+                continue
+            result[port_id] = self._safe_update_individual_port_db_status(
+                context, port_dbs_by_id[port_id], status, host)
+        return result
+
+    def _safe_update_individual_port_db_status(self, context, port,
+                                               status, host):
+        port_id = port.id
+        try:
+            return self._update_individual_port_db_status(
+                context, port, status, host)
+        except Exception:
+            with excutils.save_and_reraise_exception() as ectx:
+                # don't reraise if port doesn't exist anymore
+                ectx.reraise = bool(db.get_port(context, port_id))
+
+    def _update_individual_port_db_status(self, context, port, status, host):
+        updated = False
+        network = None
+        port_id = port.id
+        with db_api.context_manager.writer.using(context):
+            context.session.add(port)  # bring port into writer session
             if (port.status != status and
                 port['device_owner'] != const.DEVICE_OWNER_DVR_INTERFACE):
                 original_port = self._make_port_dict(port)

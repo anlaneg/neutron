@@ -30,6 +30,7 @@ from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib import exceptions as exc
 from neutron_lib.plugins import directory
+from neutron_lib.plugins.ml2 import api as driver_api
 from oslo_db import exception as db_exc
 from oslo_utils import uuidutils
 
@@ -48,7 +49,6 @@ from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2.common import exceptions as ml2_exc
 from neutron.plugins.ml2 import config
 from neutron.plugins.ml2 import db as ml2_db
-from neutron.plugins.ml2 import driver_api
 from neutron.plugins.ml2 import driver_context
 from neutron.plugins.ml2.drivers import type_vlan
 from neutron.plugins.ml2 import managers
@@ -890,10 +890,10 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
         plugin = directory.get_plugin()
         with self.port() as port:
             net = plugin.get_network(ctx, port['port']['network_id'])
-            with mock.patch.object(plugin, 'get_network') as get_net:
+            with mock.patch.object(plugin, 'get_networks') as get_nets:
                 plugin.update_port_status(ctx, port['port']['id'], 'UP',
                                           network=net)
-                self.assertFalse(get_net.called)
+                self.assertFalse(get_nets.called)
 
     def test_update_port_mac(self):
         self.check_update_port_mac(
