@@ -40,6 +40,7 @@ class CommonDbMixin(object):
 
     @staticmethod
     def register_dict_extend_funcs(resource, funcs):
+        #注册资源的扩展funcs
         _resource_extend.register_funcs(resource, funcs)
 
     @property

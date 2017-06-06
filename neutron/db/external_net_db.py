@@ -89,14 +89,17 @@ class External_net_db_mixin(object):
         network_res[external_net.EXTERNAL] = network_db.external is not None
         return network_res
 
+    #external-network属性添加
     def _process_l3_create(self, context, net_data, req_data):
         external = req_data.get(external_net.EXTERNAL)
         external_set = validators.is_attr_set(external)
 
         if not external_set:
+            #不是external-network,返回
             return
 
         if external:
+            #填充external-network表
             net_obj.ExternalNetwork(
                 context, network_id=net_data['id']).create()
             context.session.add(rbac_db.NetworkRBAC(

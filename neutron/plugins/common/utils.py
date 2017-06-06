@@ -48,6 +48,7 @@ def get_deployment_physnet_mtu():
     return cfg.CONF.global_physnet_mtu
 
 
+#检查是否为合法的vlan
 def is_valid_vlan_tag(vlan):
     return p_const.MIN_VLAN_TAG <= vlan <= p_const.MAX_VLAN_TAG
 

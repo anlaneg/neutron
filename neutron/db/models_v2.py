@@ -242,10 +242,13 @@ class Network(standard_attr.HasStandardAttributes, model_base.BASEV2,
               model_base.HasId, model_base.HasProject):
     """Represents a v2 neutron network."""
 
+    #名称
     name = sa.Column(sa.String(db_const.NAME_FIELD_SIZE))
+    #含有哪些子网
     subnets = orm.relationship(
         Subnet,
         lazy="subquery")
+    #状态(active,build,error,down）
     status = sa.Column(sa.String(16))
     admin_state_up = sa.Column(sa.Boolean)
     vlan_transparent = sa.Column(sa.Boolean, nullable=True)

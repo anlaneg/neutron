@@ -369,6 +369,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         return self._make_network_dict(net_db, process_extensions=False,
                                        context=context)
 
+    #构造network数据库记录
     def create_network_db(self, context, network):
         # single request processing
         n = network['network']
@@ -381,6 +382,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                     'description': n.get('description')}
             network = models_v2.Network(**args)
             if n['shared']:
+                #如果网络是共享的,加入NetworkRBAC
                 entry = rbac_db.NetworkRBAC(
                     network=network, action='access_as_shared',
                     target_tenant='*', tenant_id=network['tenant_id'])

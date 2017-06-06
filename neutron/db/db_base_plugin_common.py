@@ -272,13 +272,15 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
                'mtu': network.get('mtu', n_const.DEFAULT_NETWORK_MTU),
                'status': network['status'],
                'subnets': [subnet['id']
-                           for subnet in network['subnets']]}
+                           for subnet in network['subnets']]} #显示其子网
         res['shared'] = self._is_network_shared(context, network.rbac_entries)
         # Call auxiliary extend functions, if any
         if process_extensions:
+            #应用扩展
             resource_extend.apply_funcs(attributes.NETWORKS, res, network)
         return db_utils.resource_fields(res, fields)
 
+    #检查是否为共享的network
     def _is_network_shared(self, context, rbac_entries):
         # The shared attribute for a network now reflects if the network
         # is shared to the calling tenant via an RBAC entry.

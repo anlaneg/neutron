@@ -52,6 +52,7 @@ class VlanTypeDriver(helpers.SegmentTypeDriver):
 
     def _parse_network_vlan_ranges(self):
         try:
+            #解析配置的vlan段
             self.network_vlan_ranges = plugin_utils.parse_network_vlan_ranges(
                 cfg.CONF.ml2_type_vlan.network_vlan_ranges)
         except Exception:
@@ -144,6 +145,7 @@ class VlanTypeDriver(helpers.SegmentTypeDriver):
         return segment.get(api.SEGMENTATION_ID) is None
 
     def validate_provider_segment(self, segment):
+        #取出采哪个网络的哪个vlan
         physical_network = segment.get(api.PHYSICAL_NETWORK)
         segmentation_id = segment.get(api.SEGMENTATION_ID)
         if physical_network:
@@ -159,6 +161,7 @@ class VlanTypeDriver(helpers.SegmentTypeDriver):
                             'max': p_const.MAX_VLAN_TAG})
                     raise exc.InvalidInput(error_message=msg)
             else:
+                #只给了物理网络，没有给出vlan,报错
                 if not self.network_vlan_ranges.get(physical_network):
                     msg = (_("Physical network %s requires segmentation_id "
                              "to be specified when creating a provider "
@@ -177,6 +180,7 @@ class VlanTypeDriver(helpers.SegmentTypeDriver):
                 raise exc.InvalidInput(error_message=msg)
 
     def reserve_provider_segment(self, context, segment):
+        #预留网络段
         filters = {}
         physical_network = segment.get(api.PHYSICAL_NETWORK)
         if physical_network is not None:
@@ -201,14 +205,19 @@ class VlanTypeDriver(helpers.SegmentTypeDriver):
                 api.SEGMENTATION_ID: alloc.vlan_id,
                 api.MTU: self.get_mtu(alloc.physical_network)}
 
+    #为租户分配segment
     def allocate_tenant_segment(self, context):
         for physnet in self.network_vlan_ranges:
+            #针对physnet尝试申请
             alloc = self.allocate_partially_specified_segment(
                 context, physical_network=physnet)
             if alloc:
+                #分配成功
                 break
         else:
+            #分配失败
             return
+        #填充分配的结果
         return {api.NETWORK_TYPE: p_const.TYPE_VLAN,
                 api.PHYSICAL_NETWORK: alloc.physical_network,
                 api.SEGMENTATION_ID: alloc.vlan_id,

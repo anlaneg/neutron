@@ -41,7 +41,7 @@ MAX_BINDING_LEVELS = 10
 
 class TypeManager(stevedore.named.NamedExtensionManager):
     """Manage network segment types using drivers."""
-
+    #管理网络段类型驱动，例如vxlan,vlan等
     def __init__(self):
         # Mapping from type name to DriverManager
         self.drivers = {}
@@ -49,7 +49,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
         LOG.info(_LI("Configured type driver names: %s"),
                  cfg.CONF.ml2.type_drivers)
         super(TypeManager, self).__init__('neutron.ml2.type_drivers',
-                                          cfg.CONF.ml2.type_drivers,
+                                          cfg.CONF.ml2.type_drivers,#要求载入type_drivers中指明的drivers
                                           invoke_on_load=True)
         LOG.info(_LI("Loaded type driver names: %s"), self.names())
         self._register_types()
@@ -58,7 +58,9 @@ class TypeManager(stevedore.named.NamedExtensionManager):
 
     def _register_types(self):
         for ext in self:
+            #遍历加载进来的extension
             network_type = ext.obj.get_type()
+            #防止重复加载
             if network_type in self.drivers:
                 LOG.error(_LE("Type driver '%(new_driver)s' ignored because"
                               " type driver '%(old_driver)s' is already"
@@ -67,6 +69,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
                            'old_driver': self.drivers[network_type].name,
                            'type': network_type})
             else:
+                #注册此类型的driver,例如vlan:neutron.plugins.ml2.drivers.type_vlan:VlanTypeDriver
                 self.drivers[network_type] = ext
         LOG.info(_LI("Registered types: %s"), self.drivers.keys())
 
@@ -76,18 +79,21 @@ class TypeManager(stevedore.named.NamedExtensionManager):
             if network_type in self.drivers:
                 self.tenant_network_types.append(network_type)
             else:
+                #没有加载此驱动，但租户网络需要，配置错误，退出
                 LOG.error(_LE("No type driver for tenant network_type: %s. "
                               "Service terminated!"), network_type)
                 raise SystemExit(1)
         LOG.info(_LI("Tenant network_types: %s"), self.tenant_network_types)
 
     def _check_external_network_type(self, ext_network_type):
+        #查看外部网络类型是否满足
         if ext_network_type and ext_network_type not in self.drivers:
             LOG.error(_LE("No type driver for external network_type: %s. "
                           "Service terminated!"), ext_network_type)
             raise SystemExit(1)
 
     def _process_provider_segment(self, segment):
+        #segment必须指出网络类型，物理网络，以及seg_id
         (network_type, physical_network,
          segmentation_id) = (self._get_attribute(segment, attr)
                              for attr in provider.ATTRIBUTES)
@@ -96,6 +102,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
             segment = {ml2_api.NETWORK_TYPE: network_type,
                        ml2_api.PHYSICAL_NETWORK: physical_network,
                        ml2_api.SEGMENTATION_ID: segmentation_id}
+            #检查配置是否合法
             self.validate_provider_segment(segment)
             return segment
 
@@ -112,6 +119,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
             segment = self._get_provider_segment(network)
             return [self._process_provider_segment(segment)]
         elif validators.is_attr_set(network.get(mpnet.SEGMENTS)):
+            #采用的是segments方式
             segments = [self._process_provider_segment(s)
                         for s in network[mpnet.SEGMENTS]]
             mpnet.check_duplicate_segments(segments, self.is_partial_segment)
@@ -160,6 +168,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
             segments = net_segments[network['id']]
             self._extend_network_dict_provider(network, segments)
 
+    #扩充network的结果集字段，添加segments信息
     def _extend_network_dict_provider(self, network, segments):
         if not segments:
             LOG.debug("Network %s has no segments", network['id'])
@@ -186,25 +195,31 @@ class TypeManager(stevedore.named.NamedExtensionManager):
 
     def _add_network_segment(self, context, network_id, segment,
                              segment_index=0):
+        #保存申请好的网络段
         segments_db.add_network_segment(
             context, network_id, segment, segment_index)
 
     def create_network_segments(self, context, network, tenant_id):
         """Call type drivers to create network segments."""
+        #分配一个网络段
         segments = self._process_provider_create(network)
         with db_api.context_manager.writer.using(context):
             network_id = network['id']
             if segments:
+                #segments用户已要求
                 for segment_index, segment in enumerate(segments):
+                    #尝试预留
                     segment = self.reserve_provider_segment(
                         context, segment)
                     self._add_network_segment(context, network_id, segment,
                                               segment_index)
             elif (cfg.CONF.ml2.external_network_type and
                   self._get_attribute(network, external_net.EXTERNAL)):
+                #配置了external_network_type且当前当前network为external
                 segment = self._allocate_ext_net_segment(context)
                 self._add_network_segment(context, network_id, segment)
             else:
+                #未指定segments,需要为租户自动申请
                 segment = self._allocate_tenant_net_segment(context)
                 self._add_network_segment(context, network_id, segment)
 
@@ -257,6 +272,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
                                                        segment)
 
     def _allocate_segment(self, context, network_type):
+        #分配网络segment
         driver = self.drivers.get(network_type)
         if isinstance(driver.obj, api.TypeDriver):
             return driver.obj.allocate_tenant_segment(context.session)
@@ -264,6 +280,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
             return driver.obj.allocate_tenant_segment(context)
 
     def _allocate_tenant_net_segment(self, context):
+        #尝试配置的所有租户网络类型，如果有一个可以分配成功，则返回
         for network_type in self.tenant_network_types:
             segment = self._allocate_segment(context, network_type)
             if segment:
@@ -271,6 +288,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
         raise exc.NoNetworkAvailable()
 
     def _allocate_ext_net_segment(self, context):
+        #申请外部网络段
         network_type = cfg.CONF.ml2.external_network_type
         segment = self._allocate_segment(context, network_type)
         if segment:
@@ -336,7 +354,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
 
 class MechanismManager(stevedore.named.NamedExtensionManager):
     """Manage networking mechanisms using drivers."""
-
+    #管理网络机制，例如openvswitch = neutron.plugins.ml2.drivers.openvswitch.mech_driver.mech_openvswitch:OpenvswitchMechanismDriver
     def __init__(self):
         # Registered mechanism drivers, keyed by name.
         self.mech_drivers = {}
@@ -348,7 +366,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                  cfg.CONF.ml2.mechanism_drivers)
         super(MechanismManager, self).__init__(
             'neutron.ml2.mechanism_drivers',
-            cfg.CONF.ml2.mechanism_drivers,
+            cfg.CONF.ml2.mechanism_drivers,#加载网络机制，例如走linux bridge方式，或者走ovs方式
             invoke_on_load=True,
             name_order=True,
             on_missing_entrypoints_callback=self._driver_not_found,
@@ -421,6 +439,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         what db exception is retriable
         """
         errors = []
+        #针对所有driver,调用指定方式method_name
         for driver in self.ordered_mech_drivers:
             try:
                 getattr(driver.obj, method_name)(context)
@@ -867,7 +886,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
 
 class ExtensionManager(stevedore.named.NamedExtensionManager):
     """Manage extension drivers using drivers."""
-
+    #管理功能扩展，例如dns = neutron.plugins.ml2.extensions.dns_integration:DNSExtensionDriverML2
     def __init__(self):
         # Ordered list of extension drivers, defining
         # the order in which the drivers are called.
@@ -882,12 +901,14 @@ class ExtensionManager(stevedore.named.NamedExtensionManager):
         LOG.info(_LI("Loaded extension driver names: %s"), self.names())
         self._register_drivers()
 
+    #注册扩展driver
     def _register_drivers(self):
         """Register all extension drivers.
 
         This method should only be called once in the ExtensionManager
         constructor.
         """
+        #遍历self,取出所有ext,并将ext加入
         for ext in self:
             self.ordered_ext_drivers.append(ext)
         LOG.info(_LI("Registered extension drivers: %s"),
@@ -909,6 +930,7 @@ class ExtensionManager(stevedore.named.NamedExtensionManager):
                          {'alias': alias, 'drv': driver.name})
         return exts
 
+    #针对每一个扩展驱动，调用其method_name方法
     def _call_on_ext_drivers(self, method_name, plugin_context, data, result):
         """Helper method for calling a method across all extension drivers."""
         for driver in self.ordered_ext_drivers:

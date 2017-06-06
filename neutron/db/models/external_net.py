@@ -21,11 +21,13 @@ from sqlalchemy import sql
 
 from neutron.db import models_v2
 
-
+#external-network表
 class ExternalNetwork(model_base.BASEV2):
+    #network-id
     network_id = sa.Column(sa.String(36),
                            sa.ForeignKey('networks.id', ondelete="CASCADE"),
                            primary_key=True)
+    #是否默认的external-network
     # introduced by auto-allocated-topology extension
     is_default = sa.Column(sa.Boolean(), nullable=False,
                            server_default=sql.false())

@@ -754,6 +754,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         return min(mtus) if mtus else 0
 
     def _before_create_network(self, context, network):
+        #通知network创建前事件
         net_data = network[attributes.NETWORK]
         registry.notify(resources.NETWORK, events.BEFORE_CREATE, self,
                         context=context, network=net_data)
@@ -765,12 +766,15 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             net_db = self.create_network_db(context, network)
             result = self._make_network_dict(net_db, process_extensions=False,
                                              context=context)
+            #调用所有扩展的process_create_network
             self.extension_manager.process_create_network(context, net_data,
                                                           result)
             self._process_l3_create(context, result, net_data)
             net_data['id'] = result['id']
+            #分配netwrok-segment
             self.type_manager.create_network_segments(context, net_data,
                                                       tenant_id)
+            #扩充network的结果集
             self.type_manager.extend_network_dict_provider(context, result)
             # Update the transparent vlan if configured
             if utils.is_extension_supported(self, 'vlan-transparent'):
@@ -787,26 +791,32 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                                                 net_data[az_ext.AZ_HINTS])
                 net_db[az_ext.AZ_HINTS] = az_hints
                 result[az_ext.AZ_HINTS] = az_hints
+            #触发网络创建提交前事件
             registry.notify(resources.NETWORK, events.PRECOMMIT_CREATE, self,
                             context=context, request=net_data, network=result)
 
+            #network扩展函数
             resource_extend.apply_funcs('networks', result, net_db)
             mech_context = driver_context.NetworkContext(self, context,
                                                          result)
+            #创建network提交前钩子
             self.mechanism_manager.create_network_precommit(mech_context)
         return result, mech_context
 
     @utils.transaction_guard
     @db_api.retry_if_session_inactive()
     def create_network(self, context, network):
-        self._before_create_network(context, network)
+        #创建network
+        self._before_create_network(context, network) #触发事件通知
         result, mech_context = self._create_network_db(context, network)
         return self._after_create_network(context, result, mech_context)
 
     def _after_create_network(self, context, result, mech_context):
         kwargs = {'context': context, 'network': result}
+        #触发network创建after事件通知
         registry.notify(resources.NETWORK, events.AFTER_CREATE, self, **kwargs)
         try:
+            #触发post钩子点
             self.mechanism_manager.create_network_postcommit(mech_context)
         except ml2_exc.MechanismDriverError:
             with excutils.save_and_reraise_exception():

@@ -22,6 +22,7 @@ from neutron.common import utils
 
 # This dictionary will store methods for extending API resources.
 # Extensions can add their own methods by invoking register_funcs().
+# 记录resource注册的func
 _resource_extend_functions = {
     # <resource1> : [<func1>, <func2>, ...],
     # <resource2> : [<func1>, <func2>, ...],
@@ -32,7 +33,7 @@ _resource_extend_functions = {
 # resources that each method will extend on class initialization.
 _DECORATED_EXTEND_METHODS = collections.defaultdict(list)
 
-
+#为指定resource注册一组funcs(funcs是一个list)
 def register_funcs(resource, funcs):
     """Add functions to extend a resource.
 
@@ -54,7 +55,7 @@ def register_funcs(resource, funcs):
              for f in funcs]
     _resource_extend_functions.setdefault(resource, []).extend(funcs)
 
-
+#取指定resource的已注册funcs
 def get_funcs(resource):
     """Retrieve a list of functions extending a resource.
 
@@ -67,7 +68,7 @@ def get_funcs(resource):
     """
     return _resource_extend_functions.get(resource, [])
 
-
+#针对某种reource调用func
 def apply_funcs(resource_type, response, db_object):
     for func in get_funcs(resource_type):
         resolved_func = utils.resolve_ref(func)
