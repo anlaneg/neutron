@@ -791,6 +791,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
             return False
 
         for driver in self.ordered_mech_drivers:
+            #检查能不能绑定
             if not self._check_driver_to_bind(driver, segments_to_bind,
                                               context._binding_levels):
                 continue
@@ -820,6 +821,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                             context._pop_binding_level()
                     else:
                         # Binding complete.
+                        # 绑定成功
                         LOG.debug("Bound port: %(port)s, "
                                   "host: %(host)s, "
                                   "vif_type: %(vif_type)s, "
@@ -837,6 +839,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                               driver.name)
 
     def is_host_filtering_supported(self):
+        #所有driver支持过滤时返回True
         return all(driver.obj.is_host_filtering_supported()
                    for driver in self.ordered_mech_drivers)
 
@@ -874,6 +877,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         for level in binding_levels:
             if (level.driver == driver and
                 level.segment_id in segment_ids_to_bind):
+                #如果binding_levels中已存在此绑定，则返回False
                 return False
         return True
 

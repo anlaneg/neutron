@@ -50,6 +50,7 @@ class AgentMechanismDriverBase(api.MechanismDriver):
         :param agent_type: Constant identifying agent type in agents_db
         :param supported_vnic_types: The binding:vnic_type values we can bind
         """
+        #标识符，用于指出是什么agent,指明支持哪些vnic类型
         self.agent_type = agent_type
         self.supported_vnic_types = supported_vnic_types
 
@@ -61,6 +62,7 @@ class AgentMechanismDriverBase(api.MechanismDriver):
 
     def update_port_precommit(self, context):
         if context.host == context.original_host:
+            #未更新host,不处理
             return
         self._insert_provisioning_block(context)
 
@@ -76,6 +78,7 @@ class AgentMechanismDriverBase(api.MechanismDriver):
         if vnic_type not in self.supported_vnic_types:
             # we check the VNIC type because there could be multiple agents
             # on a single host with different VNIC types
+            # 网卡类型，不是我们支持的，返回
             return
         if context.host_agents(self.agent_type):
             provisioning_blocks.add_provisioning_component(
@@ -89,12 +92,14 @@ class AgentMechanismDriverBase(api.MechanismDriver):
                    'network': context.network.current['id']})
         vnic_type = context.current.get(portbindings.VNIC_TYPE,
                                         portbindings.VNIC_NORMAL)
+        #vnic类型不在我们支持的类型列里，无法绑定
         if vnic_type not in self.supported_vnic_types:
             LOG.debug("Refusing to bind due to unsupported vnic_type: %s",
                       vnic_type)
             return
         agents = context.host_agents(self.agent_type)
         if not agents:
+            #没有此扩展对应的agent,无法绑定
             LOG.debug("Port %(pid)s on network %(network)s not bound, "
                       "no agent of type %(at)s registered on host %(host)s",
                       {'pid': context.current['id'],
@@ -104,6 +109,7 @@ class AgentMechanismDriverBase(api.MechanismDriver):
         for agent in agents:
             LOG.debug("Checking agent: %s", agent)
             if agent['alive']:
+                #绑定需要agent是活着的
                 for segment in context.segments_to_bind:
                     if self.try_to_bind_segment_for_agent(context, segment,
                                                           agent):
@@ -168,6 +174,7 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase):
 
     def try_to_bind_segment_for_agent(self, context, segment, agent):
         if self.check_segment_for_agent(segment, agent):
+            #如果可以绑定，则set binding
             context.set_binding(segment[api.ID],
                                 self.get_vif_type(context, agent, segment),
                                 self.get_vif_details(context, agent, segment))
@@ -208,10 +215,12 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase):
 
         hosts = set()
         filters = {'host': candidate_hosts, 'agent_type': [self.agent_type]}
+        #收集满足条件的agent,并检查每一个agent，是否可以被绑定，如果可以将其加入到hosts中
         for agent in agent_getter(context, filters=filters):
             if any(self.check_segment_for_agent(s, agent) for s in segments):
                 hosts.add(agent['host'])
 
+        #返回收集到的hosts
         return hosts
 
     def check_segment_for_agent(self, segment, agent):
@@ -228,7 +237,9 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase):
         bound for the agent.
         """
 
+        #获得此agent上桥或者接口的映射
         mappings = self.get_mappings(agent)
+        #获得容许的network类型
         allowed_network_types = self.get_allowed_network_types(agent)
 
         LOG.debug("Checking segment: %(segment)s "
@@ -237,6 +248,7 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase):
                   {'segment': segment, 'mappings': mappings,
                    'network_types': allowed_network_types})
 
+        #检查这个网络类型是否被驱动支持
         network_type = segment[api.NETWORK_TYPE]
         if network_type not in allowed_network_types:
             LOG.debug(
@@ -250,6 +262,8 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase):
                  'allowed_network_types': allowed_network_types})
             return False
 
+        #检查网络类型是否为flat,vlan,如果是则需要检查physical-network在不在agent映射中
+        #如果不在，则不能绑定
         if network_type in [p_constants.TYPE_FLAT, p_constants.TYPE_VLAN]:
             physnet = segment[api.PHYSICAL_NETWORK]
             if not self.physnet_in_mappings(physnet, mappings):

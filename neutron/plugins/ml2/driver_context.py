@@ -262,6 +262,7 @@ class PortContext(MechanismDriverContext, api.PortContext):
         return self._segments_to_bind
 
     def host_agents(self, agent_type):
+        #取出要绑定主机上的agents
         return self._plugin.get_agents(self._plugin_context,
                                        filters={'agent_type': [agent_type],
                                                 'host': [self._binding.host]})

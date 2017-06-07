@@ -314,17 +314,20 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
         host = const.ATTR_NOT_SPECIFIED
         if attrs and portbindings.HOST_ID in attrs:
+            #提取配置的'hostid'
             host = attrs.get(portbindings.HOST_ID) or ''
 
         original_host = binding.host
         if (validators.is_attr_set(host) and
             original_host != host):
+            #有设置host且与原有host不一致，需要更新
             binding.host = host
             changes = True
 
         vnic_type = attrs and attrs.get(portbindings.VNIC_TYPE)
         if (validators.is_attr_set(vnic_type) and
             binding.vnic_type != vnic_type):
+            #检查vnic类型是否有变更
             binding.vnic_type = vnic_type
             changes = True
 
@@ -335,6 +338,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
         if profile not in (None, const.ATTR_NOT_SPECIFIED,
                            self._get_profile(binding)):
+            #检查profile是否有变化
             binding.profile = jsonutils.dumps(profile)
             if len(binding.profile) > models.BINDING_PROFILE_LEN:
                 msg = _("binding:profile value too large")
@@ -343,22 +347,27 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
         # Unbind the port if needed.
         if changes:
+            #解清除掉以前的数据
             binding.vif_type = portbindings.VIF_TYPE_UNBOUND
             binding.vif_details = ''
             db.clear_binding_levels(plugin_context, port_id, original_host)
             mech_context._clear_binding_levels()
+            #将接口状态置为down
             port['status'] = const.PORT_STATUS_DOWN
+            #更新port状态（变更为down)
             super(Ml2Plugin, self).update_port(
                 mech_context._plugin_context, port_id,
                 {attributes.PORT: {'status': const.PORT_STATUS_DOWN}})
 
         if port['device_owner'] == const.DEVICE_OWNER_DVR_INTERFACE:
+            #如果这个接口是分布式路由器的接口，则不绑定主机
             binding.vif_type = portbindings.VIF_TYPE_UNBOUND
             binding.vif_details = ''
             db.clear_binding_levels(plugin_context, port_id, original_host)
             mech_context._clear_binding_levels()
             binding.host = ''
 
+        #更新port数据
         self._update_port_dict_binding(port, binding)
         # merging here brings binding changes into the session so they can be
         # committed since the binding attached to the context is detached from
@@ -397,6 +406,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
             if not try_again:
                 if allow_notify and need_notify:
+                    #触发port更新通知
                     self._notify_port_updated(context)
                 return context
 
@@ -406,6 +416,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         return context
 
     def _should_bind_port(self, context):
+        #host信息有，且vif类型是未绑定或者绑定失败，则需要绑定
         return (context._binding.host and context._binding.vif_type
                 in (portbindings.VIF_TYPE_UNBOUND,
                     portbindings.VIF_TYPE_BINDING_FAILED))
@@ -571,6 +582,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         return cur_context, need_notify, try_again
 
     def _update_port_dict_binding(self, port, binding):
+        #依据binding信息更新port_dict
         port[portbindings.VNIC_TYPE] = binding.vnic_type
         port[portbindings.PROFILE] = self._get_profile(binding)
         if port['device_owner'] == const.DEVICE_OWNER_DVR_INTERFACE:
@@ -836,6 +848,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
     @db_api.retry_if_session_inactive()
     def update_network(self, context, id, network):
         net_data = network[attributes.NETWORK]
+        #不许更新provider
         provider._raise_if_updates_provider_attributes(net_data)
 
         with db_api.context_manager.writer.using(context):

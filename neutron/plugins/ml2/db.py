@@ -43,6 +43,7 @@ MAX_PORTS_PER_QUERY = 500
 
 @db_api.context_manager.writer
 def add_port_binding(context, port_id):
+    #向protbinding表中存入数据，指明此port未bound
     record = models.PortBinding(
         port_id=port_id,
         vif_type=portbindings.VIF_TYPE_UNBOUND)

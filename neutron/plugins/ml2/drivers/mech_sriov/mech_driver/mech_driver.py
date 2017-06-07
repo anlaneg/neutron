@@ -42,6 +42,7 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     VIF Driver via libvirt domain XML.
     L2 Agent presents in  order to manage port update events.
     """
+    #sriov也是仅实现了port_bind
 
     def __init__(self,
                  agent_type=constants.AGENT_TYPE_NIC_SWITCH,
@@ -56,7 +57,7 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         :param supported_vnic_types: The binding:vnic_type values we can bind
         """
         self.agent_type = agent_type
-        self.supported_vnic_types = supported_vnic_types
+        self.supported_vnic_types = supported_vnic_types #sriov机制支持三种vnic方式
         # NOTE(ndipanov): PF passthrough requires a different vif type
         self.vnic_type_for_vif_type = (
             {vtype: portbindings.VIF_TYPE_HOSTDEV_PHY
@@ -67,9 +68,11 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         sriov_qos_driver.register()
 
     def get_allowed_network_types(self, agent):
+        #仅容许flag,vlan两种网络类型
         return (p_const.TYPE_FLAT, p_const.TYPE_VLAN)
 
     def get_mappings(self, agent):
+        #获取给定agent的设备mappings
         return agent['configurations'].get('device_mappings', {})
 
     def bind_port(self, context):
@@ -77,9 +80,11 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                   "network %(network)s",
                   {'port': context.current['id'],
                    'network': context.network.current['id']})
+        #获取vinic类型
         vnic_type = context.current.get(portbindings.VNIC_TYPE,
                                         portbindings.VNIC_NORMAL)
         if vnic_type not in self.supported_vnic_types:
+            #如果本扩展不支持此vnic_types，则放弃
             LOG.debug("Refusing to bind due to unsupported vnic_type: %s",
                       vnic_type)
             return
@@ -93,6 +98,7 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
             # functions can use device mapping checks and the plugin can
             # get port status updates.
             for segment in context.segments_to_bind:
+                #检查能否绑定
                 if self.try_to_bind_segment_for_agent(context, segment,
                                                       agent=None):
                     break
@@ -101,6 +107,7 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         for agent in context.host_agents(self.agent_type):
             LOG.debug("Checking agent: %s", agent)
             if agent['alive']:
+                #选项活跃的agent
                 for segment in context.segments_to_bind:
                     if self.try_to_bind_segment_for_agent(context, segment,
                                                           agent):
@@ -116,7 +123,9 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
             vnic_type, portbindings.VIF_TYPE_HW_VEB)
 
         if not self.check_segment_for_agent(segment, agent):
+            #agent上没有segment要求的段，无法绑定
             return False
+        #如果agent is None,则置状态为active,否则置为down
         port_status = (constants.PORT_STATUS_ACTIVE if agent is None
                        else constants.PORT_STATUS_DOWN)
         context.set_binding(segment[api.ID],
@@ -133,6 +142,7 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         :param agent: agents_db entry describing agent to bind or None
         :returns: True if segment can be bound for agent
         """
+        #检查指定段是否在此agent上存在
         network_type = segment[api.NETWORK_TYPE]
         if network_type in self.get_allowed_network_types(agent):
             if agent:
@@ -146,6 +156,7 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
 
     def check_vlan_transparency(self, context):
         """SR-IOV driver vlan transparency support."""
+        #支持vlan透传
         return True
 
     def _get_vif_details(self, segment):
@@ -155,6 +166,7 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         elif network_type == p_const.TYPE_VLAN:
             vlan_id = segment[api.SEGMENTATION_ID]
         else:
+            #不支持其它网络类型
             raise exc.SriovUnsupportedNetworkType(net_type=network_type)
         vif_details = self.vif_details.copy()
         vif_details[portbindings.VIF_DETAILS_VLAN] = str(vlan_id)

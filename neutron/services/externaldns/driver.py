@@ -34,6 +34,7 @@ class ExternalDNSService(object):
     @classmethod
     def get_instance(cls):
         """Return an instance of the configured external DNS driver."""
+        #加载外部dns的驱动
         external_dns_driver_name = cfg.CONF.external_dns_driver
         mgr = manager.NeutronManager
         LOG.debug("Loading external dns driver: %s", external_dns_driver_name)

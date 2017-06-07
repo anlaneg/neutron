@@ -34,6 +34,7 @@ sc_cfg.register_securitygroups_opts()
 
 
 def is_firewall_enabled():
+    #检查安全组是否被开启
     return cfg.CONF.SECURITYGROUP.enable_security_group
 
 

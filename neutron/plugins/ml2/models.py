@@ -32,6 +32,7 @@ class PortBinding(model_base.BASEV2):
     which MechanismDriver and which segment are used by the port
     binding.
     """
+    #记录port的使用情况（即如何连接，存在在那个机器上，当前是什么状态）
 
     __tablename__ = 'ml2_port_bindings'
 

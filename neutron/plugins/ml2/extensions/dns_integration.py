@@ -48,18 +48,21 @@ class DNSExtensionDriver(api.ExtensionDriver):
             return
 
         if dns_domain:
+            #添加
             net_obj.NetworkDNSDomain(plugin_context,
                                      network_id=db_data['id'],
                                      dns_domain=dns_domain).create()
         db_data[dns.DNSDOMAIN] = dns_domain
 
     def process_update_network(self, plugin_context, request_data, db_data):
+        #检查是否设置有dns_domain
         new_value = request_data.get(dns.DNSDOMAIN)
         if not validators.is_attr_set(new_value):
             return
 
         current_dns_domain = db_data.get(dns.DNSDOMAIN)
         if current_dns_domain == new_value:
+            #未变更
             return
 
         net_id = db_data['id']
@@ -68,13 +71,16 @@ class DNSExtensionDriver(api.ExtensionDriver):
                 plugin_context,
                 network_id=net_id)
             if new_value:
+                #更新
                 net_dns_domain['dns_domain'] = new_value
                 db_data[dns.DNSDOMAIN] = new_value
                 net_dns_domain.update()
             else:
+                #删除
                 net_dns_domain.delete()
                 db_data[dns.DNSDOMAIN] = ''
         elif new_value:
+            #添加
             net_obj.NetworkDNSDomain(plugin_context,
                                      network_id=net_id,
                                      dns_domain=new_value).create()
@@ -83,8 +89,10 @@ class DNSExtensionDriver(api.ExtensionDriver):
     def process_create_port(self, plugin_context, request_data, db_data):
         if not request_data.get(dns.DNSNAME):
             return
+        #获取port配置的dns_name
         dns_name, is_dns_domain_default = self._get_request_dns_name(
             request_data)
+        #未启用
         if is_dns_domain_default:
             return
         network = self._get_network(plugin_context, db_data['network_id'])
@@ -96,6 +104,7 @@ class DNSExtensionDriver(api.ExtensionDriver):
             current_dns_name = dns_name
             current_dns_domain = network[dns.DNSDOMAIN]
 
+        #存入PortDns表（关于此port的dns信息）
         port_obj.PortDNS(plugin_context,
                          port_id=db_data['id'],
                          current_dns_name=current_dns_name,
@@ -302,9 +311,9 @@ class DNSExtensionDriverML2(DNSExtensionDriver):
 
     def external_dns_not_needed(self, context, network):
         dns_driver = _get_dns_driver()
-        if not dns_driver:
+        if not dns_driver:#没有配置driver
             return True
-        if network['router:external']:
+        if network['router:external']:#network是外部网络
             return True
         segments = segments_db.get_network_segments(context, network['id'])
         if len(segments) > 1:
@@ -312,6 +321,7 @@ class DNSExtensionDriverML2(DNSExtensionDriver):
         provider_net = segments[0]
         if provider_net['network_type'] == 'local':
             return True
+        #必须是租户网络
         if provider_net['network_type'] == 'flat':
             return False
         if provider_net['network_type'] == 'vlan':

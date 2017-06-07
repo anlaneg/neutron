@@ -42,6 +42,7 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     to have connectivity to at least one segment of the port's
     network.
     """
+    #对ovs机制驱动而言，其实际上仅有在port_bind时有事情做
 
     def __init__(self):
         sg_enabled = securitygroups_rpc.is_firewall_enabled()
@@ -51,21 +52,24 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         vif_details = {portbindings.CAP_PORT_FILTER: sg_enabled,
                        portbindings.OVS_HYBRID_PLUG: hybrid_plug_required}
         super(OpenvswitchMechanismDriver, self).__init__(
-            constants.AGENT_TYPE_OVS,
-            portbindings.VIF_TYPE_OVS,
+            constants.AGENT_TYPE_OVS,#指明agent类型
+            portbindings.VIF_TYPE_OVS,#指明port绑定类型
             vif_details)
         ovs_qos_driver.register()
 
     def get_allowed_network_types(self, agent):
+        #返回自身支持哪些网络类型
         return (agent['configurations'].get('tunnel_types', []) +
                 [p_constants.TYPE_LOCAL, p_constants.TYPE_FLAT,
                  p_constants.TYPE_VLAN])
 
     def get_mappings(self, agent):
+        #返回自身桥配置
         return agent['configurations'].get('bridge_mappings', {})
 
     def check_vlan_transparency(self, context):
         """Currently Openvswitch driver doesn't support vlan transparency."""
+        #当前openvswitch驱动不支持vlan透传
         return False
 
     def get_vif_type(self, context, agent, segment):
@@ -75,6 +79,7 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                     a_const.OVS_DPDK_VHOST_USER_CLIENT]) and
             agent['configurations'].get('datapath_type') ==
             a_const.OVS_DATAPATH_NETDEV):
+            #对于netdev返回虚接口的类型
             return portbindings.VIF_TYPE_VHOST_USER
         return self.vif_type
 
@@ -82,11 +87,13 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         # NOTE(sean-k-mooney): this function converts the ovs vhost user
         # driver mode into the qemu vhost user mode. If OVS is the server,
         # qemu is the client and vice-versa.
+        # 确定是vhostuser还是vhostuserclient
         if (a_const.OVS_DPDK_VHOST_USER_CLIENT in iface_types):
             return portbindings.VHOST_USER_MODE_SERVER
         return portbindings.VHOST_USER_MODE_CLIENT
 
     def get_vif_details(self, context, agent, segment):
+        #构造vif的详细情况
         vif_details = self._pre_get_vif_details(agent, context)
         self._set_bridge_name(context.current, vif_details)
         return vif_details
@@ -116,13 +123,14 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                 details[hybrid] = a_config[hybrid]
             return details
         else:
+            #虚接口类型为vhostuser时进入
             sock_path = self.agent_vhu_sockpath(agent, context.current['id'])
             caps = a_config.get('ovs_capabilities', {})
             mode = self.get_vhost_mode(caps.get('iface_types', []))
             return {
                 portbindings.CAP_PORT_FILTER: False,
                 portbindings.OVS_HYBRID_PLUG: False,
-                portbindings.VHOST_USER_MODE: mode,
+                portbindings.VHOST_USER_MODE: mode,#采用哪种模式
                 portbindings.VHOST_USER_OVS_PLUG: True,
                 portbindings.VHOST_USER_SOCKET: sock_path
             }
@@ -131,6 +139,7 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     @staticmethod
     def agent_vhu_sockpath(agent, port_id):
         """Return the agent's vhost-user socket path for a given port"""
+        #返回vhostuser的socket path, $socket_dir/"vhu" + $port_id
         sockdir = agent['configurations'].get('vhostuser_socket_dir',
                                               a_const.VHOST_USER_SOCKET_DIR)
         sock_name = (constants.VHOST_USER_DEVICE_PREFIX + port_id)[:14]
