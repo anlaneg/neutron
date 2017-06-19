@@ -86,17 +86,18 @@ class Notifier(object):
             pass
         return False
 
-    def _get_network_changed_event(self, device_id):
+    def _get_network_changed_event(self, port):
         return {'name': 'network-changed',
-                'server_uuid': device_id}
+                'server_uuid': port['device_id'],
+                'tag': port['id']}
 
     def _get_port_delete_event(self, port):
         return {'server_uuid': port['device_id'],
                 'name': VIF_DELETED,
                 'tag': port['id']}
 
-    @registry.receives(resources.PORT, events.BEFORE_RESPONSE)
-    @registry.receives(resources.FLOATING_IP, events.BEFORE_RESPONSE)
+    @registry.receives(resources.PORT, [events.BEFORE_RESPONSE])
+    @registry.receives(resources.FLOATING_IP, [events.BEFORE_RESPONSE])
     def _send_nova_notification(self, resource, event, trigger,
                                 action=None, original=None, data=None,
                                 **kwargs):
@@ -158,7 +159,7 @@ class Notifier(object):
             if action == 'delete_port':
                 return self._get_port_delete_event(port)
             else:
-                return self._get_network_changed_event(port['device_id'])
+                return self._get_network_changed_event(port)
 
     def _can_notify(self, port):
         if not port.id:

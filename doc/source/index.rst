@@ -40,7 +40,7 @@ The `Neutron Development wiki`_ is also a good resource for new contributors.
 Enjoy!
 
 Neutron Policies
-================
+----------------
 
 .. toctree::
    :maxdepth: 2
@@ -48,7 +48,7 @@ Neutron Policies
    policies/index
 
 Neutron Stadium
-===============
+----------------
 
 .. toctree::
    :maxdepth: 2
@@ -56,23 +56,25 @@ Neutron Stadium
    stadium/index
 
 Neutron Feature Classification
-==============================
+------------------------------
 
 .. toctree::
-   :maxdepth: 3
+   :maxdepth: 2
 
    feature_classification/index
 
 Developer Docs
-==============
+--------------
 
 .. toctree::
-   :maxdepth: 3
+   :maxdepth: 2
 
    devref/index
+   devref/testing_index
+   devref/neutron_internals
 
 Dashboards
-==========
+----------
 
 There is a collection of dashboards to help developers and reviewers
 located here.
@@ -83,6 +85,6 @@ located here.
    dashboards/index
 
 API Extensions
-==============
+--------------
 
 Go to http://api.openstack.org for information about OpenStack Network API extensions.

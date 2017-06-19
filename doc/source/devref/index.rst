@@ -33,11 +33,8 @@ including its database, message queue, and scheduler components. There are
 also subsections that describe specific plugins inside Neutron. Finally,
 the developer guide includes information about Neutron testing infrastructure.
 
-
-Programming HowTos and Tutorials
---------------------------------
 .. toctree::
-    :maxdepth: 3
+    :maxdepth: 2
 
     effective_neutron
     development.environment
@@ -45,68 +42,4 @@ Programming HowTos and Tutorials
     neutron_api
     client_command_extensions
     alembic_migrations
-
-
-Neutron Internals
------------------
-.. toctree::
-   :maxdepth: 3
-
-   services_and_agents
-   api_layer
-   ml2_ext_manager
-   calling_ml2_plugin
-   quota
-   api_extensions
-   plugin-api
-   db_layer
-   db_models
-   policy
-   rpc_api
-   rpc_callbacks
-   layer3
-   l2_agents
-   agent_extensions
-   ovs_vhostuser
-   quality_of_service
-   service_extensions
-   dns_order
-   external_dns_integration
-   upgrade
-   objects_usage
-   i18n
-   address_scopes
-   openvswitch_firewall
-   network_ip_availability
-   tag
-   provisioning_blocks
-   retries
-   l3_agent_extensions
-   live_migration
-
-Testing
--------
-.. toctree::
-   :maxdepth: 3
-
-   fullstack_testing
-   testing_coverage
-   template_model_sync_test
-   db_transient_failure_injection
-
-Module Reference
-----------------
-.. toctree::
-   :maxdepth: 3
-
-.. todo::
-
-    Add in all the big modules as automodule indexes.
-
-
-Indices and tables
-------------------
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+    modules
