@@ -51,7 +51,7 @@ class mac_iptables(netaddr.mac_eui48):
     """mac format class for netaddr to match iptables representation."""
     word_sep = ':'
 
-
+#防火墙插件
 class IptablesFirewallDriver(firewall.FirewallDriver):
     """Driver which enforces security groups through iptables rules."""
     IPTABLES_DIRECTION = {firewall.INGRESS_DIRECTION: 'physdev-out',
