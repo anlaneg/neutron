@@ -68,9 +68,11 @@ class ProcessManager(MonitoredProcess):
         self.conf = conf
         self.uuid = uuid
         self.namespace = namespace
+        #生成命令行用
         self.default_cmd_callback = default_cmd_callback
         self.cmd_addl_env = cmd_addl_env
         self.pids_path = pids_path or self.conf.external_pids
+        #存储pid的文件
         self.pid_file = pid_file
         self.run_as_root = run_as_root or self.namespace is not None
         self.custom_reload_callback = custom_reload_callback
@@ -89,8 +91,10 @@ class ProcessManager(MonitoredProcess):
         if not self.active:
             if not cmd_callback:
                 cmd_callback = self.default_cmd_callback
+            # 生成对应的命令行
             cmd = cmd_callback(self.get_pid_file_name())
 
+            # 在指定的namespace上启用此命令
             ip_wrapper = ip_lib.IPWrapper(namespace=self.namespace)
             ip_wrapper.netns.execute(cmd, addl_env=self.cmd_addl_env,
                                      run_as_root=self.run_as_root)
@@ -113,6 +117,7 @@ class ProcessManager(MonitoredProcess):
                 ip_wrapper.netns.execute(cmd, addl_env=self.cmd_addl_env,
                                          run_as_root=self.run_as_root)
             else:
+                #发信号杀死进程
                 cmd = ['kill', '-%s' % (sig), pid]
                 utils.execute(cmd, run_as_root=self.run_as_root)
                 # In the case of shutting down, remove the pid file
@@ -137,10 +142,12 @@ class ProcessManager(MonitoredProcess):
     @property
     def pid(self):
         """Last known pid for this external process spawned for this uuid."""
+        #获取pid
         return utils.get_value_from_file(self.get_pid_file_name(), int)
 
     @property
     def active(self):
+        #检查进程是否存在（uuid需要在命令行中）
         cmdline = self.cmdline
         return self.uuid in cmdline if cmdline else False
 
@@ -148,8 +155,10 @@ class ProcessManager(MonitoredProcess):
     def cmdline(self):
         pid = self.pid
         if not pid:
+            #进程无pid,则不存活
             return
         try:
+            #给定进程pid,求其命令行
             return ' '.join(psutil.Process(pid).cmdline())
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return

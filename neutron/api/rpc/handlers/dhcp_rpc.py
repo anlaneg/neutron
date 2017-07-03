@@ -243,6 +243,7 @@ class DhcpRpcCallback(object):
         If an expected failure occurs, a None port is returned.
 
         """
+        #按请求，创建dhcp port
         host = kwargs.get('host')
         # Note(pbondar): Create deep copy of port to prevent operating
         # on changed dict if RetryRequest is raised
@@ -263,6 +264,7 @@ class DhcpRpcCallback(object):
     @db_api.retry_db_errors
     def update_dhcp_port(self, context, **kwargs):
         """Update the dhcp port."""
+        # 按agent请求，更新dhcp port
         host = kwargs.get('host')
         port = kwargs.get('port')
         port['id'] = kwargs.get('port_id')

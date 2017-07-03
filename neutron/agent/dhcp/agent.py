@@ -86,6 +86,7 @@ class DhcpAgent(manager.Manager):
         self.conf = conf or cfg.CONF
         self.cache = NetworkCache()
         self.dhcp_driver_cls = importutils.import_class(self.conf.dhcp_driver)
+        #agent侧的rpcapi,用于向server请求
         self.plugin_rpc = DhcpPluginApi(topics.PLUGIN, self.conf.host)
         # create dhcp dir to store dhcp info
         dhcp_dir = os.path.dirname("/%s/dhcp/" % self.conf.state_path)
@@ -105,6 +106,7 @@ class DhcpAgent(manager.Manager):
     def _populate_networks_cache(self):
         """Populate the networks cache when the DHCP-agent starts."""
         try:
+            #获取到已存在的networks,并缓存
             existing_networks = self.dhcp_driver_cls.existing_dhcp_networks(
                 self.conf
             )
@@ -177,6 +179,7 @@ class DhcpAgent(manager.Manager):
         """Sync the local DHCP state with Neutron. If no networks are passed,
         or 'None' is one of the networks, sync all of the networks.
         """
+        #向server端同步
         only_nets = set([] if (not networks or None in networks) else networks)
         LOG.info(_LI('Synchronizing state'))
         pool = eventlet.GreenPool(self.conf.num_sync_threads)
@@ -186,14 +189,18 @@ class DhcpAgent(manager.Manager):
             active_networks = self.plugin_rpc.get_active_networks_info()
             LOG.info(_LI('All active networks have been fetched through RPC.'))
             active_network_ids = set(network.id for network in active_networks)
+            #从cache中获知当前已知的network,从server端拿到当前应存在的network,两者取差，即
+            #哪些network需要在本agent上被移除
             for deleted_id in known_network_ids - active_network_ids:
                 try:
+                    #埜止dhcp server对此network_id提供服务
                     self.disable_dhcp_helper(deleted_id)
                 except Exception as e:
                     self.schedule_resync(e, deleted_id)
                     LOG.exception(_LE('Unable to sync network state on '
                                       'deleted network %s'), deleted_id)
 
+            #使dhcp为active network提供服务
             for network in active_networks:
                 if (not only_nets or  # specifically resync all
                         network.id not in known_network_ids or  # missing net
@@ -279,6 +286,7 @@ class DhcpAgent(manager.Manager):
         try:
             network_id = network.get('id')
             LOG.info(_LI('Starting network %s dhcp configuration'), network_id)
+            #开启服务
             self.configure_dhcp_for_network(network)
             LOG.info(_LI('Finished network %s dhcp configuration'), network_id)
         except (exceptions.NetworkNotFound, RuntimeError):
@@ -288,9 +296,11 @@ class DhcpAgent(manager.Manager):
 
     def configure_dhcp_for_network(self, network):
         if not network.admin_state_up:
+            #需要admin_statue为up状态
             return
 
         for subnet in network.subnets:
+            #多个network中仅处理一遍（第一个开启dhcp的subnet）
             if subnet.enable_dhcp:
                 if self.call_driver('enable', network):
                     self.update_isolated_metadata_proxy(network)
@@ -710,6 +720,7 @@ class DhcpAgentWithStateReport(DhcpAgent):
                 'log_agent_heartbeats': self.conf.AGENT.log_agent_heartbeats},
             'start_flag': True,
             'agent_type': constants.AGENT_TYPE_DHCP}
+        #agent上报间隔
         report_interval = self.conf.AGENT.report_interval
         if report_interval:
             self.heartbeat = loopingcall.FixedIntervalLoopingCall(
@@ -721,6 +732,7 @@ class DhcpAgentWithStateReport(DhcpAgent):
             self.agent_state.get('configurations').update(
                 self.cache.get_state())
             ctx = context.get_admin_context_without_session()
+            #向server上报状态
             agent_status = self.state_rpc.report_state(
                 ctx, self.agent_state, True)
             if agent_status == n_const.AGENT_REVIVED:

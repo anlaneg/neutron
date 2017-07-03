@@ -138,6 +138,7 @@ class DhcpBase(object):
 
     def restart(self):
         """Restart the dhcp service for the network."""
+        #杀掉进程，但保持port不删除
         self.disable(retain_port=True)
         self.enable()
 
@@ -180,15 +181,19 @@ class DhcpLocalProcess(DhcpBase):
                  plugin=None):
         super(DhcpLocalProcess, self).__init__(conf, network, process_monitor,
                                                version, plugin)
+        #配置文件目录
         self.confs_dir = self.get_confs_dir(conf)
+        #此network配置目录
         self.network_conf_dir = os.path.join(self.confs_dir, network.id)
         fileutils.ensure_tree(self.network_conf_dir, mode=0o755)
 
     @staticmethod
     def get_confs_dir(conf):
+        #conf.dhcp_confs默认地址为'/var/lib/neutron'
         return os.path.abspath(os.path.normpath(conf.dhcp_confs))
 
     def get_conf_file_name(self, kind):
+        #返回kind对应的配置文件名称（全路径）
         """Returns the file name for a given kind of config file."""
         return os.path.join(self.network_conf_dir, kind)
 
@@ -197,6 +202,7 @@ class DhcpLocalProcess(DhcpBase):
 
     def _enable_dhcp(self):
         """check if there is a subnet within the network with dhcp enabled."""
+        #检查是否有开启dhcp
         for subnet in self.network.subnets:
             if subnet.enable_dhcp:
                 return True
@@ -205,14 +211,17 @@ class DhcpLocalProcess(DhcpBase):
     def enable(self):
         """Enables DHCP for this network by spawning a local process."""
         if self.active:
+            #进程如果存活，则将其重启（配置可能发生了变更）
             self.restart()
         elif self._enable_dhcp():
             fileutils.ensure_tree(self.network_conf_dir, mode=0o755)
+            #创建dhcp port,并插入到必要的namespace中
             interface_name = self.device_manager.setup(self.network)
             self.interface_name = interface_name
             self.spawn_process()
 
     def _get_process_manager(self, cmd_callback=None):
+        #构造process_manager,用于管理进程（启动，关闭，重新加载配置）
         return external_process.ProcessManager(
             conf=self.conf,
             uuid=self.network.id,
@@ -224,7 +233,7 @@ class DhcpLocalProcess(DhcpBase):
     def disable(self, retain_port=False):
         """Disable DHCP for this network by killing the local process."""
         self.process_monitor.unregister(self.network.id, DNSMASQ_SERVICE_NAME)
-        self._get_process_manager().disable()
+        self._get_process_manager().disable() #杀掉进程
         if not retain_port:
             self._destroy_namespace_and_port()
         self._remove_config_files()
@@ -236,6 +245,7 @@ class DhcpLocalProcess(DhcpBase):
             LOG.warning(_LW('Failed trying to delete interface: %s'),
                         self.interface_name)
 
+        #移除对应的namespace
         ns_ip = ip_lib.IPWrapper(namespace=self.network.namespace)
         if not ns_ip.netns.exists(self.network.namespace):
             LOG.debug("Namespace already deleted: %s", self.network.namespace)
@@ -274,6 +284,7 @@ class DhcpLocalProcess(DhcpBase):
 
     @property
     def active(self):
+        #取process_manager的active
         return self._get_process_manager().active
 
     @abc.abstractmethod
@@ -285,6 +296,7 @@ class Dnsmasq(DhcpLocalProcess):
     # The ports that need to be opened when security policies are active
     # on the Neutron port used for DHCP.  These are provided as a convenience
     # for users of this class.
+    # 进程打开的端口号
     PORTS = {constants.IP_VERSION_4:
              [(UDP, DNS_PORT), (TCP, DNS_PORT), (UDP, DHCPV4_PORT)],
              constants.IP_VERSION_6:
@@ -306,6 +318,7 @@ class Dnsmasq(DhcpLocalProcess):
         """Return a list of existing networks ids that we have configs for."""
         confs_dir = cls.get_confs_dir(conf)
         try:
+            #收取uuid格式的配置文件
             return [
                 c for c in os.listdir(confs_dir)
                 if uuidutils.is_uuid_like(c)
@@ -316,6 +329,7 @@ class Dnsmasq(DhcpLocalProcess):
     def _build_cmdline_callback(self, pid_file):
         # We ignore local resolv.conf if dns servers are specified
         # or if local resolution is explicitly disabled.
+        # 启进程需要的命令行参数
         _no_resolv = (
             '--no-resolv' if self.conf.dnsmasq_dns_servers or
             not self.conf.dnsmasq_local_resolv else '')
@@ -368,6 +382,7 @@ class Dnsmasq(DhcpLocalProcess):
             if self.conf.dhcp_lease_duration == -1:
                 lease = 'infinite'
             else:
+                #设置租约时间,比如 3600s
                 lease = '%ss' % self.conf.dhcp_lease_duration
 
             # mode is optional and is not set - skip it
@@ -561,6 +576,7 @@ class Dnsmasq(DhcpLocalProcess):
             no_opts,  # A flag indication that options shouldn't be written
         )
         """
+        #ipv6类型的subnet
         v6_nets = dict((subnet.id, subnet) for subnet in
                        self.network.subnets if subnet.ip_version == 6)
 
@@ -675,7 +691,8 @@ class Dnsmasq(DhcpLocalProcess):
 
         LOG.debug('Building host file: %s', filename)
         dhcp_enabled_subnet_ids = [s.id for s in self.network.subnets
-                                   if s.enable_dhcp]
+                                   if s.enable_dhcp] #开启了dhcp的sunet
+        
         # NOTE(ihrachyshka): the loop should not log anything inside it, to
         # avoid potential performance drop when lots of hosts are dumped
         for host_tuple in self._iter_hosts():
@@ -1105,6 +1122,7 @@ class DeviceManager(object):
 
     def get_interface_name(self, network, port):
         """Return interface(device) name for use by the DHCP process."""
+        #通过port获得device_name
         return self.driver.get_device_name(port)
 
     def get_device_id(self, network):
@@ -1164,6 +1182,7 @@ class DeviceManager(object):
                                                         subnet.cidr,
                                                         subnet.gateway_ip))
                 if is_new_gateway_not_in_subnet:
+                    #加入subnet对应的gateway_ip
                     device.route.add_route(subnet.gateway_ip, scope='link')
                 device.route.add_gateway(subnet.gateway_ip)
 
@@ -1197,6 +1216,7 @@ class DeviceManager(object):
         port = None
 
         # Look for an existing DHCP port for this network.
+        # 检查此network中的dhcp port
         for port in network.ports:
             port_device_id = getattr(port, 'device_id', None)
             if port_device_id == device_id:
@@ -1218,6 +1238,7 @@ class DeviceManager(object):
         port_subnet_ids = set(ip.subnet_id for ip in port.fixed_ips)
 
         # If those differ, we need to call update.
+        # 要开启dhcp的subnet ids与已开启dhcp的subnet ids不相等，说明需要更新此port
         if dhcp_enabled_subnet_ids != port_subnet_ids:
             # Collect the subnets and fixed IPs that the port already
             # has, for subnets that are still in the DHCP-enabled set.
@@ -1226,9 +1247,10 @@ class DeviceManager(object):
                 if fixed_ip.subnet_id in dhcp_enabled_subnet_ids:
                     wanted_fixed_ips.append(
                         {'subnet_id': fixed_ip.subnet_id,
-                         'ip_address': fixed_ip.ip_address})
+                         'ip_address': fixed_ip.ip_address}) #要求包持原有ip
 
             # Add subnet IDs for new DHCP-enabled subnets.
+            # 新增新的subnet ip地址
             wanted_fixed_ips.extend(
                 dict(subnet_id=s)
                 for s in dhcp_enabled_subnet_ids - port_subnet_ids)
@@ -1236,6 +1258,7 @@ class DeviceManager(object):
             # Update the port to have the calculated subnets and fixed
             # IPs.  The Neutron server will allocate a fresh IP for
             # each subnet that doesn't already have one.
+            # 要求server更新dhcp port
             port = self.plugin.update_dhcp_port(
                 port.id,
                 {'port': {'network_id': network.id,
@@ -1254,6 +1277,7 @@ class DeviceManager(object):
             port_device_id = getattr(port, 'device_id', None)
             if port_device_id == n_const.DEVICE_ID_RESERVED_DHCP_PORT:
                 try:
+                    #尝试着绑定此dhcp port到本device
                     port = self.plugin.update_dhcp_port(
                         port.id, {'port': {'network_id': network.id,
                                            'device_id': device_id}})
@@ -1286,15 +1310,18 @@ class DeviceManager(object):
             network_id=network.id,
             tenant_id=network.tenant_id,
             fixed_ips=unique_ip_subnets)
+        #要求server创建dhcp-port
         return self.plugin.create_dhcp_port({'port': port_dict})
 
     def setup_dhcp_port(self, network):
         """Create/update DHCP port for the host if needed and return port."""
 
         # The ID that the DHCP port will have (or already has).
+        # 按host + network.id生成一个device_id
         device_id = self.get_device_id(network)
 
         # Get the set of DHCP-enabled subnets on this network.
+        # 收集开启了dhcp的subnets
         dhcp_subnets = {subnet.id: subnet for subnet in network.subnets
                         if subnet.enable_dhcp}
 
@@ -1304,6 +1331,8 @@ class DeviceManager(object):
         # and we just need to adopt that; or we need to create a new
         # DHCP port.  Try each of those in turn until we have a DHCP
         # port.
+        # 如上述，按dhcp port已存在，dhcp port 已创建,dhcp port新创建三步来
+        # 变更dhcp port,只要有一步更新成功，则不再继续进行
         for setup_method in (self._setup_existing_dhcp_port,
                              self._setup_reserved_dhcp_port,
                              self._setup_new_dhcp_port):
@@ -1319,6 +1348,8 @@ class DeviceManager(object):
             expected = set(dhcp_subnets)
             actual = {fip.subnet_id for fip in dhcp_port.fixed_ips}
             missing = expected - actual
+            # 我们按需要的subnet提交了dhcp port申请，但server返回的ip中少了部分subnet的ip
+            # 扔异常
             if missing:
                 LOG.debug("Requested DHCP port with IPs on subnets "
                           "%(expected)s but only got IPs on subnets "
@@ -1368,6 +1399,7 @@ class DeviceManager(object):
                                       "dhcp device cleanup"))
 
     def plug(self, network, port, interface_name):
+        #加入一个dhcp server 的port
         """Plug device settings for the network's DHCP on this host."""
         self.driver.plug(network.id,
                          port.id,
@@ -1379,13 +1411,14 @@ class DeviceManager(object):
     def setup(self, network):
         """Create and initialize a device for network's DHCP on this host."""
         try:
+            #创建network对应的dhcp port
             port = self.setup_dhcp_port(network)
         except Exception:
             with excutils.save_and_reraise_exception():
                 # clear everything out so we don't leave dangling interfaces
                 # if setup never succeeds in the future.
                 self._cleanup_stale_devices(network, dhcp_port=None)
-        self._update_dhcp_port(network, port)
+        self._update_dhcp_port(network, port) #更新内部缓存信息
         interface_name = self.get_interface_name(network, port)
 
         # Disable acceptance of RAs in the namespace so we don't
@@ -1403,9 +1436,11 @@ class DeviceManager(object):
 
         if ip_lib.ensure_device_is_ready(interface_name,
                                          namespace=network.namespace):
+            #按口之前就有
             LOG.debug('Reusing existing device: %s.', interface_name)
         else:
             try:
+                #接口之前没有，需要新插入一个port
                 self.plug(network, port, interface_name)
             except Exception:
                 with excutils.save_and_reraise_exception():
@@ -1436,10 +1471,13 @@ class DeviceManager(object):
         if self.conf.force_metadata or self.conf.enable_isolated_metadata:
             ip_cidrs.append(METADATA_DEFAULT_CIDR)
 
+        #为dhcp-port配置ip地址
         self.driver.init_l3(interface_name, ip_cidrs,
                             namespace=network.namespace)
 
+        #添加路由
         self._set_default_route(network, interface_name)
+        #删除掉无效的port
         self._cleanup_stale_devices(network, port)
 
         return interface_name
@@ -1464,6 +1502,7 @@ class DeviceManager(object):
 
     def fill_dhcp_udp_checksums(self, namespace):
         """Ensure DHCP reply packets always have correct UDP checksums."""
+        #计算checksum
         iptables_mgr = iptables_manager.IptablesManager(use_ipv6=False,
                                                         namespace=namespace)
         ipv4_rule = ('-p udp -m udp --dport %d -j CHECKSUM --checksum-fill'

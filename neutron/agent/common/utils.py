@@ -47,6 +47,7 @@ def load_interface_driver(conf):
     :param conf: driver configuration object
     :raises SystemExit of 1 if driver cannot be loaded
     """
+    #加载interface_driver
 
     try:
         loaded_class = neutron_utils.load_class_by_alias_or_classname(
