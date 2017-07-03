@@ -164,6 +164,7 @@ class DaemonMonitor(object):
 
         pm = self._get_radvd_process_manager(callback)
         pm.enable(reload_cfg=True)
+        #注册radvd进程的监控
         self._process_monitor.register(uuid=self._router_id,
                                        service_name=RADVD_SERVICE_NAME,
                                        monitored_process=pm)

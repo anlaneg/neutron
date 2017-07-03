@@ -112,6 +112,7 @@ class HaRouter(router.RouterInfo):
     def initialize(self, process_monitor):
         ha_port = self.router.get(n_consts.HA_INTERFACE_KEY)
         if not ha_port:
+            #配置内没有给出ha_interface
             msg = _("Unable to process HA router %s without "
                     "HA port") % self.router_id
             LOG.exception(msg)

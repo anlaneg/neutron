@@ -89,14 +89,14 @@ class RouterInfo(object):
 
         :param process_monitor: The agent's process monitor instance.
         """
-        self.process_monitor = process_monitor
+        self.process_monitor = process_monitor #监控agent子进程的monitor
         self.radvd = ra.DaemonMonitor(self.router_id,
                                       self.ns_name,
                                       process_monitor,
                                       self.get_internal_device_name,
                                       self.agent_conf)
 
-        self.router_namespace.create() #创建这个路由器
+        self.router_namespace.create() #创建这个路由器对应的namespace
 
     def create_router_namespace_object(
             self, router_id, agent_conf, iface_driver, use_ipv6):

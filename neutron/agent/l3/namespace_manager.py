@@ -42,6 +42,7 @@ class NamespaceManager(object):
     does not rely on state recorded at runtime in the agent so it handles
     agent restarts gracefully.
     """
+    #管理l3-agent中的三种namespace对象
 
     ns_prefix_to_class_map = {
         namespaces.NS_PREFIX: namespaces.RouterNamespace,
@@ -87,14 +88,17 @@ class NamespaceManager(object):
             _ns_prefix, ns_id = self.get_prefix_and_id(ns)
             if ns_id in self._ids_to_keep:
                 continue
+            # 删除掉不受本mg管理的ns_id
             self._cleanup(_ns_prefix, ns_id)
 
         return True
 
     def keep_router(self, router_id):
+        #标记路由器router_id被管理
         self._ids_to_keep.add(router_id)
 
     def keep_ext_net(self, ext_net_id):
+        #标记fip路由器将被管理
         self._ids_to_keep.add(ext_net_id)
 
     def get_prefix_and_id(self, ns_name):
@@ -103,8 +107,10 @@ class NamespaceManager(object):
         :param ns_name: The name of the namespace
         :returns: tuple with prefix and id or None if no prefix matches
         """
+        # 提取ns_name中的前缀（表示路由器类型） 及路由器id
         prefix = namespaces.get_prefix_from_ns_name(ns_name)
         if prefix in self.ns_prefix_to_class_map:
+            #仅删除由l3-agent管理的三个路由器前缀
             identifier = namespaces.get_id_from_ns_name(ns_name)
             return (prefix, identifier)
 
@@ -115,6 +121,7 @@ class NamespaceManager(object):
     def list_all(self):
         """Get a set of all namespaces on host managed by this manager."""
         try:
+            #获取系统中所有namespace,并过滤出可被本mg管理的ns并将其返回
             root_ip = ip_lib.IPWrapper()
             namespaces = root_ip.get_namespaces()
             return set(ns for ns in namespaces if self.is_managed(ns))
@@ -127,14 +134,17 @@ class NamespaceManager(object):
         """Performs cleanup for a router"""
         for ns in self.list_all():
             if ns.endswith(router_id):
+                #找到要删除的router
                 ns_prefix, ns_id = self.get_prefix_and_id(ns)
                 self._cleanup(ns_prefix, ns_id)
 
     def ensure_snat_cleanup(self, router_id):
+        #删除snat路由器router_id
         prefix = dvr_snat_ns.SNAT_NS_PREFIX
         self._cleanup(prefix, router_id)
 
     def _cleanup(self, ns_prefix, ns_id):
+        #由ns_prefix找到对应的路由器namespace处理class,构造此class对象
         ns_class = self.ns_prefix_to_class_map[ns_prefix]
         ns = ns_class(ns_id, self.agent_conf, self.driver, use_ipv6=False)
         try:
@@ -142,6 +152,7 @@ class NamespaceManager(object):
                 # cleanup stale metadata proxy processes first
                 self.metadata_driver.destroy_monitored_metadata_proxy(
                     self.process_monitor, ns_id, self.agent_conf, ns.name)
+            #由对应类型的namespace执行删除
             ns.delete()
         except RuntimeError:
             LOG.exception(_LE('Failed to destroy stale namespace %s'), ns)

@@ -31,6 +31,7 @@ def register_opts(conf):
 
 class L3AgentExtensionsManager(agent_ext_manager.AgentExtensionsManager):
     """Manage l3 agent extensions."""
+    #管理l3 agent的扩展，对上提供三个接口，当事件发生时调用扩展对应的接口进行通知
 
     def __init__(self, conf):
         super(L3AgentExtensionsManager, self).__init__(conf,

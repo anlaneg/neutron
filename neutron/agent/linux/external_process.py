@@ -168,6 +168,10 @@ ServiceId = collections.namedtuple('ServiceId', ['uuid', 'service'])
 
 
 class ProcessMonitor(object):
+    """ 提供了对进程monitor的监控功能，通过monitored_process对象的active方法，来获取
+        指定进程的状态，在进程active为false时，按配置执行不同的action,目前支持respawn及exit
+        两种动作
+    """
 
     def __init__(self, config, resource_type):
         """Handle multiple process managers and watch over all of them.
@@ -183,6 +187,7 @@ class ProcessMonitor(object):
         self._monitored_processes = {}
 
         if self._config.AGENT.check_child_processes_interval:
+            #如果有检查间隔，则启用monitor线程
             self._spawn_checking_thread()
 
     def register(self, uuid, service_name, monitored_process):
@@ -234,6 +239,7 @@ class ProcessMonitor(object):
         self._monitor_processes = False
 
     def _spawn_checking_thread(self):
+        #启动进程控制线程
         self._monitor_processes = True
         eventlet.spawn(self._periodic_checking_thread)
 
@@ -242,36 +248,44 @@ class ProcessMonitor(object):
         # we build the list of keys before iterating in the loop to cover
         # the case where other threads add or remove items from the
         # dictionary which otherwise will cause a RuntimeError
+        # 检查函数，针对所有注册的monitored进程
         for service_id in list(self._monitored_processes):
             pm = self._monitored_processes.get(service_id)
 
             if pm and not pm.active:
+                # pm检查发现不处理active状态（即进程死掉了）
                 LOG.error(_LE("%(service)s for %(resource_type)s "
                               "with uuid %(uuid)s not found. "
                               "The process should not have died"),
                           {'service': service_id.service,
                            'resource_type': self._resource_type,
                            'uuid': service_id.uuid})
+                #执行针对此service的动作
                 self._execute_action(service_id)
             eventlet.sleep(0)
 
     def _periodic_checking_thread(self):
         while self._monitor_processes:
+            #检查线程，每隔interval时间检查一次
             eventlet.sleep(self._config.AGENT.check_child_processes_interval)
             eventlet.spawn(self._check_child_processes)
 
     def _execute_action(self, service_id):
+        #依据此agent的配置项，执行相应的action,例如：_respawn_action
         action = self._config.AGENT.check_child_processes_action
         action_function = getattr(self, "_%s_action" % action)
         action_function(service_id)
 
     def _respawn_action(self, service_id):
+        #respawn动作
         LOG.warning(_LW("Respawning %(service)s for uuid %(uuid)s"),
                     {'service': service_id.service,
                      'uuid': service_id.uuid})
+        #调用此service对应的enable接口
         self._monitored_processes[service_id].enable()
 
     def _exit_action(self, service_id):
+        #exit动作
         LOG.error(_LE("Exiting agent as programmed in check_child_processes_"
                       "actions"))
         self._exit_handler(service_id.uuid, service_id.service)
@@ -283,6 +297,7 @@ class ProcessMonitor(object):
         check_child_processes_actions, and one of our external processes die
         unexpectedly.
         """
+        #触发exit异常
         LOG.error(_LE("Exiting agent because of a malfunction with the "
                       "%(service)s process identified by uuid %(uuid)s"),
                   {'service': service, 'uuid': uuid})

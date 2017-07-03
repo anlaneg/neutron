@@ -20,6 +20,7 @@ from neutron.agent.linux import ip_lib
 
 class LegacyRouter(router.RouterInfo):
     def add_floating_ip(self, fip, interface_name, device):
+        #将floating_ip配置在device上
         if not self._add_fip_addr_to_device(fip, device):
             return lib_constants.FLOATINGIP_STATUS_ERROR
 

@@ -190,10 +190,12 @@ class L3NATAgent(ha.AgentMixin,
 
         self._check_config_params()
 
+        #进程monitor对象，传入的参数主要为了配置获取及信息显示
         self.process_monitor = external_process.ProcessMonitor(
             config=self.conf,
             resource_type='router')
 
+        #interface 驱动
         self.driver = common_utils.load_interface_driver(self.conf)
 
         self._context = n_context.get_admin_context_without_session()
@@ -237,6 +239,7 @@ class L3NATAgent(ha.AgentMixin,
             self.driver,
             self.metadata_driver)
 
+        #创建路由器处理队列
         self._queue = queue.RouterProcessingQueue()
         super(L3NATAgent, self).__init__(host=self.conf.host)
 
@@ -340,15 +343,16 @@ class L3NATAgent(ha.AgentMixin,
         return legacy_router.LegacyRouter(*args, **kwargs) #普通路由器
 
     def _router_added(self, router_id, router):
+        #路由器创建
         ri = self._create_router(router_id, router)
         registry.notify(resources.ROUTER, events.BEFORE_CREATE,
                         self, router=ri)
 
-        self.router_info[router_id] = ri
+        self.router_info[router_id] = ri #将此路由器对象注册在router_info中（方便更新，删除）
 
         # If initialize() fails, cleanup and retrigger complete sync
         try:
-            ri.initialize(self.process_monitor)
+            ri.initialize(self.process_monitor) #使路由器初始化
         except Exception:
             with excutils.save_and_reraise_exception():
                 del self.router_info[router_id]
@@ -363,9 +367,10 @@ class L3NATAgent(ha.AgentMixin,
 
     def _safe_router_removed(self, router_id):
         """Try to delete a router and return True if successful."""
-
+        # 执行具体一个路由器的删除
         try:
             self._router_removed(router_id)
+            #删除完成，各扩展处理router删除
             self.l3_ext_manager.delete_router(self.context, router_id)
         except Exception:
             LOG.exception(_LE('Error while deleting router %s'), router_id)
@@ -376,6 +381,8 @@ class L3NATAgent(ha.AgentMixin,
     def _router_removed(self, router_id):
         ri = self.router_info.get(router_id)
         if ri is None:
+            #收到了router_id的删除事件，但本机没有此路由器的缓存信息
+            #这种情况可能发生成agent重启后，采用namespace_manager将其删除，且不引发事件
             LOG.warning(_LW("Info for router %s was not found. "
                             "Performing router cleanup"), router_id)
             self.namespaces_manager.ensure_router_cleanup(router_id)
@@ -384,12 +391,14 @@ class L3NATAgent(ha.AgentMixin,
         registry.notify(resources.ROUTER, events.BEFORE_DELETE,
                         self, router=ri)
 
+        #调用delete函数，将其删除
         ri.delete()
         del self.router_info[router_id]
 
         registry.notify(resources.ROUTER, events.AFTER_DELETE, self, router=ri)
 
     def init_extension_manager(self, connection):
+        # l3 agent扩展管理
         l3_ext_manager.register_opts(self.conf)
         self.agent_api = l3_ext_api.L3AgentExtensionAPI(self.router_info)
         self.l3_ext_manager = (
@@ -400,24 +409,30 @@ class L3NATAgent(ha.AgentMixin,
 
     def router_deleted(self, context, router_id):
         """Deal with router deletion RPC message."""
+        # 收到路由器删除通知
         LOG.debug('Got router deleted notification for %s', router_id)
         update = queue.RouterUpdate(router_id,
                                     queue.PRIORITY_RPC,
                                     action=queue.DELETE_ROUTER)
+        #加入队列
         self._queue.add(update)
 
     def routers_updated(self, context, routers):
         """Deal with routers modification and creation RPC message."""
+        # 收到路由器更新通知
         LOG.debug('Got routers updated notification :%s', routers)
         if routers:
             # This is needed for backward compatibility
+            # 现在消息变更为一次容许通知多个routers
             if isinstance(routers[0], dict):
                 routers = [router['id'] for router in routers]
             for id in routers:
                 update = queue.RouterUpdate(id, queue.PRIORITY_RPC)
+                # 逐个加入队列
                 self._queue.add(update)
 
     def router_removed_from_agent(self, context, payload):
+        #收到自指定agent移除路由器的通知
         LOG.debug('Got router removed from agent :%r', payload)
         router_id = payload['router_id']
         update = queue.RouterUpdate(router_id,
@@ -426,10 +441,12 @@ class L3NATAgent(ha.AgentMixin,
         self._queue.add(update)
 
     def router_added_to_agent(self, context, payload):
+        #收到向指定agent添加路由器的通知
         LOG.debug('Got router added to agent :%r', payload)
         self.routers_updated(context, payload)
 
     def _process_router_if_compatible(self, router):
+        """ 执行具体的一个路由器添加 """
         #配置了外部桥，但不存在，报错
         if (self.conf.external_network_bridge and
             not ip_lib.device_exists(self.conf.external_network_bridge)):
@@ -462,21 +479,22 @@ class L3NATAgent(ha.AgentMixin,
             self._process_updated_router(router)
 
     def _process_added_router(self, router):
+        """ 处理路由器添加 """
         self._router_added(router['id'], router)
         ri = self.router_info[router['id']]
         ri.router = router
-        ri.process()
+        ri.process() #处理router 更新
         registry.notify(resources.ROUTER, events.AFTER_CREATE, self, router=ri)
-        self.l3_ext_manager.add_router(self.context, router)
+        self.l3_ext_manager.add_router(self.context, router) #各扩展处理router_add
 
     def _process_updated_router(self, router):
         ri = self.router_info[router['id']]
         ri.router = router
         registry.notify(resources.ROUTER, events.BEFORE_UPDATE,
                         self, router=ri)
-        ri.process()
+        ri.process() #处理router更新
         registry.notify(resources.ROUTER, events.AFTER_UPDATE, self, router=ri)
-        self.l3_ext_manager.update_router(self.context, router)
+        self.l3_ext_manager.update_router(self.context, router) #各扩展处理router_update
 
     def _resync_router(self, router_update,
                        priority=queue.PRIORITY_SYNC_ROUTERS_TASK):
@@ -486,7 +504,7 @@ class L3NATAgent(ha.AgentMixin,
         self._queue.add(router_update)
 
     def _process_router_update(self):
-        #针对每个rp,update处理
+        #路由器配置处理，针对每个rp,update处理
         for rp, update in self._queue.each_update_to_next_router():
             LOG.debug("Starting router update for %s, action %s, priority %s",
                       update.id, update.action, update.priority)
@@ -504,6 +522,7 @@ class L3NATAgent(ha.AgentMixin,
                 except Exception:
                     msg = _LE("Failed to fetch router information for '%s'")
                     LOG.exception(msg, update.id)
+                    # 处理失败，重新同步路由器
                     self._resync_router(update)
                     continue
 
@@ -548,6 +567,7 @@ class L3NATAgent(ha.AgentMixin,
             rp.fetched_and_processed(update.timestamp)
 
     def _process_routers_loop(self):
+        #主循环，处理事件
         LOG.debug("Starting _process_routers_loop")
         pool = eventlet.GreenPool(size=8)
         while True:
@@ -667,6 +687,7 @@ class L3NATAgent(ha.AgentMixin,
         # vArmourL3NATAgent. We need to find out whether vArmourL3NATAgent
         # can have L3NATAgentWithStateReport as its base class instead of
         # L3NATAgent.
+        # 开启主循环，处理事件
         eventlet.spawn_n(self._process_routers_loop)
         LOG.info(_LI("L3 agent started"))
 
@@ -702,6 +723,7 @@ class L3NATAgentWithStateReport(L3NATAgent):
             'agent_type': lib_const.AGENT_TYPE_L3}
         report_interval = self.conf.AGENT.report_interval
         if report_interval:
+            # 按间隔上报
             self.heartbeat = loopingcall.FixedIntervalLoopingCall(
                 self._report_state)
             self.heartbeat.start(interval=report_interval)

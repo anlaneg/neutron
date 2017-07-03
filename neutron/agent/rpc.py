@@ -79,6 +79,7 @@ class PluginReportStateAPI(object):
     def report_state(self, context, agent_state, use_call=False):
         cctxt = self.client.prepare(
             timeout=n_rpc.TRANSPORT.conf.rpc_response_timeout)
+        # agent向server发送report入口
         # add unique identifier to a report
         # that can be logged on server side.
         # This create visible correspondence between events on
