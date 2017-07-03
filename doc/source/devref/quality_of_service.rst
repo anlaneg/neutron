@@ -101,14 +101,12 @@ For a list of all rule types, see:
 neutron.services.qos.qos_consts.VALID_RULE_TYPES.
 
 The list of supported QoS rule types exposed by neutron is calculated as
-set of rules supported by at least one active QoS driver.
+the common subset of rules supported by all active QoS drivers.
 
 Note: the list of supported rule types reported by core plugin is not enforced
-when accessing QoS rule resources.
-
-When a policy is attached to a port or a network, or when a rule is created or updated,
-core plugins may validate write requests against their backends, and invalidate requests
-that don't make sense or can't be implemented by affected backends.
+when accessing QoS rule resources. This is mostly because then we would not be
+able to create rules while at least one of the QoS driver in gate lacks
+support for the rules we're trying to test.
 
 
 Database models
@@ -285,7 +283,7 @@ point of view)
     +----------------------+----------------+----------------+----------------+
     | Rule \ Backend       | Open vSwitch   | SR-IOV         | Linux Bridge   |
     +----------------------+----------------+----------------+----------------+
-    | Bandwidth Limit      | Egress         | Egress (1)     | Egress         |
+    | Bandwidth Limit      | Egress/Ingress | Egress (1)     | Egress/Ingress |
     +----------------------+----------------+----------------+----------------+
     | Minimum Bandwidth    | -              | Egress         | -              |
     +----------------------+----------------+----------------+----------------+
@@ -350,11 +348,29 @@ value.
 Linux bridge
 ~~~~~~~~~~~~
 
-The Linux bridge implementation relies on the new tc_lib functions:
+The Linux bridge implementation relies on the new tc_lib functions.
 
-* set_bw_limit
-* update_bw_limit
-* delete_bw_limit
+For egress bandwidth limit rule:
+
+* set_filters_bw_limit
+* update_filters_bw_limit
+* delete_filters_bw_limit
+
+The egress bandwidth limit is configured on the tap port by setting traffic
+policing on tc ingress queueing discipline (qdisc). Details about ingress
+qdisc can be found on `lartc how-to <http://lartc.org/howto/lartc.adv-qdisc.ingress.html>`__.
+The reason why ingress qdisc is used to configure egress bandwidth limit is that
+tc is working on traffic which is visible from "inside bridge" perspective. So
+traffic incoming to bridge via tap interface is in fact outgoing from Neutron's
+port.
+This implementation is the same as what Open vSwitch is doing when
+ingress_policing_rate and ingress_policing_burst are set for port.
+
+For ingress bandwidth limit rule:
+
+* set_tbf_bw_limit
+* update_tbf_bw_limit
+* delete_tbf_bw_limit
 
 The ingress bandwidth limit is configured on the tap port by setting a simple
 `tc-tbf <http://linux.die.net/man/8/tc-tbf>`_ queueing discipline (qdisc) on the

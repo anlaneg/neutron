@@ -13,8 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
-
 from eventlet import greenthread
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import port_security as psec
@@ -28,6 +26,7 @@ from neutron_lib.callbacks import resources
 from neutron_lib import constants as const
 from neutron_lib import exceptions as exc
 from neutron_lib.exceptions import port_security as psec_exc
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
@@ -369,15 +368,16 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
         #更新port数据
         self._update_port_dict_binding(port, binding)
-        # merging here brings binding changes into the session so they can be
-        # committed since the binding attached to the context is detached from
-        # the session
-        plugin_context.session.merge(binding)
+        binding.persist_state_to_session(plugin_context.session)
         return changes
 
     @db_api.retry_db_errors
     def _bind_port_if_needed(self, context, allow_notify=False,
                              need_notify=False):
+        if not context.network.network_segments:
+            LOG.debug("Network %s has no segments, skipping binding",
+                      context.network.current['id'])
+            return context
         for count in range(1, MAX_BIND_TRIES + 1):
             if count > 1:
                 # yield for binding retries so that we give other threads a
@@ -544,7 +544,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 db.set_binding_levels(plugin_context,
                                       bind_context._binding_levels)
                 # refresh context with a snapshot of updated state
-                cur_context._binding = copy.deepcopy(cur_binding)
+                cur_context._binding = driver_context.InstanceSnapshot(
+                    cur_binding)
                 cur_context._binding_levels = bind_context._binding_levels
 
                 # Update PortContext's port dictionary to reflect the
@@ -567,7 +568,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             # Also, Trigger notification for successful binding commit.
             kwargs = {
                 'context': plugin_context,
-                'port': port,
+                'port': self._make_port_dict(port_db),  # ensure latest state
                 'mac_address_updated': False,
                 'original_port': oport,
             }
@@ -859,8 +860,6 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             self.extension_manager.process_update_network(context, net_data,
                                                           updated_network)
             self._process_l3_update(context, updated_network, net_data)
-            self.type_manager.extend_network_dict_provider(context,
-                                                           updated_network)
 
             # ToDO(QoS): This would change once EngineFacade moves out
             db_network = self._get_network(context, id)
@@ -869,6 +868,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             context.session.expire(db_network)
             updated_network = self._make_network_dict(
                 db_network, context=context)
+            self.type_manager.extend_network_dict_provider(
+                context, updated_network)
 
             kwargs = {'context': context, 'network': updated_network,
                       'original_network': original_network,
@@ -1388,7 +1389,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         binding.host = attrs and attrs.get(portbindings.HOST_ID)
         binding.router_id = attrs and attrs.get('device_id')
         # merge into session to reflect changes
-        plugin_context.session.merge(binding)
+        binding.persist_state_to_session(plugin_context.session)
 
     @utils.transaction_guard
     @db_api.retry_if_session_inactive()
@@ -1454,7 +1455,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         self._pre_delete_port(context, id, l3_port_check)
         # TODO(armax): get rid of the l3 dependency in the with block
         router_ids = []
-        l3plugin = directory.get_plugin(const.L3)
+        l3plugin = directory.get_plugin(plugin_constants.L3)
 
         with db_api.context_manager.writer.using(context):
             try:

@@ -328,7 +328,7 @@ class BaseNetworkTest(test.BaseTestCase):
         ext_gw_info = {}
         if external_network_id:
             ext_gw_info['network_id'] = external_network_id
-        if enable_snat:
+        if enable_snat is not None:
             ext_gw_info['enable_snat'] = enable_snat
         body = client.create_router(
             router_name, external_gateway_info=ext_gw_info,
@@ -343,7 +343,7 @@ class BaseNetworkTest(test.BaseTestCase):
 
     @classmethod
     def create_admin_router(cls, *args, **kwargs):
-        return cls._create_router_with_client(cls.admin_manager.network_client,
+        return cls._create_router_with_client(cls.os_admin.network_client,
                                               *args, **kwargs)
 
     @classmethod

@@ -228,11 +228,6 @@ class OVSDVRNeutronAgent(object):
         self.int_br.install_drop(table_id=constants.DVR_TO_SRC_MAC_VLAN,
                                  priority=1)
 
-        # Insert 'normal' action as the default for Table LOCAL_SWITCHING
-        # 在表0中添加normal action
-        self.int_br.install_normal(table_id=constants.LOCAL_SWITCHING,
-                                   priority=1)
-
         # 集成桥在local_switching表中暂时丢所有入接口物理桥的报文
         for physical_network in self.bridge_mappings:
             self.int_br.install_drop(table_id=constants.LOCAL_SWITCHING,

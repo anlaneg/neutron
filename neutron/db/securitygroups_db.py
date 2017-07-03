@@ -116,16 +116,20 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
                 sg.rules.append(egress_rule)
             sg.obj_reset_changes(['rules'])
 
+            # fetch sg from db to load the sg rules with sg model.
+            # NOTE(yamamoto): Adding rules above bumps the revision
+            # of the SG.  It would add SG object to the session.
+            # Expunge it to ensure the following get_object doesn't
+            # use the instance.
+            context.session.expunge_all()
+            sg = sg_obj.SecurityGroup.get_object(context, id=sg.id)
+            secgroup_dict = self._make_security_group_dict(sg)
+            kwargs['security_group'] = secgroup_dict
             self._registry_notify(resources.SECURITY_GROUP,
                                   events.PRECOMMIT_CREATE,
                                   exc_cls=ext_sg.SecurityGroupConflict,
                                   **kwargs)
 
-        # fetch sg from db to load the sg rules with sg model.
-        sg = sg_obj.SecurityGroup.get_object(context, id=sg.id)
-        secgroup_dict = self._make_security_group_dict(sg)
-
-        kwargs['security_group'] = secgroup_dict
         registry.notify(resources.SECURITY_GROUP, events.AFTER_CREATE, self,
                         **kwargs)
         return secgroup_dict
@@ -220,6 +224,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             ports = self._get_port_security_group_bindings(context, filters)
             sg = self._get_security_group(context, id)
             kwargs['security_group_rule_ids'] = [r['id'] for r in sg.rules]
+            kwargs['security_group'] = self._make_security_group_dict(sg)
             self._registry_notify(resources.SECURITY_GROUP,
                                   events.PRECOMMIT_DELETE,
                                   exc_cls=ext_sg.SecurityGroupInUse, id=id,
@@ -246,15 +251,17 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             sg = self._get_security_group(context, id)
             if sg.name == 'default' and 'name' in s:
                 raise ext_sg.SecurityGroupCannotUpdateDefault()
+            sg_dict = self._make_security_group_dict(sg)
+            kwargs['original_security_group'] = sg_dict
+            sg.update_fields(s)
+            sg.update()
+            sg_dict = self._make_security_group_dict(sg)
+            kwargs['security_group'] = sg_dict
             self._registry_notify(
                     resources.SECURITY_GROUP,
                     events.PRECOMMIT_UPDATE,
                     exc_cls=ext_sg.SecurityGroupConflict, **kwargs)
-            sg.update_fields(s)
-            sg.update()
-        sg_dict = self._make_security_group_dict(sg)
 
-        kwargs['security_group'] = sg_dict
         registry.notify(resources.SECURITY_GROUP, events.AFTER_UPDATE, self,
                         **kwargs)
         return sg_dict
@@ -344,14 +351,6 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         if validate:
             self._validate_security_group_rule(context, security_group_rule)
         rule_dict = security_group_rule['security_group_rule']
-        kwargs = {
-            'context': context,
-            'security_group_rule': rule_dict
-        }
-        self._registry_notify(resources.SECURITY_GROUP_RULE,
-                              events.BEFORE_CREATE,
-                              exc_cls=ext_sg.SecurityGroupConflict, **kwargs)
-
         remote_ip_prefix = rule_dict.get('remote_ip_prefix')
         if remote_ip_prefix:
             remote_ip_prefix = utils.AuthenticIPNetwork(remote_ip_prefix)
@@ -381,19 +380,30 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         if port_range_max is not None:
             args['port_range_max'] = port_range_max
 
+        kwargs = {
+            'context': context,
+            'security_group_rule': args
+        }
+        self._registry_notify(resources.SECURITY_GROUP_RULE,
+                              events.BEFORE_CREATE,
+                              exc_cls=ext_sg.SecurityGroupConflict, **kwargs)
         with db_api.context_manager.writer.using(context):
             if validate:
                 self._check_for_duplicate_rules_in_db(context,
                                                       security_group_rule)
             sg_rule = sg_obj.SecurityGroupRule(context, **args)
             sg_rule.create()
+
+            # fetch sg_rule from db to load the sg rules with sg model
+            # otherwise a DetachedInstanceError can occur for model extensions
+            sg_rule = sg_obj.SecurityGroupRule.get_object(context,
+                                                          id=sg_rule.id)
+            res_rule_dict = self._make_security_group_rule_dict(sg_rule.db_obj)
+            kwargs['security_group_rule'] = res_rule_dict
             self._registry_notify(resources.SECURITY_GROUP_RULE,
                               events.PRECOMMIT_CREATE,
                               exc_cls=ext_sg.SecurityGroupConflict, **kwargs)
-        # fetch sg_rule from db to load the sg rules with sg model otherwise
-        # a DetachedInstanceError can occur for model extensions
-        sg_rule = sg_obj.SecurityGroupRule.get_object(context, id=sg_rule.id)
-        return self._make_security_group_rule_dict(sg_rule.db_obj)
+        return res_rule_dict
 
     def _get_ip_proto_number(self, protocol):
         if protocol is None:
@@ -678,15 +688,13 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
                               exc_cls=ext_sg.SecurityGroupRuleInUse, **kwargs)
 
         with db_api.context_manager.writer.using(context):
+            sgr = self._get_security_group_rule(context, id)
+            kwargs['security_group_id'] = sgr['security_group_id']
             self._registry_notify(resources.SECURITY_GROUP_RULE,
                                   events.PRECOMMIT_DELETE,
                                   exc_cls=ext_sg.SecurityGroupRuleInUse, id=id,
                                   **kwargs)
-
-            sgr = self._get_security_group_rule(context, id)
             sgr.delete()
-
-            kwargs['security_group_id'] = sgr['security_group_id']
 
         registry.notify(
             resources.SECURITY_GROUP_RULE, events.AFTER_DELETE, self,
