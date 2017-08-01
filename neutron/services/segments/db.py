@@ -1,3 +1,4 @@
+# encoding:utf-8
 # Copyright 2016 Hewlett Packard Enterprise Development, LP
 #
 # All Rights Reserved.

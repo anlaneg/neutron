@@ -1,3 +1,4 @@
+# encoding:utf-8
 # Copyright 2012 VMware, Inc.  All rights reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -267,6 +268,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         # do check before update in DB as an exception will be raised
         # in case no proper l3 agent found
         if gw_info != constants.ATTR_NOT_SPECIFIED:
+            #检查是否有l3-agent连接到此network,如果没有，报错
             candidates = self._check_router_needs_rescheduling(
                 context, id, gw_info)
             # Update the gateway outside of the DB update since it involves L2
@@ -299,6 +301,8 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         None otherwise; raises exception if there is no eligible l3 agent
         associated with target external network
         """
+        #当external-network有多个时，给定路由器一个gateway,此时路由器能否调度到某个l3-agent
+        # 要看这个l3-agent是否连接到此external-network,此函数即返回合乎条件的l3-agent
         # TODO(obondarev): rethink placement of this func as l3 db manager is
         # not really a proper place for agent scheduling stuff
         network_id = gw_info.get('network_id') if gw_info else None
@@ -309,6 +313,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             context, {external_net.EXTERNAL: [True]})
         # nothing to do if there is only one external network
         if len(nets) <= 1:
+            #如果仅有一个external network，则直接返回
             return
 
         # first get plugin supporting l3 agent scheduling
@@ -357,7 +362,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                      'network_id': network_id,
                      'fixed_ips': ext_ips or constants.ATTR_NOT_SPECIFIED,
                      'device_id': router['id'],
-                     'device_owner': DEVICE_OWNER_ROUTER_GW,
+                     'device_owner': DEVICE_OWNER_ROUTER_GW,#指明gateway-port
                      'admin_state_up': True,
                      'name': ''}
         gw_port = p_utils.create_port(self._core_plugin,
@@ -369,6 +374,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         with p_utils.delete_port_on_error(self._core_plugin,
                                           context.elevated(), gw_port['id']):
             with context.session.begin(subtransactions=True):
+                #创建对应的router-port
                 router.gw_port = self._core_plugin._get_port(
                     context.elevated(), gw_port['id'])
                 router_port = l3_obj.RouterPort(
@@ -499,9 +505,11 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             context, gw_port, ext_ips)
         network_id = self._validate_gw_info(context, gw_port, info, ext_ips)
         if gw_port and ext_ip_change and gw_port['network_id'] == network_id:
+            #更新gateway port
             self._update_current_gw_port(context, router_id, router,
                                          ext_ips)
         else:
+            #删除掉原有的gateway port，并重新创建
             self._delete_current_gw_port(context, router_id, router,
                                          network_id)
             self._create_gw_port(context, router_id, router, network_id,
@@ -597,6 +605,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         router_subnets = []
         for p in (rp.port for rp in router.attached_ports):
             for ip in p['fixed_ips']:
+                #new的subnet不能与现存port所属的subnet相同（即路由器接口间不能同网段）
                 if ip['subnet_id'] in new_subnet_ids:
                     msg = (_("Router already has a port on subnet %s")
                            % ip['subnet_id'])
@@ -611,6 +620,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         id_filter = {'id': router_subnets}
         subnets = self._core_plugin.get_subnets(context.elevated(),
                                                 filters=id_filter)
+        #subnet之间不能有交集
         for sub in subnets:
             cidr = sub['cidr']
             ipnet = netaddr.IPNetwork(cidr)
@@ -753,6 +763,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         # Update owner before actual process in order to avoid the
         # case where a port might get attached to a router without the
         # owner successfully updating due to an unavailable backend.
+        # 更新此port属于router
         self._core_plugin.update_port(
             context, port_id, {'port': {'device_id': router.id,
                                         'device_owner': owner}})
@@ -788,7 +799,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             raise n_exc.BadRequest(resource='router', msg=msg)
         self._check_for_dup_router_subnets(context, router,
                                            subnet['network_id'], [subnet])
-        fixed_ip = {'ip_address': subnet['gateway_ip'],
+        fixed_ip = {'ip_address': subnet['gateway_ip'],#直接分配gateway_ip给路由器
                     'subnet_id': subnet['id']}
 
         if (subnet['ip_version'] == 6 and not
@@ -811,6 +822,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                      'device_id': router.id,
                      'device_owner': owner,
                      'name': ''}
+        #指定fixed_ips方式创建port
         return p_utils.create_port(self._core_plugin, context,
                                    {'port': port_data}), [subnet], True
 
@@ -867,10 +879,12 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 self._core_plugin, context, port['id'], revert_value)
 
         if new_router_intf:
+            #mgr的保护下执行操作，如果操作失败，将由mgr进行相应处理
             with mgr:
                 self._notify_attaching_interface(context, router_db=router,
                                                  port=port,
                                                  interface_info=interface_info)
+                #创建路由接口
                 l3_obj.RouterPort(
                     context,
                     port_id=port['id'],
@@ -880,6 +894,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 # Update owner after actual process again in order to
                 # make sure the records in routerports table and ports
                 # table are consistent.
+                # 更新此接口从属于router
                 self._core_plugin.update_port(
                     context, port['id'], {'port': {
                                          'device_id': router.id,
@@ -1257,10 +1272,12 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
 
         f_net_id = fip['floating_network_id']
         if not self._core_plugin._network_is_external(context, f_net_id):
+            #floating-network必须是external-network的ip地址
             msg = _("Network %s is not a valid external network") % f_net_id
             raise n_exc.BadRequest(resource='floatingip', msg=msg)
 
         if not self._is_ipv4_network(context, f_net_id):
+            #必须是ipv4协议
             msg = _("Network %s does not contain any IPv4 subnet") % f_net_id
             raise n_exc.BadRequest(resource='floatingip', msg=msg)
 
@@ -1285,6 +1302,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
 
         # 'status' in port dict could not be updated by default, use
         # check_allow_post to stop the verification of system
+        #创建floating-ip对应的port
         external_port = p_utils.create_port(self._core_plugin,
                                             context.elevated(),
                                             {'port': port},
@@ -1380,6 +1398,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
     @db_api.retry_if_session_inactive()
     def update_floatingip_status(self, context, floatingip_id, status):
         """Update operational status for floating IP in neutron DB."""
+        #更新floatingip的状态
         fip_query = model_query.query_with_hooks(
             context, l3_models.FloatingIP).filter(
                 l3_models.FloatingIP.id == floatingip_id)

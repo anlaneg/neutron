@@ -1,3 +1,4 @@
+# encoding:utf-8
 # Copyright (c) 2014 OpenStack Foundation.  All rights reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -143,6 +144,7 @@ class DVRResourceOperationHandler(object):
         for agent in cur_agents:
             self.l3plugin._unbind_router(context, router_db['id'], agent['id'])
 
+    #在路由器创建及更新后，尝试创建sg口
     @registry.receives(resources.ROUTER,
                        [events.AFTER_CREATE, events.AFTER_UPDATE])
     def _create_snat_interfaces_after_change(self, resource, event, trigger,
@@ -167,6 +169,7 @@ class DVRResourceOperationHandler(object):
                       router_db['id'])
         return router_db
 
+    #取所有sg口配置
     def _get_snat_interface_ports_for_router(self, context, router_id):
         """Return all existing snat_router_interface ports."""
         objs = l3_obj.RouterPort.get_objects(
@@ -179,6 +182,7 @@ class DVRResourceOperationHandler(object):
                  for rp in objs]
         return ports
 
+    #添加snat-router-interface接口
     def _add_csnat_router_interface_port(
             self, context, router, network_id, subnet_id, do_pop=True):
         """Add SNAT interface to the specified router and subnet."""
@@ -192,6 +196,7 @@ class DVRResourceOperationHandler(object):
         snat_port = p_utils.create_port(self._core_plugin, context,
                                         {'port': port_data})
         if not snat_port:
+            #创建sg口失败
             msg = _("Unable to create the SNAT Interface Port")
             raise n_exc.BadRequest(resource='router', msg=msg)
 
@@ -207,6 +212,7 @@ class DVRResourceOperationHandler(object):
                 context, [snat_port])
         return snat_port
 
+    #尝试着创建snat接口
     def _create_snat_intf_ports_if_not_exists(self, context, router):
         """Function to return the snat interface port list.
 
@@ -221,6 +227,7 @@ class DVRResourceOperationHandler(object):
             return port_list
         port_list = []
 
+        #取出所有qr口
         int_ports = (
             rp.port for rp in
             router.attached_ports.filter_by(
@@ -234,6 +241,7 @@ class DVRResourceOperationHandler(object):
                 # Passing the subnet for the port to make sure the IP's
                 # are assigned on the right subnet if multiple subnet
                 # exists
+                #这个qr口有ip,需要尝试创建其对应的sg口
                 snat_port = self._add_csnat_router_interface_port(
                     context, router, intf['network_id'],
                     intf['fixed_ips'][0]['subnet_id'], do_pop=False)
@@ -364,12 +372,14 @@ class DVRResourceOperationHandler(object):
             self.update_arp_entry_for_dvr_service_port(context,
                                                        service_port_dict)
 
+    #注册路由器接口创建事件
     @registry.receives(resources.ROUTER_INTERFACE, [events.BEFORE_CREATE])
     @db_api.retry_if_session_inactive()
     def _add_csnat_on_interface_create(self, resource, event, trigger,
                                        context, router_db, port, **kwargs):
         """Event handler to for csnat port creation on interface creation."""
         if not router_db.extra_attributes.distributed or not router_db.gw_port:
+            #如果接口不是分布式路由器，且路由器没有gateway_port，则不创建sg口
             return
         admin_context = context.elevated()
         self._add_csnat_router_interface_port(
@@ -569,12 +579,12 @@ class _DVRAgentInterfaceMixin(object):
         objs = l3_obj.RouterPort.get_objects(
             context,
             router_id=router_ids,
-            port_type=const.DEVICE_OWNER_ROUTER_SNAT)
+            port_type=const.DEVICE_OWNER_ROUTER_SNAT) #取port类型为snat-interface的接口
 
         interfaces = collections.defaultdict(list)
         for rp in objs:
             # TODO(lujinluo): Need Port as synthetic field
-            interfaces[rp.router_id].append(
+            interfaces[rp.router_id].append( #按路由器id进行分类
                 self._core_plugin._make_port_dict(rp.db_obj.port))
         LOG.debug("Return the SNAT ports: %s", interfaces)
         return interfaces
