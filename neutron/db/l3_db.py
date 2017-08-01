@@ -726,6 +726,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         prevent the port to be attach to the router.
         """
         try:
+            #通知第三方插件，接口被附加到路由器上
             registry.notify(resources.ROUTER_INTERFACE,
                             events.BEFORE_CREATE,
                             self,
@@ -884,6 +885,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             gw_network_id = router.gw_port.network_id
             gw_ips = [x['ip_address'] for x in router.gw_port.fixed_ips]
 
+        #知会第三方插件，路由接口已被附加
         registry.notify(resources.ROUTER_INTERFACE,
                         events.AFTER_CREATE,
                         self,
@@ -1885,6 +1887,7 @@ class L3_NAT_db_mixin(L3_NAT_dbonly_mixin, L3RpcNotifierMixin):
         router_interface_info = super(
             L3_NAT_db_mixin, self).add_router_interface(
                 context, router_id, interface_info)
+        #知会l3-agent,知会内部模块
         self.notify_router_interface_action(
             context, router_interface_info, 'add')
         return router_interface_info

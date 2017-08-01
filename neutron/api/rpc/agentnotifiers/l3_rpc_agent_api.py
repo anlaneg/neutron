@@ -1,3 +1,4 @@
+# encoding:utf-8
 # Copyright (c) 2013 OpenStack Foundation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -56,6 +57,7 @@ class L3AgentNotifyAPI(object):
     def _agent_notification(self, context, method, router_ids, operation,
                             shuffle_agents):
         """Notify changed routers to hosting l3 agents."""
+        #通知l3时，operation实际上并不使用
         adminContext = context if context.is_admin else context.elevated()
         plugin = directory.get_plugin(plugin_constants.L3)
         for router_id in router_ids:
