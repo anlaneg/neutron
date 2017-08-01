@@ -39,13 +39,14 @@ from neutron._i18n import _
 from neutron.common import utils
 from neutron.db import agents_db
 from neutron.db import api as db_api
-from neutron.db.models import l3 as l3_models
 from neutron.db import models_v2
 from neutron.db import provisioning_blocks
 from neutron.db import segments_db
 from neutron.extensions import availability_zone as az_ext
 from neutron.extensions import external_net
 from neutron.extensions import multiprovidernet as mpnet
+from neutron.objects import base as base_obj
+from neutron.objects import router as l3_obj
 from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2.common import exceptions as ml2_exc
 from neutron.plugins.ml2 import config
@@ -1065,22 +1066,40 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
             # check that notifier was still triggered
             self.assertTrue(notify.call_counts)
 
-    def test_registry_notify_after_port_binding(self):
+    def test_registry_notify_before_after_port_binding(self):
         plugin = directory.get_plugin()
         ctx = context.get_admin_context()
-        update_events = []
-        receiver = lambda *a, **k: update_events.append(k['port'])
-        registry.subscribe(receiver, resources.PORT,
+        b_update_events = []
+        a_update_events = []
+        b_receiver = lambda *a, **k: b_update_events.append(k)
+        a_receiver = lambda *a, **k: a_update_events.append(k['port'])
+        registry.subscribe(b_receiver, resources.PORT,
+                           events.BEFORE_UPDATE)
+        registry.subscribe(a_receiver, resources.PORT,
                            events.AFTER_UPDATE)
         with self.port() as p:
             port = {'port': {'binding:host_id': 'newhost'}}
             plugin.update_port(ctx, p['port']['id'], port)
         # updating in the host should result in two AFTER_UPDATE events.
         # one to change the host_id, the second to commit a binding
-        self.assertEqual('newhost', update_events[0]['binding:host_id'])
-        self.assertEqual('unbound', update_events[0]['binding:vif_type'])
-        self.assertEqual('newhost', update_events[1]['binding:host_id'])
-        self.assertNotEqual('unbound', update_events[1]['binding:vif_type'])
+        self.assertEqual(2, len(b_update_events))
+        self.assertEqual({'context': ctx,
+                          'port': {'binding:host_id': 'newhost'}},
+                         b_update_events[0])
+        self.assertIn('orig_binding', b_update_events[1])
+        self.assertIn('new_binding', b_update_events[1])
+        self.assertDictContainsSubset({'context': ctx}, b_update_events[1])
+        self.assertDictContainsSubset({
+            'admin_state_up': True,
+            'binding:host_id': 'newhost',
+            'binding:vif_type': 'unbound',
+            'binding:vnic_type': u'normal',
+            'status': 'DOWN'},
+            b_update_events[1]['port'])
+        self.assertEqual('newhost', a_update_events[0]['binding:host_id'])
+        self.assertEqual('unbound', a_update_events[0]['binding:vif_type'])
+        self.assertEqual('newhost', a_update_events[1]['binding:host_id'])
+        self.assertNotEqual('unbound', a_update_events[1]['binding:vif_type'])
 
     def test_check_if_compute_port_serviced_by_dvr(self):
         self.assertTrue(utils.is_dvr_serviced(DEVICE_OWNER_COMPUTE))
@@ -1496,9 +1515,11 @@ class TestMl2DvrPortsV2(TestMl2PortsV2):
 
         # lie to turn the port into an SNAT interface
         with db_api.context_manager.reader.using(self.context):
-            rp = self.context.session.query(l3_models.RouterPort).filter_by(
-                port_id=p['port_id']).first()
-            rp.port_type = constants.DEVICE_OWNER_ROUTER_SNAT
+            pager = base_obj.Pager(limit=1)
+            rp = l3_obj.RouterPort.get_objects(
+                self.context, _pager=pager, port_id=p['port_id'])
+            rp[0].port_type = constants.DEVICE_OWNER_ROUTER_SNAT
+            rp[0].update()
 
         # take the port away before csnat gets a chance to delete it
         # to simulate a concurrent delete

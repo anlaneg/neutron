@@ -321,15 +321,17 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
                       "VNI %(segmentation_id)s",
                       {'interface': interface,
                        'segmentation_id': segmentation_id})
-            args = {'dev': self.local_int}
+            args = {'dev': self.local_int,
+                    'srcport': (cfg.CONF.VXLAN.udp_srcport_min,
+                                cfg.CONF.VXLAN.udp_srcport_max),
+                    'dstport': cfg.CONF.VXLAN.udp_dstport,
+                    'ttl': cfg.CONF.VXLAN.ttl,
+                    'tos': cfg.CONF.VXLAN.tos}
             if self.vxlan_mode == lconst.VXLAN_MCAST:
                 args['group'] = self.get_vxlan_group(segmentation_id)
-            if cfg.CONF.VXLAN.ttl:
-                args['ttl'] = cfg.CONF.VXLAN.ttl
-            if cfg.CONF.VXLAN.tos:
-                args['tos'] = cfg.CONF.VXLAN.tos
             if cfg.CONF.VXLAN.l2_population:
                 args['proxy'] = cfg.CONF.VXLAN.arp_responder
+
             try:
                 int_vxlan = self.ip.add_vxlan(interface, segmentation_id,
                                               **args)
@@ -846,13 +848,11 @@ class LinuxBridgeRpcCallbacks(
                              "bridge_mappings and cannot be deleted."),
                          network_id)
                 return
-        else:
-            LOG.debug("Network %s is not on this agent.", network_id)
-            return
 
         bridge_name = self.agent.mgr.get_bridge_name(network_id)
         LOG.debug("Delete %s", bridge_name)
         self.agent.mgr.delete_bridge(bridge_name)
+        self.network_map.pop(network_id, None)
 
     def port_update(self, context, **kwargs):
         port_id = kwargs['port']['id']

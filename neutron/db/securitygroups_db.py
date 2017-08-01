@@ -13,6 +13,7 @@
 #    under the License.
 
 import netaddr
+from neutron_lib.api.definitions import port as port_def
 from neutron_lib.api import validators
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import exceptions
@@ -27,7 +28,6 @@ import six
 from sqlalchemy.orm import scoped_session
 
 from neutron._i18n import _
-from neutron.api.v2 import attributes
 from neutron.common import constants as n_const
 from neutron.common import utils
 from neutron.db import _model_query as model_query
@@ -473,7 +473,13 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
                                 constants.PROTO_NAME_IPV6_ICMP_LEGACY,
                                 constants.PROTO_NAME_IPV6_NONXT,
                                 constants.PROTO_NAME_IPV6_OPTS,
-                                constants.PROTO_NAME_IPV6_ROUTE]:
+                                constants.PROTO_NAME_IPV6_ROUTE,
+                                str(constants.PROTO_NUM_IPV6_ENCAP),
+                                str(constants.PROTO_NUM_IPV6_FRAG),
+                                str(constants.PROTO_NUM_IPV6_ICMP),
+                                str(constants.PROTO_NUM_IPV6_NONXT),
+                                str(constants.PROTO_NUM_IPV6_OPTS),
+                                str(constants.PROTO_NUM_IPV6_ROUTE)]:
             if rule['ethertype'] == constants.IPv4:
                 raise ext_sg.SecurityGroupEthertypeConflictWithProtocol(
                         ethertype=rule['ethertype'], protocol=rule['protocol'])
@@ -701,7 +707,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             **kwargs)
 
     @staticmethod
-    @resource_extend.extends([attributes.PORTS])
+    @resource_extend.extends([port_def.COLLECTION_NAME])
     def _extend_port_dict_security_group(port_res, port_db):
         # Security group bindings will be retrieved from the SQLAlchemy
         # model. As they're loaded eagerly with ports because of the
@@ -787,9 +793,9 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         port = port['port']
         if port.get('device_owner') and net.is_port_trusted(port):
             return
-        default_sg = self._ensure_default_security_group(context,
-                                                         port['tenant_id'])
         if not validators.is_attr_set(port.get(ext_sg.SECURITYGROUPS)):
+            default_sg = self._ensure_default_security_group(context,
+                                                             port['tenant_id'])
             port[ext_sg.SECURITYGROUPS] = [default_sg]
 
     def _check_update_deletes_security_groups(self, port):

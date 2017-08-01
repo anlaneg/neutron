@@ -89,8 +89,7 @@ def has_zero_prefixlen_address(ip_addresses):
 
 
 @profiler.trace_cls("rpc")
-class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
-                      l2population_rpc.L2populationRpcCallBackTunnelMixin,
+class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                       dvr_rpc.DVRAgentRpcCallbackMixin):
     '''Implements OVS-based tunneling, VLANs and flat networks.
 
@@ -245,6 +244,8 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         self.sg_agent = agent_sg_rpc.SecurityGroupAgentRpc(
             self.context, self.sg_plugin_rpc, defer_refresh_firewall=True,
             integration_bridge=self.int_br)
+        self.sg_plugin_rpc.register_legacy_sg_notification_callbacks(
+            self.sg_agent)
 
         # we default to False to provide backward compat with out of tree
         # firewall drivers that expect the logic that existed on the Neutron
@@ -253,7 +254,6 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         hybrid_plug = getattr(self.sg_agent.firewall,
                               'OVS_HYBRID_PLUG_REQUIRED', False)
         self.prevent_arp_spoofing = (
-            agent_conf.prevent_arp_spoofing and
             not self.sg_agent.firewall.provides_arp_spoofing_protection)
 
         #TODO(mangelajo): optimize resource_versions to only report
@@ -373,7 +373,8 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         self.plugin_rpc = OVSPluginApi(topics.PLUGIN)
         # allow us to receive port_update/delete callbacks from the cache
         self.plugin_rpc.register_legacy_notification_callbacks(self)
-        self.sg_plugin_rpc = sg_rpc.SecurityGroupServerRpcApi(topics.PLUGIN)
+        self.sg_plugin_rpc = sg_rpc.SecurityGroupServerAPIShim(
+            self.plugin_rpc.remote_resource_cache)
         self.dvr_plugin_rpc = dvr_rpc.DVRServerRpcApi(topics.PLUGIN)
         self.state_rpc = agent_rpc.PluginReportStateAPI(topics.REPORTS)
 
@@ -382,7 +383,6 @@ class OVSNeutronAgent(sg_rpc.SecurityGroupAgentRpcCallbackMixin,
         # Define the listening consumers for the agent
         consumers = [[constants.TUNNEL, topics.UPDATE],
                      [constants.TUNNEL, topics.DELETE],
-                     [topics.SECURITY_GROUP, topics.UPDATE],
                      [topics.DVR, topics.UPDATE]]
         if self.l2_pop:
             consumers.append([topics.L2POPULATION, topics.UPDATE])

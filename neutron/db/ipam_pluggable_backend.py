@@ -32,6 +32,7 @@ from neutron.db import ipam_backend_mixin
 from neutron.db import models_v2
 from neutron.ipam import driver
 from neutron.ipam import exceptions as ipam_exc
+from neutron.objects import ports as port_obj
 from neutron.objects import subnet as obj_subnet
 
 
@@ -381,7 +382,6 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                     ip['subnet_id'], db_port.id)
             self._update_db_port(context, db_port, new_port, network_id,
                                  new_mac)
-            getattr(db_port, 'fixed_ips')  # refresh relationship before return
 
             if auto_assign_subnets:
                 port_copy = copy.deepcopy(original)
@@ -389,6 +389,8 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                 port_copy['fixed_ips'] = auto_assign_subnets
                 self.allocate_ips_for_port_and_store(context,
                             {'port': port_copy}, port_copy['id'])
+
+            getattr(db_port, 'fixed_ips')  # refresh relationship before return
 
         except Exception:
             with excutils.save_and_reraise_exception():
@@ -478,16 +480,15 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                           port, ip, subnet, ipam_subnet)
                 try:
                     ip_address = ipam_subnet.allocate(ip_request)
-                    allocated = models_v2.IPAllocation(network_id=network_id,
-                                                       port_id=port['id'],
-                                                       ip_address=ip_address,
-                                                       subnet_id=subnet['id'])
+                    allocated = port_obj.IPAllocation(
+                        context, network_id=network_id, port_id=port['id'],
+                        ip_address=ip_address, subnet_id=subnet['id'])
                     # Do the insertion of each IP allocation entry within
                     # the context of a nested transaction, so that the entry
                     # is rolled back independently of other entries whenever
                     # the corresponding port has been deleted.
                     with db_api.context_manager.writer.using(context):
-                        context.session.add(allocated)
+                        allocated.create()
                     updated_ports.append(port['id'])
                 except db_exc.DBReferenceError:
                     LOG.debug("Port %s was deleted while updating it with an "

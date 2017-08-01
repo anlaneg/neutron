@@ -58,6 +58,7 @@ from neutron.db import rbac_db_models
 from neutron.db import standard_attr
 from neutron.ipam.drivers.neutrondb_ipam import driver as ipam_driver
 from neutron.ipam import exceptions as ipam_exc
+from neutron.objects import router as l3_obj
 from neutron.tests import base
 from neutron.tests import tools
 from neutron.tests.unit.api import test_extensions
@@ -178,7 +179,8 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
         super(NeutronDbPluginV2TestCase, self).setup_config(args=args)
 
     def _req(self, method, resource, data=None, fmt=None, id=None, params=None,
-             action=None, subresource=None, sub_id=None, context=None):
+             action=None, subresource=None, sub_id=None, context=None,
+             headers=None):
         fmt = fmt or self.fmt
 
         path = '/%s.%s' % (
@@ -196,7 +198,8 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
         if data is not None:  # empty dict is valid
             body = self.serialize(data)
         return testlib_api.create_request(path, body, content_type, method,
-                                          query_string=params, context=context)
+                                          query_string=params, context=context,
+                                          headers=headers)
 
     def new_create_request(self, resource, data, fmt=None, id=None,
                            subresource=None, context=None):
@@ -219,7 +222,7 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
                          params=params, subresource=subresource, sub_id=sub_id)
 
     def new_delete_request(self, resource, id, fmt=None, subresource=None,
-                           sub_id=None, data=None):
+                           sub_id=None, data=None, headers=None):
         return self._req(
             'DELETE',
             resource,
@@ -227,14 +230,16 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
             fmt,
             id=id,
             subresource=subresource,
-            sub_id=sub_id
+            sub_id=sub_id,
+            headers=headers
         )
 
     def new_update_request(self, resource, data, id, fmt=None,
-                           subresource=None, context=None, sub_id=None):
+                           subresource=None, context=None, sub_id=None,
+                           headers=None):
         return self._req(
             'PUT', resource, data, fmt, id=id, subresource=subresource,
-            sub_id=sub_id, context=context
+            sub_id=sub_id, context=context, headers=headers
         )
 
     def new_action_request(self, resource, data, id, action, fmt=None,
@@ -520,8 +525,8 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
 
     def _delete(self, collection, id,
                 expected_code=webob.exc.HTTPNoContent.code,
-                neutron_context=None):
-        req = self.new_delete_request(collection, id)
+                neutron_context=None, headers=None):
+        req = self.new_delete_request(collection, id, headers=headers)
         if neutron_context:
             # create a specific auth context for this request
             req.environ['neutron.context'] = neutron_context
@@ -545,8 +550,8 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
 
     def _update(self, resource, id, new_data,
                 expected_code=webob.exc.HTTPOk.code,
-                neutron_context=None):
-        req = self.new_update_request(resource, new_data, id)
+                neutron_context=None, headers=None):
+        req = self.new_update_request(resource, new_data, id, headers=headers)
         if neutron_context:
             # create a specific auth context for this request
             req.environ['neutron.context'] = neutron_context
@@ -4616,18 +4621,18 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                     with db_api.context_manager.writer.using(ctx):
                         router = l3_models.Router()
                         ctx.session.add(router)
-                    with db_api.context_manager.writer.using(ctx):
-                        rp = l3_models.RouterPort(router_id=router.id,
-                                                  port_id=port['port']['id'])
-                        ctx.session.add(rp)
+                    rp = l3_obj.RouterPort(ctx, router_id=router.id,
+                                           port_id=port['port']['id'])
+                    rp.create()
+
                     data = {'subnet': {'gateway_ip': '10.0.0.99'}}
                     req = self.new_update_request('subnets', data,
                                                   s['id'])
                     res = req.get_response(self.api)
                     self.assertEqual(409, res.status_int)
                     # should work fine if it's not a router port
+                    rp.delete()
                     with db_api.context_manager.writer.using(ctx):
-                        ctx.session.delete(rp)
                         ctx.session.delete(router)
                     res = req.get_response(self.api)
                     self.assertEqual(res.status_int, 200)

@@ -22,7 +22,6 @@ from oslo_config import cfg
 from oslo_log import log as logging
 
 from neutron._i18n import _LE, _LI
-from neutron.db import models_v2
 from neutron.db import segments_db
 from neutron.extensions import dns
 from neutron.objects import network as net_obj
@@ -111,7 +110,8 @@ class DNSExtensionDriver(api.ExtensionDriver):
                          current_dns_domain=current_dns_domain,
                          previous_dns_name='',
                          previous_dns_domain='',
-                         dns_name=dns_name).create()
+                         dns_name=dns_name,
+                         dns_domain='').create()
 
     def _update_dns_db(self, dns_name, dns_domain, db_data,
                       plugin_context, has_fixed_ips):
@@ -145,7 +145,8 @@ class DNSExtensionDriver(api.ExtensionDriver):
                                            current_dns_domain=dns_domain,
                                            previous_dns_name='',
                                            previous_dns_domain='',
-                                           dns_name=dns_name)
+                                           dns_name=dns_name,
+                                           dns_domain='')
             dns_data_db.create()
         return dns_data_db
 
@@ -192,7 +193,8 @@ class DNSExtensionDriver(api.ExtensionDriver):
                                            current_dns_domain='',
                                            previous_dns_name='',
                                            previous_dns_domain='',
-                                           dns_name=dns_name)
+                                           dns_name=dns_name,
+                                           dns_domain='')
             dns_data_db.create()
         return dns_data_db
 
@@ -331,6 +333,17 @@ class DNSExtensionDriverML2(DNSExtensionDriver):
         return True
 
 
+class DNSDomainPortsExtensionDriver(DNSExtensionDriverML2):
+    _supported_extension_alias = 'dns-domain-ports'
+
+    @property
+    def extension_alias(self):
+        return self._supported_extension_alias
+
+    def initialize(self):
+        LOG.info(_LI("DNSDomainPortsExtensionDriver initialization complete"))
+
+
 DNS_DRIVER = None
 
 
@@ -441,8 +454,8 @@ def _delete_port_in_external_dns_service(resource, event, trigger, **kwargs):
     if not dns_data_db:
         return
     if dns_data_db['current_dns_name']:
-        ip_allocations = context.session.query(
-            models_v2.IPAllocation).filter_by(port_id=port_id).all()
+        ip_allocations = port_obj.IPAllocation.get_objects(context,
+                                                           port_id=port_id)
         records = [alloc['ip_address'] for alloc in ip_allocations]
         _remove_data_from_external_dns_service(
             context, dns_driver, dns_data_db['current_dns_domain'],

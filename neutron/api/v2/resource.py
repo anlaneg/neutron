@@ -89,6 +89,12 @@ def Resource(controller, faults=None, deserializers=None, serializers=None,
             if fmt is not None and fmt not in format_types:
                 args['id'] = '.'.join([args['id'], fmt])
 
+            revision_number = api_common.check_request_for_revision_constraint(
+                request)
+            if revision_number is not None:
+                request.context.set_transaction_constraint(
+                    controller._collection, args['id'], revision_number)
+
             method = getattr(controller, action)
             result = method(request=request, **args)
         except Exception as e:

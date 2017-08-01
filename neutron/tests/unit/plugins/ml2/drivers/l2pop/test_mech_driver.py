@@ -15,6 +15,7 @@
 
 import mock
 
+from neutron_lib.api.definitions import port as port_def
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as pnet
 from neutron_lib import constants
@@ -25,7 +26,6 @@ from neutron_lib.plugins import directory
 from oslo_serialization import jsonutils
 import testtools
 
-from neutron.api.v2 import attributes
 from neutron.common import constants as n_const
 from neutron.common import topics
 from neutron.db import agents_db
@@ -237,14 +237,21 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
             else:
                 port[portbindings.HOST_ID] = self.agent2['host']
             plugin.update_port(self.adminContext, port['id'],
-                               {attributes.PORT: port})
+                               {port_def.RESOURCE_NAME: port})
 
-    def _get_first_interface(self, net_id, router_id):
+    def _get_first_interface(self, net_id, router):
         plugin = directory.get_plugin()
-        device_filter = {'device_id': [router_id],
-                         'device_owner':
-                         [constants.DEVICE_OWNER_HA_REPLICATED_INT]}
-        return plugin.get_ports(self.adminContext, filters=device_filter)[0]
+        if router['distributed']:
+            device_filter = {'device_id': [router['id']],
+                             'device_owner':
+                             [constants.DEVICE_OWNER_DVR_INTERFACE]}
+        else:
+            device_filter = {'device_id': [router['id']],
+                             'device_owner':
+                             [constants.DEVICE_OWNER_HA_REPLICATED_INT]}
+        ports = plugin.get_ports(self.adminContext, filters=device_filter)
+        if ports:
+            return ports[0]
 
     def _add_router_interface(self, subnet, router, host):
         interface_info = {'subnet_id': subnet['id']}
@@ -254,7 +261,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
             self.adminContext,
             {router['id']: n_const.HA_ROUTER_STATE_ACTIVE}, host)
 
-        port = self._get_first_interface(subnet['network_id'], router['id'])
+        port = self._get_first_interface(subnet['network_id'], router)
 
         self.mock_cast.reset_mock()
         self.mock_fanout.reset_mock()
@@ -265,6 +272,12 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
     def _create_ha_router(self):
         self._setup_l3()
         router = self._create_router()
+        self._bind_router(router['id'], router['tenant_id'])
+        return router
+
+    def _create_dvr_router(self):
+        self._setup_l3()
+        router = self._create_router(distributed=True)
         self._bind_router(router['id'], router['tenant_id'])
         return router
 
@@ -338,6 +351,36 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                                          router['id'], interface_info)
                 self.mock_fanout.assert_called_with(
                     mock.ANY, 'remove_fdb_entries', expected)
+
+    def test_ha_agents_with_dvr_rtr_does_not_get_other_fdb(self):
+        router = self._create_dvr_router()
+        directory.add_plugin(plugin_constants.L3, self.plugin)
+        with self.subnet(network=self._network, enable_dhcp=False) as snet:
+            host_arg = {portbindings.HOST_ID: HOST_4, 'admin_state_up': True}
+            with self.port(subnet=snet,
+                           device_owner=DEVICE_OWNER_COMPUTE,
+                           arg_list=(portbindings.HOST_ID,),
+                           **host_arg) as port1:
+                p1 = port1['port']
+                device1 = 'tap' + p1['id']
+                self.callbacks.update_device_up(
+                    self.adminContext, agent_id=HOST_4, device=device1)
+
+                subnet = snet['subnet']
+                port = self._add_router_interface(subnet, router, HOST)
+
+                self.mock_cast.assert_not_called()
+                self.mock_fanout.assert_not_called()
+
+                self.mock_cast.reset_mock()
+                self.mock_fanout.reset_mock()
+
+                self.callbacks.update_device_up(
+                    self.adminContext, agent_id=HOST_2,
+                    device=port['id'], host=HOST_2)
+
+                self.mock_cast.assert_not_called()
+                self.mock_fanout.assert_not_called()
 
     def test_ha_agents_get_other_fdb(self):
         # First network port is added on HOST4, then HA router port is
@@ -1118,7 +1161,6 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                 self.driver.get_network(
                     self.context, port['port']['network_id']),
                 models.PortBinding(), bindings)
-            mock.patch.object(port_context, '_expand_segment').start()
             # The point is to provide coverage and to assert that no exceptions
             # are raised.
             l2pop_mech.delete_port_postcommit(port_context)
@@ -1147,7 +1189,14 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                     self.driver.get_network(
                         self.context, p['port']['network_id']),
                     models.PortBinding(), bindings)
-                mock.patch.object(port_context, '_expand_segment').start()
+                fdbs = {
+                    p['port']['network_id']: {
+                        'segment_id': 'fakeid',
+                        'ports': {},
+                    }
+                }
+                mock.patch.object(
+                    l2pop_mech, '_get_agent_fdb', return_value=fdbs).start()
                 # The point is to provide coverage and to assert that
                 # no exceptions are raised.
                 l2pop_mech.delete_port_postcommit(port_context)

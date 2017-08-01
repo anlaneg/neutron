@@ -26,12 +26,19 @@
 # All configuration values have a default; values that are commented out
 # serve to show the default.
 
+import logging
 import os
-import subprocess
 import sys
-import warnings
 
-import openstackdocstheme
+
+# NOTE(amotoki): In case of oslo_config.sphinxext is enabled,
+# when resolving automodule neutron.tests.functional.db.test_migrations,
+# sphinx accesses tests/functional/__init__.py is processed,
+# eventlet.monkey_patch() is called and monkey_patch() tries to access
+# pyroute2.common.__class__ attribute. It raises pyroute2 warning and
+# it causes sphinx build failure due to warning-is-error = 1.
+# To pass sphinx build, ignore pyroute2 warning explicitly.
+logging.getLogger('pyroute2').setLevel(logging.ERROR)
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
@@ -45,12 +52,22 @@ sys.path.append(os.path.abspath("ext"))
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
-extensions = ['sphinx.ext.autodoc',
-              'sphinx.ext.coverage',
-              'sphinx.ext.ifconfig',
-              'sphinx.ext.graphviz',
-              'sphinx.ext.todo',
-              'support_matrix']
+extensions = [
+    'sphinx.ext.autodoc',
+    'sphinx.ext.coverage',
+    'sphinx.ext.ifconfig',
+    'sphinx.ext.graphviz',
+    'sphinx.ext.todo',
+    'openstackdocstheme',
+    'support_matrix',
+    'oslo_config.sphinxext',
+    'oslo_config.sphinxconfiggen',
+]
+
+# openstackdocstheme options
+repository_name = 'openstack/neutron'
+bug_project = 'neutron'
+bug_tag = 'doc'
 
 todo_include_todos = True
 
@@ -136,7 +153,6 @@ html_theme = 'openstackdocs'
 
 # Add any paths that contain custom themes here, relative to this directory.
 #html_theme_path = ['_theme']
-html_theme_path = [openstackdocstheme.get_html_theme_path()]
 
 # The name for this set of Sphinx documents.  If None, it defaults to
 # "<project> v<release> documentation".
@@ -161,23 +177,7 @@ html_static_path = ['_static']
 
 # If not '', a 'Last updated on:' timestamp is inserted at every page bottom,
 # using the given strftime format.
-#html_last_updated_fmt = '%b %d, %Y'
-git_cmd = "git log --pretty=format:'%ad, commit %h' --date=local -n1"
-try:
-    html_last_updated_fmt = subprocess.check_output(git_cmd).decode('utf-8')
-except Exception:
-    warnings.warn('Cannot get last updated time from git repository. '
-                  'Not setting "html_last_updated_fmt".')
-
-gitsha = os.popen("/usr/bin/git rev-parse HEAD").read()
-giturl = u'https://git.openstack.org/cgit/openstack/neutron/tree/doc/source'
-# html_context allows us to pass arbitrary values into the html template
-html_context = {
-    "gitsha": gitsha,
-    "giturl": giturl,
-    "bug_project": "neutron",
-    "bug_tag": "doc",
-   }
+html_last_updated_fmt = '%Y-%m-%d %H:%M'
 
 # If true, SmartyPants will be used to convert quotes and dashes to
 # typographically correct entities.
@@ -246,3 +246,32 @@ latex_documents = [
 
 # If false, no module index is generated.
 #latex_use_modindex = True
+
+# -- Options for oslo_config.sphinxconfiggen ---------------------------------
+
+_config_generator_config_files = [
+    'dhcp_agent.ini',
+    'l3_agent.ini',
+    'linuxbridge_agent.ini',
+    'macvtap_agent.ini',
+    'metadata_agent.ini',
+    'metering_agent.ini',
+    'ml2_conf.ini',
+    'neutron.conf',
+    'openvswitch_agent.ini',
+    'sriov_agent.ini',
+]
+
+
+def _get_config_generator_config_definition(config_file):
+    config_file_path = '../../etc/oslo-config-generator/%s' % conf
+    # oslo_config.sphinxconfiggen appends '.conf.sample' to the filename,
+    # strip file extentension (.conf or .ini).
+    output_file_path = '_static/config-samples/%s' % conf.rsplit('.', 1)[0]
+    return (config_file_path, output_file_path)
+
+
+config_generator_config_file = [
+    _get_config_generator_config_definition(conf)
+    for conf in _config_generator_config_files
+]

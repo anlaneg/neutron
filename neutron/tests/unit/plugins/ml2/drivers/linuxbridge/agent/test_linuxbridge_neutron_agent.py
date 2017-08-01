@@ -392,6 +392,10 @@ class TestLinuxBridgeManager(base.BaseTestCase):
                 self.assertEqual("vxlan-" + seg_id, retval)
                 add_vxlan_fn.assert_called_with("vxlan-" + seg_id, seg_id,
                                                 group="224.0.0.1",
+                                                srcport=(0, 0),
+                                                dstport=None,
+                                                ttl=None,
+                                                tos=None,
                                                 dev=self.lbm.local_int)
                 dv6_fn.assert_called_once_with()
                 cfg.CONF.set_override('l2_population', 'True', 'VXLAN')
@@ -399,6 +403,10 @@ class TestLinuxBridgeManager(base.BaseTestCase):
                                  self.lbm.ensure_vxlan(seg_id))
                 add_vxlan_fn.assert_called_with("vxlan-" + seg_id, seg_id,
                                                 group="224.0.0.1",
+                                                srcport=(0, 0),
+                                                dstport=None,
+                                                ttl=None,
+                                                tos=None,
                                                 dev=self.lbm.local_int,
                                                 proxy=expected_proxy)
 
@@ -934,11 +942,16 @@ class TestLinuxBridgeRpcCallbacks(base.BaseTestCase):
         segment.segmentation_id = 1
         self.lb_rpc.network_map['net_id'] = segment
 
-    def test_network_delete(self):
+    def test_network_delete_mapped_net(self):
         mock_net = mock.Mock()
         mock_net.physical_network = None
+        self._test_network_delete({NETWORK_ID: mock_net})
 
-        self.lb_rpc.network_map = {NETWORK_ID: mock_net}
+    def test_network_delete_unmapped_net(self):
+        self._test_network_delete({})
+
+    def _test_network_delete(self, net_map):
+        self.lb_rpc.network_map = net_map
 
         with mock.patch.object(self.lb_rpc.agent.mgr,
                                "get_bridge_name") as get_br_fn,\

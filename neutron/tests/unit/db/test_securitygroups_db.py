@@ -12,6 +12,7 @@
 # limitations under the License.
 
 import copy
+
 import mock
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import exceptions
@@ -216,6 +217,18 @@ class SecurityGroupDbMixinTestCase(testlib_api.SqlTestCase):
                            {'protocol': constants.PROTO_NAME_IPV6_NONXT,
                             'ethertype': constants.IPv4},
                            {'protocol': constants.PROTO_NAME_IPV6_OPTS,
+                            'ethertype': constants.IPv4},
+                           {'protocol': str(constants.PROTO_NUM_IPV6_ICMP),
+                            'ethertype': constants.IPv4},
+                           {'protocol': str(constants.PROTO_NUM_IPV6_ENCAP),
+                            'ethertype': constants.IPv4},
+                           {'protocol': str(constants.PROTO_NUM_IPV6_ROUTE),
+                            'ethertype': constants.IPv4},
+                           {'protocol': str(constants.PROTO_NUM_IPV6_FRAG),
+                            'ethertype': constants.IPv4},
+                           {'protocol': str(constants.PROTO_NUM_IPV6_NONXT),
+                            'ethertype': constants.IPv4},
+                           {'protocol': str(constants.PROTO_NUM_IPV6_OPTS),
                             'ethertype': constants.IPv4}]
         # test wrong protocols
         for rule in fake_ipv4_rules:

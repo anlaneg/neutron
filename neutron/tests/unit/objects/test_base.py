@@ -43,9 +43,11 @@ from neutron.objects import flavor
 from neutron.objects.logapi import event_types
 from neutron.objects import network as net_obj
 from neutron.objects import ports
+from neutron.objects.qos import policy as qos_policy
 from neutron.objects import rbac_db
 from neutron.objects import securitygroup
 from neutron.objects import subnet
+from neutron.objects import utils as obj_utils
 from neutron.tests import base as test_base
 from neutron.tests import tools
 from neutron.tests.unit.db import test_db_base_plugin_v2
@@ -448,6 +450,7 @@ FIELD_TYPE_VALUE_GENERATOR_MAP = {
     common_types.DomainNameField: get_random_domain_name,
     common_types.DscpMarkField: get_random_dscp_mark,
     common_types.EtherTypeEnumField: tools.get_random_ether_type,
+    common_types.FloatingIPStatusEnumField: tools.get_random_floatingip_status,
     common_types.FlowDirectionEnumField: tools.get_random_flow_direction,
     common_types.IpamAllocationStatusEnumField: tools.get_random_ipam_status,
     common_types.IPNetworkField: tools.get_random_ip_network,
@@ -517,6 +520,7 @@ class _BaseObjectTestCase(object):
         objects.register_objects()
         self.context = context.get_admin_context()
         self._unique_tracker = collections.defaultdict(set)
+        self.locked_obj_fields = collections.defaultdict(set)
         self.db_objs = [
             self._test_class.db_model(**self.get_random_db_fields())
             for _ in range(3)
@@ -560,6 +564,9 @@ class _BaseObjectTestCase(object):
             if field not in obj_cls.synthetic_fields:
                 generator = FIELD_TYPE_VALUE_GENERATOR_MAP[type(field_obj)]
                 fields[field] = get_value(generator, ip_version)
+        for k, v in self.locked_obj_fields.items():
+            if k in fields:
+                fields[k] = v
         for keys in obj_cls.unique_keys:
             keytup = tuple(keys)
             unique_values = tuple(fields[k] for k in keytup)
@@ -609,6 +616,7 @@ class _BaseObjectTestCase(object):
                     obj[k] = val
             if k in self.valid_field_filter:
                 self.valid_field_filter[k] = val
+            self.locked_obj_fields[k] = v() if callable(v) else v
 
     @classmethod
     def generate_object_keys(cls, obj_cls, field_names=None):
@@ -853,6 +861,61 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
             self._test_class.update_objects(
                 self.context, {'unknown_filter': 'new_value'},
                 validate_filters=False, unknown_filter='value')
+
+    def _prep_string_field(self):
+        self.filter_string_field = None
+        # find the first string field to use as string matching filter
+        for field in self.obj_fields[0]:
+            if isinstance(field, obj_fields.StringField):
+                self.filter_string_field = field
+                break
+
+        if self.filter_string_field is None:
+            self.skipTest('There is no string field in this object')
+
+    def test_get_objects_with_string_matching_filters_contains(self):
+        self._prep_string_field()
+
+        filter_dict_contains = {
+            self.filter_string_field: obj_utils.StringContains(
+                "random_thing")}
+
+        with mock.patch.object(
+                obj_db_api, 'get_objects',
+                side_effect=self.fake_get_objects):
+            res = self._test_class.get_objects(self.context,
+                                               **filter_dict_contains)
+            self.assertEqual([], res)
+
+    def test_get_objects_with_string_matching_filters_starts(self):
+        self._prep_string_field()
+
+        filter_dict_starts = {
+            self.filter_string_field: obj_utils.StringStarts(
+                "random_thing")
+        }
+
+        with mock.patch.object(
+                obj_db_api, 'get_objects',
+                side_effect=self.fake_get_objects):
+            res = self._test_class.get_objects(self.context,
+                                               **filter_dict_starts)
+            self.assertEqual([], res)
+
+    def test_get_objects_with_string_matching_filters_ends(self):
+        self._prep_string_field()
+
+        filter_dict_ends = {
+            self.filter_string_field: obj_utils.StringEnds(
+                "random_thing")
+        }
+
+        with mock.patch.object(
+                obj_db_api, 'get_objects',
+                side_effect=self.fake_get_objects):
+            res = self._test_class.get_objects(self.context,
+                                               **filter_dict_ends)
+            self.assertEqual([], res)
 
     def test_delete_objects(self):
         '''Test that delete_objects calls to underlying db_api.'''
@@ -1336,8 +1399,10 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
                         objclass.db_model(**objclass_fields)
                     ]
 
-    def _create_test_network(self, name='test-network1'):
-        _network = net_obj.Network(self.context, name=name)
+    def _create_test_network(self, name='test-network1', network_id=None):
+        network_id = (uuidutils.generate_uuid() if network_id is None
+                      else network_id)
+        _network = net_obj.Network(self.context, name=name, id=network_id)
         _network.create()
         return _network
 
@@ -1465,6 +1530,11 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         service_profile_obj = flavor.ServiceProfile(self.context, **attrs)
         service_profile_obj.create()
         return service_profile_obj.id
+
+    def _create_test_qos_policy(self, **qos_policy_attrs):
+        _qos_policy = qos_policy.QosPolicy(self.context, **qos_policy_attrs)
+        _qos_policy.create()
+        return _qos_policy
 
     def test_get_standard_attr_id(self):
 

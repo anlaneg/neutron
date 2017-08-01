@@ -77,6 +77,13 @@ class OpenFlowSwitchMixin(object):
                       actions="drop",
                       **self._conv_args(kwargs))
 
+    def install_instructions(self, instructions,
+                             table_id=0, priority=0, **kwargs):
+        self.add_flow(table=table_id,
+                      priority=priority,
+                      actions=instructions,
+                      **self._conv_args(kwargs))
+
     #移除所有流
     def uninstall_flows(self, **kwargs):
         # NOTE(yamamoto): super() points to ovs_lib.OVSBridge.

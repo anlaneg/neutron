@@ -51,10 +51,16 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                 IPTABLES_FW_DRIVER_FULL, 'iptables_hybrid')) and sg_enabled
         vif_details = {portbindings.CAP_PORT_FILTER: sg_enabled,
                        portbindings.OVS_HYBRID_PLUG: hybrid_plug_required}
+        # NOTE(moshele): Bind DIRECT (SR-IOV) port allows
+        # to offload the OVS flows using tc to the SR-IOV NIC.
+        # We are using OVS mechanism driver because the openvswitch (>=2.8.0)
+        # support hardware offload via tc and that allow us to manage the VF by
+        # OpenFlow control plane using representor net-device.
         super(OpenvswitchMechanismDriver, self).__init__(
             constants.AGENT_TYPE_OVS,#指明agent类型
             portbindings.VIF_TYPE_OVS,#指明port绑定类型
-            vif_details)
+            vif_details, supported_vnic_types=[portbindings.VNIC_NORMAL,
+                                               portbindings.VNIC_DIRECT])
         ovs_qos_driver.register()
 
     def get_allowed_network_types(self, agent):
@@ -121,19 +127,19 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                 # we only override the vif_details for hybrid plugging set
                 # in the constructor if the agent specifically requests it
                 details[hybrid] = a_config[hybrid]
-            return details
         else:
             #虚接口类型为vhostuser时进入
             sock_path = self.agent_vhu_sockpath(agent, context.current['id'])
             caps = a_config.get('ovs_capabilities', {})
             mode = self.get_vhost_mode(caps.get('iface_types', []))
-            return {
-                portbindings.CAP_PORT_FILTER: False,
-                portbindings.OVS_HYBRID_PLUG: False,
-                portbindings.VHOST_USER_MODE: mode,#采用哪种模式
-                portbindings.VHOST_USER_OVS_PLUG: True,
-                portbindings.VHOST_USER_SOCKET: sock_path
-            }
+            details = {portbindings.CAP_PORT_FILTER: False,
+                       portbindings.OVS_HYBRID_PLUG: False,
+                       portbindings.VHOST_USER_MODE: mode,#采用哪种模式
+                       portbindings.VHOST_USER_OVS_PLUG: True,
+                       portbindings.VHOST_USER_SOCKET: sock_path}
+        details[portbindings.OVS_DATAPATH_TYPE] = a_config.get(
+            'datapath_type', a_const.OVS_DATAPATH_SYSTEM)
+        return details
 
     @staticmethod
     def agent_vhu_sockpath(agent, port_id):

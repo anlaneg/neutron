@@ -827,21 +827,12 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
             },
         }
         port = kwargs.get('original_port')
-        port_addr_pairs = port['allowed_address_pairs']
         l3plugin = mock.Mock()
         directory.add_plugin(plugin_constants.L3, l3plugin)
         l3_dvrscheduler_db._notify_l3_agent_port_update(
             'port', 'after_update', mock.ANY, **kwargs)
         l3plugin._get_allowed_address_pair_fixed_ips.return_value = (
             ['10.1.0.21'])
-        self.assertTrue(
-            l3plugin.remove_unbound_allowed_address_pair_port_binding.
-            called)
-        l3plugin.remove_unbound_allowed_address_pair_port_binding.\
-            assert_called_once_with(
-                self.adminContext,
-                port,
-                port_addr_pairs[0])
         self.assertFalse(
             l3plugin.update_arp_entry_for_dvr_service_port.called)
         l3plugin.delete_arp_entry_for_dvr_service_port.\
@@ -849,7 +840,6 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
                 self.adminContext,
                 port,
                 fixed_ips_to_delete=mock.ANY)
-        self.assertFalse(l3plugin.dvr_handle_new_service_port.called)
 
     def test__notify_l3_agent_update_port_with_allowed_address_pairs(self):
         port_id = uuidutils.generate_uuid()
@@ -873,23 +863,12 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
                 'admin_state_up': True,
             },
         }
-        port = kwargs.get('port')
-        port_addr_pairs = port['allowed_address_pairs']
         l3plugin = mock.Mock()
         directory.add_plugin(plugin_constants.L3, l3plugin)
         l3_dvrscheduler_db._notify_l3_agent_port_update(
             'port', 'after_update', mock.ANY, **kwargs)
         self.assertTrue(
-            l3plugin.update_unbound_allowed_address_pair_port_binding.
-            called)
-        l3plugin.update_unbound_allowed_address_pair_port_binding.\
-            assert_called_once_with(
-                self.adminContext,
-                port,
-                port_addr_pairs[0])
-        self.assertTrue(
             l3plugin.update_arp_entry_for_dvr_service_port.called)
-        self.assertTrue(l3plugin.dvr_handle_new_service_port.called)
 
     def test__notify_l3_agent_update_port_no_removing_routers(self):
         port_id = 'fake-port'
@@ -1397,10 +1376,13 @@ class L3HATestCaseMixin(testlib_api.SqlTestCase,
         with mock.patch.object(self.plugin.router_scheduler, 'bind_router'):
             with mock.patch.object(
                     self.plugin, 'add_ha_port',
-                    side_effect=l3.RouterNotFound(router_id='foo_router')):
+                    side_effect=l3.RouterNotFound(router_id='foo_router')),\
+                    mock.patch.object(
+                        self.plugin, 'safe_delete_ha_network') as sd_ha_net:
                 self.plugin.router_scheduler.create_ha_port_and_bind(
                     self.plugin, self.adminContext,
                     router['id'], router['tenant_id'], agent)
+                self.assertTrue(sd_ha_net.called)
 
     def test_create_ha_port_and_bind_bind_router_returns_None(self):
         router = self._create_ha_router(tenant_id='foo_tenant')

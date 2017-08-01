@@ -16,6 +16,7 @@
 import functools
 
 import netaddr
+from neutron_lib.api.definitions import port as port_def
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as providernet
 from neutron_lib.api import validators
@@ -35,7 +36,6 @@ from sqlalchemy import exc as sql_exc
 from sqlalchemy import orm
 
 from neutron._i18n import _, _LE, _LI, _LW
-from neutron.api.v2 import attributes
 from neutron.common import constants as n_const
 from neutron.common import utils as n_utils
 from neutron.db import _utils as db_utils
@@ -44,11 +44,10 @@ from neutron.db.availability_zone import router as router_az_db
 from neutron.db import l3_dvr_db
 from neutron.db.l3_dvr_db import is_distributed_router
 from neutron.db.models import agent as agent_model
-from neutron.db.models import l3 as l3_models
 from neutron.db.models import l3ha as l3ha_model
 from neutron.extensions import l3
 from neutron.extensions import l3_ext_ha_mode as l3_ha
-from neutron.objects import router as l3_objs
+from neutron.objects import router as l3_obj
 from neutron.plugins.common import utils as p_utils
 
 
@@ -268,10 +267,11 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
     def _create_ha_port_binding(self, context, router_id, port_id):
         try:
             with context.session.begin():
-                routerportbinding = l3_models.RouterPort(
-                    port_id=port_id, router_id=router_id,
-                    port_type=constants.DEVICE_OWNER_ROUTER_HA_INTF)
-                context.session.add(routerportbinding)
+                l3_obj.RouterPort(
+                    context,
+                    port_id=port_id,
+                    router_id=router_id,
+                    port_type=constants.DEVICE_OWNER_ROUTER_HA_INTF).create()
                 portbinding = l3ha_model.L3HARouterAgentPortBinding(
                     port_id=port_id, router_id=router_id)
                 context.session.add(portbinding)
@@ -698,7 +698,7 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
             port[portbindings.HOST_ID] = host
             try:
                 self._core_plugin.update_port(admin_ctx, port['id'],
-                                              {attributes.PORT: port})
+                                              {port_def.RESOURCE_NAME: port})
             except (orm.exc.StaleDataError, orm.exc.ObjectDeletedError,
                     n_exc.PortNotFound):
                 # Take concurrently deleted interfaces in to account
@@ -722,7 +722,7 @@ def is_ha_router_port(context, device_owner, router_id):
     if device_owner == constants.DEVICE_OWNER_HA_REPLICATED_INT:
         return True
     elif device_owner == constants.DEVICE_OWNER_ROUTER_SNAT:
-        return l3_objs.RouterExtraAttributes.objects_exist(
+        return l3_obj.RouterExtraAttributes.objects_exist(
             context, router_id=router_id, ha=True)
     else:
         return False

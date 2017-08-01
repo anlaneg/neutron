@@ -15,23 +15,50 @@
 
 import functools
 
-import netaddr
 from neutron_lib.db import model_base
 from neutron_lib import exceptions
 from oslo_config import cfg
 import oslo_i18n
 from oslo_log import log as logging
-from oslo_policy import policy as oslo_policy
 from oslo_serialization import jsonutils
 from six.moves.urllib import parse
 from webob import exc
 
 from neutron._i18n import _, _LW
+from neutron.api import extensions
 from neutron.common import constants
 from neutron import wsgi
 
 
 LOG = logging.getLogger(__name__)
+
+
+def ensure_if_match_supported():
+    """Raises exception if 'if-match' revision matching unsupported."""
+    if 'revision-if-match' in (extensions.PluginAwareExtensionManager.
+                               get_instance().extensions):
+        return
+    msg = _("This server does not support constraining operations based on "
+            "revision numbers")
+    raise exceptions.BadRequest(resource='if-match', msg=msg)
+
+
+def check_request_for_revision_constraint(request):
+    """Parses, verifies, and returns a constraint from a request."""
+    revision_number = None
+    for e in getattr(request.if_match, 'etags', []):
+        if e.startswith('revision_number='):
+            if revision_number is not None:
+                msg = _("Multiple revision_number etags are not supported.")
+                raise exceptions.BadRequest(resource='if-match', msg=msg)
+            ensure_if_match_supported()
+            try:
+                revision_number = int(e.split('revision_number=')[1])
+            except ValueError:
+                msg = _("Revision number etag must be in the format of "
+                        "revision_number=<int>")
+                raise exceptions.BadRequest(resource='if-match', msg=msg)
+    return revision_number
 
 
 def get_filters(request, attr_info, skips=None):
@@ -400,8 +427,8 @@ def convert_exception_to_http_exc(e, faults, language):
         e.body = body
         e.content_type = kwargs['content_type']
         return e
-    if isinstance(e, (exceptions.NeutronException, netaddr.AddrFormatError,
-                      oslo_policy.PolicyNotAuthorized)):
+    faults_tuple = tuple(faults.keys()) + (exceptions.NeutronException,)
+    if isinstance(e, faults_tuple):
         for fault in faults:
             if isinstance(e, fault):
                 mapped_exc = faults[fault]
