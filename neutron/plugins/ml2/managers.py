@@ -765,6 +765,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         context._clear_binding_levels()
         if not self._bind_port_level(context, 0,
                                      context.network.network_segments):
+            #绑定失败处理
             binding.vif_type = portbindings.VIF_TYPE_BINDING_FAILED
             LOG.error(_LE("Failed to bind port %(port)s on host %(host)s "
                           "for vnic_type %(vnic_type)s using segments "
@@ -785,6 +786,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                    'segments': segments_to_bind})
 
         if level == MAX_BINDING_LEVELS:
+            #绑定次数过多
             LOG.error(_LE("Exceeded maximum binding levels attempting to bind "
                         "port %(port)s on host %(host)s"),
                       {'port': context.current['id'],
@@ -792,16 +794,18 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
             return False
 
         for driver in self.ordered_mech_drivers:
-            #检查能不能绑定
+            #检查注册的机制类驱动能不能绑定
             if not self._check_driver_to_bind(driver, segments_to_bind,
                                               context._binding_levels):
                 continue
             try:
                 context._prepare_to_bind(segments_to_bind)
-                driver.obj.bind_port(context)
+                driver.obj.bind_port(context) #驱动尝试着绑定此port
                 segment = context._new_bound_segment
                 if segment:
+                    #_new_bound_segment有值，说明成功的实现了绑定（driver.obj.bind_port设置）
                     context._push_binding_level(
+                        #添加portbindinglevel
                         models.PortBindingLevel(port_id=port_id,
                                                 host=context.host,
                                                 level=level,
@@ -809,6 +813,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                                                 segment_id=segment))
                     next_segments = context._next_segments_to_bind
                     if next_segments:
+                        #如果驱动要求继续绑定，则将level＋1并继续绑定
                         # Continue binding another level.
                         if self._bind_port_level(context, level + 1,
                                                  next_segments):
@@ -819,6 +824,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                                         {'port': context.current['id'],
                                          'host': context.host,
                                          'lvl': level + 1})
+                            #丢弃掉对相应驱动的binding尝试，尝试下一个驱动
                             context._pop_binding_level()
                     else:
                         # Binding complete.

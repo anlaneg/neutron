@@ -265,7 +265,7 @@ class DhcpRpcCallback(object):
                   {'port': port,
                    'host': host})
 
-        port['port']['device_owner'] = constants.DEVICE_OWNER_DHCP
+        port['port']['device_owner'] = constants.DEVICE_OWNER_DHCP #指明此接口为dhcp port
         port['port'][portbindings.HOST_ID] = host
         if 'mac_address' not in port['port']:
             port['port']['mac_address'] = constants.ATTR_NOT_SPECIFIED

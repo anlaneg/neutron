@@ -59,6 +59,7 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         self.agent_type = agent_type
         self.supported_vnic_types = supported_vnic_types #sriov机制支持三种vnic方式
         # NOTE(ndipanov): PF passthrough requires a different vif type
+        # 对于VNIC_DIRECT_PHYSICAL，使用VIF_TYPE_HOSTDEV_PHY，其它使用VIF_TYPE_HW_VEB
         self.vnic_type_for_vif_type = (
             {vtype: portbindings.VIF_TYPE_HOSTDEV_PHY
                 if vtype == portbindings.VNIC_DIRECT_PHYSICAL

@@ -31,21 +31,26 @@ class ExtraDhcpOptMixin(object):
         # If the dhcp opt is blank-able, it shouldn't be saved to the DB in
         # case that the value is None
         if opt_name in edo_ext.VALID_BLANK_EXTRA_DHCP_OPTS:
+            #对于router,classless-route要求value非空
             return opt_value is not None
 
         # Otherwise, it shouldn't be saved to the DB in case that the value
         # is None or empty
+        # 不能是空值
         return bool(opt_value)
 
     def _process_port_create_extra_dhcp_opts(self, context, port,
                                              extra_dhcp_opts):
+        #这些信息是需要dhcp注入到对应主机中的信息
         if not extra_dhcp_opts:
             return port
         with db_api.context_manager.writer.using(context):
             for dopt in extra_dhcp_opts:
                 if self._is_valid_opt_value(dopt['opt_name'],
                                             dopt['opt_value']):
+                    #提供的选项及值必须合法
                     ip_version = dopt.get('ip_version', 4)
+                    #构造dhcp选项及取值，并存放数据库
                     extra_dhcp_obj = obj_extra_dhcp.ExtraDhcpOpt(
                         context,
                         port_id=port['id'],
@@ -60,6 +65,7 @@ class ExtraDhcpOptMixin(object):
             context, port['id'])
 
     def _get_port_extra_dhcp_opts_binding(self, context, port_id):
+        #取所有dhcp选项
         opts = obj_extra_dhcp.ExtraDhcpOpt.get_objects(
                             context, port_id=port_id)
         # TODO(mhickey): When port serilization is available then

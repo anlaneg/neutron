@@ -1213,12 +1213,14 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
     def _create_db_port_obj(self, context, port_data):
         mac_address = port_data.pop('mac_address', None)
         if mac_address:
+            #如果mac在同一个两层里冲突，则报错
             if self._is_mac_in_use(context, port_data['network_id'],
                                    mac_address):
                 raise exc.MacAddressInUse(net_id=port_data['network_id'],
                                           mac=mac_address)
         else:
             mac_address = self._generate_mac()
+        #在数据库中添加记录
         db_port = models_v2.Port(mac_address=mac_address, **port_data)
         context.session.add(db_port)
         return db_port
@@ -1230,9 +1232,10 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
 
     def create_port_db(self, context, port):
         p = port['port']
-        port_id = p.get('id') or uuidutils.generate_uuid()
+        port_id = p.get('id') or uuidutils.generate_uuid() #生成uuid
         network_id = p['network_id']
         if p.get('device_owner'):
+            #路由接口权限检查
             self._enforce_device_owner_not_router_intf_or_device_id(
                 context, p.get('device_owner'), p.get('device_id'),
                 p['tenant_id'])
@@ -1247,6 +1250,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                          device_owner=p['device_owner'],
                          description=p.get('description'))
         if p.get('mac_address') is not constants.ATTR_NOT_SPECIFIED:
+            #如果给定了mac地址，则使用给定的mac地址
             port_data['mac_address'] = p.get('mac_address')
         with db_api.context_manager.writer.using(context):
             # Ensure that the network exists.
@@ -1257,6 +1261,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             p['mac_address'] = db_port['mac_address']
 
             try:
+                #申请ip地址
                 self.ipam.allocate_ips_for_port_and_store(
                     context, port, port_id)
                 db_port['ip_allocation'] = ipa.IP_ALLOCATION_IMMEDIATE
@@ -1394,8 +1399,10 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         a router uuid belonging to another tenant.
         """
         if device_owner not in constants.ROUTER_INTERFACE_OWNERS:
+            #非路由器接口不处理，直接返回
             return
         if not context.is_admin:
+            #对于非admin，检查其是否可以操作对应的router
             # check to make sure device_id does not match another tenants
             # router.
             if device_id:
@@ -1406,6 +1413,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                     except l3.RouterNotFound:
                         return
                 else:
+                    #尝试载入l3插件
                     l3plugin = directory.get_plugin(plugin_constants.L3)
                     if l3plugin:
                         try:

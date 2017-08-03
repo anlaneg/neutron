@@ -112,6 +112,7 @@ def get_binding_levels(context, port_id, host):
 @db_api.context_manager.writer
 def clear_binding_levels(context, port_id, host):
     if host:
+        #删除port_id在host上的绑定
         for l in (context.session.query(models.PortBindingLevel).
                   filter_by(port_id=port_id, host=host)):
             context.session.delete(l)
@@ -336,6 +337,7 @@ def get_port_db_objects(context, port_ids):
 
 @db_api.context_manager.reader
 def is_dhcp_active_on_any_subnet(context, subnet_ids):
+    #检查所给subnet_ids中是否存在开启dhcp的subnet
     if not subnet_ids:
         return False
     return bool(context.session.query(models_v2.Subnet).

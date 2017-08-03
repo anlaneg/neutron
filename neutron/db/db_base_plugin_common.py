@@ -89,10 +89,12 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
 
     @staticmethod
     def _generate_mac():
+        #生成mac地址
         return net.get_random_mac(cfg.CONF.base_mac.split(':'))
 
     @db_api.context_manager.reader
     def _is_mac_in_use(self, context, network_id, mac_address):
+        #检查mac是否在同一个二层里冲突
         return bool(context.session.query(models_v2.Port).
                     filter(models_v2.Port.network_id == network_id).
                     filter(models_v2.Port.mac_address == mac_address).

@@ -351,6 +351,7 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
         if router_is_uuid:
             router = self._get_router(context, router)
         if is_ha_router(router) and not is_distributed_router(router):
+            #如果是ha路由器，但不是分布式路由器，则返回ha_replicated_int
             return constants.DEVICE_OWNER_HA_REPLICATED_INT
         return super(L3_HA_NAT_db_mixin,
                      self)._get_device_owner(context, router)
@@ -470,6 +471,7 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
         self._unbind_ha_router(context, router_id)
 
         if not requested_ha_state:
+            #变更为非ha状态
             self._delete_ha_interfaces(context, router_db.id)
             # always attempt to cleanup the network as the router is
             # deleted. the core plugin will stop us if its in use
@@ -478,6 +480,7 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
             if ha_network:
                 self.safe_delete_ha_network(context, ha_network,
                                             router_db.tenant_id)
+            #更新接口类型
             self._migrate_router_ports(
                 context, router_db,
                 old_owner=constants.DEVICE_OWNER_HA_REPLICATED_INT,

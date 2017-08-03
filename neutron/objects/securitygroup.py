@@ -29,10 +29,10 @@ class SecurityGroup(base.NeutronDbObject):
 
     fields = {
         'id': common_types.UUIDField(),
-        'name': obj_fields.StringField(nullable=True),
-        'project_id': obj_fields.StringField(nullable=True),
-        'is_default': obj_fields.BooleanField(default=False),
-        'rules': obj_fields.ListOfObjectsField(
+        'name': obj_fields.StringField(nullable=True),#安全组名称
+        'project_id': obj_fields.StringField(nullable=True),#从属于那个project（当前是租户）
+        'is_default': obj_fields.BooleanField(default=False),#是否默认安全组
+        'rules': obj_fields.ListOfObjectsField( #所有安全组规则
             'SecurityGroupRule', nullable=True
         ),
         # NOTE(ihrachys): we don't include source_rules that is present in the
@@ -91,11 +91,11 @@ class SecurityGroupRule(base.NeutronDbObject):
 
     fields = {
         'id': common_types.UUIDField(),
-        'project_id': obj_fields.StringField(nullable=True),
-        'security_group_id': common_types.UUIDField(),
+        'project_id': obj_fields.StringField(nullable=True),#属于那个project
+        'security_group_id': common_types.UUIDField(),#属于那个安给组
         'remote_group_id': common_types.UUIDField(nullable=True),
-        'direction': common_types.FlowDirectionEnumField(nullable=True),
-        'ethertype': common_types.EtherTypeEnumField(nullable=True),
+        'direction': common_types.FlowDirectionEnumField(nullable=True),#方向
+        'ethertype': common_types.EtherTypeEnumField(nullable=True),#以态类型,ipv4,ipv6
         'protocol': common_types.IpProtocolEnumField(nullable=True),
         'port_range_min': common_types.PortRangeWith0Field(nullable=True),
         'port_range_max': common_types.PortRangeWith0Field(nullable=True),

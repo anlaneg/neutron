@@ -69,10 +69,10 @@ class NetworkContext(MechanismDriverContext, api.NetworkContext):
     def __init__(self, plugin, plugin_context, network,
                  original_network=None, segments=None):
         super(NetworkContext, self).__init__(plugin, plugin_context)
-        self._network = network
-        self._original_network = original_network
+        self._network = network #数据库中network的配置
+        self._original_network = original_network #数据库中原有的network的配置
         self._segments = segments_db.get_network_segments(
-            plugin_context, network['id']) if segments is None else segments
+            plugin_context, network['id']) if segments is None else segments #此network当前的segment配置
 
     @property
     def current(self):
@@ -120,11 +120,12 @@ class PortContext(MechanismDriverContext, api.PortContext):
     def __init__(self, plugin, plugin_context, port, network, binding,
                  binding_levels, original_port=None):
         super(PortContext, self).__init__(plugin, plugin_context)
-        self._port = port
-        self._original_port = original_port
+        self._port = port #保存在数据库后的结果
+        self._original_port = original_port #之前保存在数据库中的结果 
         if isinstance(network, NetworkContext):
             self._network_context = network
         else:
+            #转为network-context
             self._network_context = NetworkContext(
                 plugin, plugin_context, network) if network else None
         # NOTE(kevinbenton): InstanceSnapshot can go away once we are working
@@ -297,10 +298,10 @@ class PortContext(MechanismDriverContext, api.PortContext):
     def set_binding(self, segment_id, vif_type, vif_details,
                     status=None):
         # TODO(rkukura) Verify binding allowed, segment in network
-        self._new_bound_segment = segment_id
-        self._binding.vif_type = vif_type
-        self._binding.vif_details = jsonutils.dumps(vif_details)
-        self._new_port_status = status
+        self._new_bound_segment = segment_id #指明实现了segment_id的绑定
+        self._binding.vif_type = vif_type #指定绑定的vif类型
+        self._binding.vif_details = jsonutils.dumps(vif_details) #vif的绑定参数
+        self._new_port_status = status #新的端口状态
 
     def continue_binding(self, segment_id, next_segments_to_bind):
         # TODO(rkukura) Verify binding allowed, segment in network

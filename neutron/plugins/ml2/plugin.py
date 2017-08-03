@@ -308,6 +308,10 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         return mac_change
 
     def _process_port_binding(self, mech_context, attrs):
+        #binding的 'binding:host_id','binding:vnic_type','binding:profile'
+        # 可以受port配置来变更，如果发生变更，则此port的bindlevel会被删除，
+        # vif_type = portbindings.VIF_TYPE_UNBOUND,
+        # vif_details = ''
         plugin_context = mech_context._plugin_context
         binding = mech_context._binding
         port = mech_context.current
@@ -316,7 +320,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
         host = const.ATTR_NOT_SPECIFIED
         if attrs and portbindings.HOST_ID in attrs:
-            #提取配置的'hostid'
+            #如果attr中指定了‘binding:host_id',更新host
             host = attrs.get(portbindings.HOST_ID) or ''
 
         original_host = binding.host
@@ -371,6 +375,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
         #更新port数据
         self._update_port_dict_binding(port, binding)
+        #更新对binding的变更到数据库
         binding.persist_state_to_session(plugin_context.session)
         return changes
 
@@ -392,6 +397,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 LOG.info(_LI("Attempt %(count)s to bind port %(port)s"),
                          {'count': count, 'port': context.current['id']})
 
+            #尝试着对接口进行绑定
             bind_context, need_notify, try_again = self._attempt_binding(
                 context, need_notify)
 
@@ -419,7 +425,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         return context
 
     def _should_bind_port(self, context):
-        #host信息有，且vif类型是未绑定或者绑定失败，则需要绑定
+        #host信息有，且有vif类型是未绑定或者绑定失败，则需要绑定
         return (context._binding.host and context._binding.vif_type
                 in (portbindings.VIF_TYPE_UNBOUND,
                     portbindings.VIF_TYPE_BINDING_FAILED))
@@ -445,6 +451,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         # transaction.
         port = orig_context.current
         orig_binding = orig_context._binding
+        #构造计划的绑定信息
         new_binding = models.PortBinding(
             host=orig_binding.host,
             vnic_type=orig_binding.vnic_type,
@@ -460,6 +467,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
         # Attempt to bind the port and return the context with the
         # result.
+        # 
+        # 调用驱动来完成bind
         self.mechanism_manager.bind_port(new_context)
         return new_context
 
@@ -597,6 +606,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         port[portbindings.VNIC_TYPE] = binding.vnic_type
         port[portbindings.PROFILE] = self._get_profile(binding)
         if port['device_owner'] == const.DEVICE_OWNER_DVR_INTERFACE:
+            #对于dvr接口
             port[portbindings.HOST_ID] = ''
             port[portbindings.VIF_TYPE] = portbindings.VIF_TYPE_DISTRIBUTED
             port[portbindings.VIF_DETAILS] = {}
@@ -1099,9 +1109,11 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         # allowed address pair checks
         if self._check_update_has_allowed_address_pairs(port):
             if not port_security:
+                #配置了address pair但没有配置安全组
                 raise addr_pair.AddressPairAndPortSecurityRequired()
         else:
             # remove ATTR_NOT_SPECIFIED
+            # 未配置address pair
             attrs[addr_pair.ADDRESS_PAIRS] = []
 
         if port_security:
@@ -1110,7 +1122,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             raise psec_exc.PortSecurityAndIPRequiredForSecurityGroups()
 
     def _setup_dhcp_agent_provisioning_component(self, context, port):
-        subnet_ids = [f['subnet_id'] for f in port['fixed_ips']]
+        subnet_ids = [f['subnet_id'] for f in port['fixed_ips']] #取此port上所有subnet-id
         if (db.is_dhcp_active_on_any_subnet(context, subnet_ids) and
             len(self.get_dhcp_agents_hosting_networks(context,
                                                       [port['network_id']]))):
@@ -1128,51 +1140,62 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
     def _before_create_port(self, context, port):
         attrs = port[port_def.RESOURCE_NAME]
         if not attrs.get('status'):
+            #接口状态未指定时，按'down'状态处理
             attrs['status'] = const.PORT_STATUS_DOWN
 
+        #触发port创建前事件
         registry.notify(resources.PORT, events.BEFORE_CREATE, self,
                         context=context, port=attrs)
         # NOTE(kevinbenton): triggered outside of transaction since it
         # emits 'AFTER' events if it creates.
+        # 确保默认安全组存在
         self._ensure_default_security_group(context, attrs['tenant_id'])
 
     def _create_port_db(self, context, port):
         attrs = port[port_def.RESOURCE_NAME]
         with db_api.context_manager.writer.using(context):
-            dhcp_opts = attrs.get(edo_ext.EXTRADHCPOPTS, [])
+            dhcp_opts = attrs.get(edo_ext.EXTRADHCPOPTS, [])#取定义的dhcp选项
             port_db = self.create_port_db(context, port)
             result = self._make_port_dict(port_db, process_extensions=False)
+            #触发扩展的port创建回调
             self.extension_manager.process_create_port(context, attrs, result)
             self._portsec_ext_port_create_processing(context, result, port)
 
             # sgids must be got after portsec checked with security group
+            #取出要求配置在此端口上的安全组id
             sgids = self._get_security_groups_on_port(context, port)
             self._process_port_create_security_group(context, result, sgids)
             network = self.get_network(context, result['network_id'])
-            binding = db.add_port_binding(context, result['id'])
+            binding = db.add_port_binding(context, result['id']) #创建port binding表项，指明port未绑定
             mech_context = driver_context.PortContext(self, context, result,
-                                                      network, binding, None)
+                                                      network, binding, None) #构造PortContext
             self._process_port_binding(mech_context, attrs)
 
+            #处理地址对信息，将其存放在数据库中
             result[addr_pair.ADDRESS_PAIRS] = (
                 self._process_create_allowed_address_pairs(
                     context, result,
                     attrs.get(addr_pair.ADDRESS_PAIRS)))
+            #处理port中含有的dhcp注入信息
             self._process_port_create_extra_dhcp_opts(context, result,
                                                       dhcp_opts)
             kwargs = {'context': context, 'port': result}
+            #触发port创建提交前事件
             registry.notify(
                 resources.PORT, events.PRECOMMIT_CREATE, self, **kwargs)
+            #触发port提交前钩子点
             self.mechanism_manager.create_port_precommit(mech_context)
             self._setup_dhcp_agent_provisioning_component(context, result)
 
+        #取port的其它扩展信息
         resource_extend.apply_funcs('ports', result, port_db)
         return result, mech_context
 
     @utils.transaction_guard
     @db_api.retry_if_session_inactive()
     def create_port(self, context, port):
-        self._before_create_port(context, port)
+        #创建port处理
+        self._before_create_port(context, port) #触发创建前事件，确认默认安全组存在
         result, mech_context = self._create_port_db(context, port)
         return self._after_create_port(context, result, mech_context)
 
@@ -1182,6 +1205,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         registry.notify(resources.PORT, events.AFTER_CREATE, self, **kwargs)
 
         try:
+            #触发port创建提前后钩子点
             self.mechanism_manager.create_port_postcommit(mech_context)
         except ml2_exc.MechanismDriverError:
             with excutils.save_and_reraise_exception():
@@ -1189,6 +1213,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                               "failed, deleting port '%s'"), result['id'])
                 self.delete_port(context, result['id'], l3_port_check=False)
         try:
+            #使接口完成绑定，确定到具体的主机上
             bound_context = self._bind_port_if_needed(mech_context)
         except ml2_exc.MechanismDriverError:
             with excutils.save_and_reraise_exception():

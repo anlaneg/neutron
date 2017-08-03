@@ -32,6 +32,7 @@ class AllowedAddressPairsMixin(object):
 
     def _process_create_allowed_address_pairs(self, context, port,
                                               allowed_address_pairs):
+        #保存上传的地址对信息
         if not validators.is_attr_set(allowed_address_pairs):
             return []
         try:
@@ -39,12 +40,14 @@ class AllowedAddressPairsMixin(object):
                 for address_pair in allowed_address_pairs:
                     # use port.mac_address if no mac address in address pair
                     if 'mac_address' not in address_pair:
+                        #未指定mac_address时，用port的mac地址
                         address_pair['mac_address'] = port['mac_address']
                     # retain string format as passed through API
                     mac_address = utils.AuthenticEUI(
                         address_pair['mac_address'])
                     ip_address = utils.AuthenticIPNetwork(
                         address_pair['ip_address'])
+                    #创建地址对
                     pair_obj = obj_addr_pair.AllowedAddressPair(
                         context,
                         port_id=port['id'],
@@ -89,6 +92,7 @@ class AllowedAddressPairsMixin(object):
         return db_utils.resource_fields(res, fields)
 
     def _has_address_pairs(self, port):
+        #检查port是否配置了address_pairs
         return (validators.is_attr_set(port['port'][addr_pair.ADDRESS_PAIRS])
                 and port['port'][addr_pair.ADDRESS_PAIRS] != [])
 
@@ -98,6 +102,7 @@ class AllowedAddressPairsMixin(object):
         Return True if the port parameter has a non-empty
         'allowed_address_pairs' attribute. Otherwise returns False.
         """
+        #检查用户是否提交了address_pairs的更新请求
         return (addr_pair.ADDRESS_PAIRS in port['port'] and
                 self._has_address_pairs(port))
 

@@ -63,11 +63,13 @@ def add_network_segment(context, network_id, segment, segment_index=0,
 
 
 def get_network_segments(context, network_id, filter_dynamic=False):
+    #取给定network的segments配置
     return get_networks_segments(
         context, [network_id], filter_dynamic)[network_id]
 
 
 def get_networks_segments(context, network_ids, filter_dynamic=False):
+    # 取一组network的segments
     if not network_ids:
         return {}
 

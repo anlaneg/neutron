@@ -1,3 +1,4 @@
+# encoding:utf-8
 # Copyright 2012 VMware, Inc.  All rights reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -65,6 +66,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
 
     @db_api.retry_if_session_inactive()
     def create_security_group(self, context, security_group, default_sg=False):
+        #创建安全组
         """Create security group.
 
         If default_sg is true that means we are a default security group for
@@ -77,12 +79,14 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             'is_default': default_sg,
         }
 
+        #安全组创建前事件
         self._registry_notify(resources.SECURITY_GROUP, events.BEFORE_CREATE,
                               exc_cls=ext_sg.SecurityGroupConflict, **kwargs)
 
         tenant_id = s['tenant_id']
 
         if not default_sg:
+            #如果不是创建默认安全组，则创建前，需要确保默认安全组存在
             self._ensure_default_security_group(context, tenant_id)
         else:
             existing_def_sg_id = self._get_default_sg_id(context, tenant_id)
@@ -95,11 +99,12 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
                 context, id=s.get('id') or uuidutils.generate_uuid(),
                 description=s['description'], project_id=tenant_id,
                 name=s['name'], is_default=default_sg)
-            sg.create()
+            sg.create() #创建安全组
 
             for ethertype in ext_sg.sg_supported_ethertypes:
                 if default_sg:
                     # Allow intercommunication
+                    #创建ingress规则
                     ingress_rule = sg_obj.SecurityGroupRule(
                         context, id=uuidutils.generate_uuid(),
                         project_id=tenant_id, security_group_id=sg.id,
@@ -125,11 +130,13 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             sg = sg_obj.SecurityGroup.get_object(context, id=sg.id)
             secgroup_dict = self._make_security_group_dict(sg)
             kwargs['security_group'] = secgroup_dict
+            #触发安全组提交前事件
             self._registry_notify(resources.SECURITY_GROUP,
                                   events.PRECOMMIT_CREATE,
                                   exc_cls=ext_sg.SecurityGroupConflict,
                                   **kwargs)
 
+        #触发安全组创建后事件
         registry.notify(resources.SECURITY_GROUP, events.AFTER_CREATE, self,
                         **kwargs)
         return secgroup_dict
@@ -145,6 +152,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         # GETS. TODO(arosen)  context handling can probably be improved here.
         filters = filters or {}
         if not default_sg and context.tenant_id:
+            #对于非默认安全组，如果filters中提供了tenant_id，取filters里的数据
             tenant_id = filters.get('tenant_id')
             if tenant_id:
                 tenant_id = tenant_id[0]
@@ -288,6 +296,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
     @db_api.retry_if_session_inactive()
     def _create_port_security_group_binding(self, context, port_id,
                                             security_group_id):
+        #创建安全组与端口之间的绑定
         with db_api.context_manager.writer.using(context):
             db = sg_models.SecurityGroupPortBinding(port_id=port_id,
                                           security_group_id=security_group_id)
@@ -729,6 +738,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
                                        list(security_group_ids) or [])
 
     def _get_default_sg_id(self, context, tenant_id):
+        #取默认安全组id号
         default_group = sg_obj.DefaultSecurityGroup.get_object(
             context,
             project_id=tenant_id,
@@ -758,6 +768,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
                  'tenant_id': tenant_id,
                  'description': _('Default security group')}
         }
+        #创建默认安全组
         return self.create_security_group(context, security_group,
                                           default_sg=True)['id']
 
@@ -768,15 +779,18 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         """
         port = port['port']
         if not validators.is_attr_set(port.get(ext_sg.SECURITYGROUPS)):
+            #未设置安全组，则不处理
             return
         if port.get('device_owner') and net.is_port_trusted(port):
+            #不对路由器及dhcp等端口做安全组处理
             return
 
-        port_sg = port.get(ext_sg.SECURITYGROUPS, [])
+        port_sg = port.get(ext_sg.SECURITYGROUPS, []) #取请求了那些安全组
         filters = {'id': port_sg}
         tenant_id = port.get('tenant_id')
         if tenant_id:
             filters['tenant_id'] = [tenant_id]
+        #取出已存在的安全组group
         valid_groups = set(g['id'] for g in
                            self.get_security_groups(context, fields=['id'],
                                                     filters=filters))
@@ -784,6 +798,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         requested_groups = set(port_sg)
         port_sg_missing = requested_groups - valid_groups
         if port_sg_missing:
+            #请求了不存在的安全组group
             raise ext_sg.SecurityGroupNotFound(id=', '.join(port_sg_missing))
 
         return list(requested_groups)
@@ -792,10 +807,12 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         # we don't apply security groups for dhcp, router
         port = port['port']
         if port.get('device_owner') and net.is_port_trusted(port):
+            #可信任的port均为内部port,不应用安全组
             return
         if not validators.is_attr_set(port.get(ext_sg.SECURITYGROUPS)):
             default_sg = self._ensure_default_security_group(context,
                                                              port['tenant_id'])
+            #有默认的安全组，记录安全组编号
             port[ext_sg.SECURITYGROUPS] = [default_sg]
 
     def _check_update_deletes_security_groups(self, port):

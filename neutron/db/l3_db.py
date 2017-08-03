@@ -642,6 +642,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
     def _get_device_owner(self, context, router=None):
         """Get device_owner for the specified router."""
         # NOTE(armando-migliaccio): in the base case this is invariant
+        #普通的路由器接口
         return DEVICE_OWNER_ROUTER_INTF
 
     def _validate_interface_info(self, interface_info, for_removal=False):
@@ -1289,7 +1290,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 'network_id': f_net_id,
                 'admin_state_up': True,
                 'device_id': 'PENDING',
-                'device_owner': DEVICE_OWNER_FLOATINGIP,
+                'device_owner': DEVICE_OWNER_FLOATINGIP,#指明此接口属于floatingip
                 'status': constants.PORT_STATUS_NOTAPPLICABLE,
                 'name': ''}
         if fip.get('floating_ip_address'):

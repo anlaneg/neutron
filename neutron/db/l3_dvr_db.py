@@ -190,7 +190,7 @@ class DVRResourceOperationHandler(object):
                      'network_id': network_id,
                      'fixed_ips': [{'subnet_id': subnet_id}],
                      'device_id': router.id,
-                     'device_owner': const.DEVICE_OWNER_ROUTER_SNAT,
+                     'device_owner': const.DEVICE_OWNER_ROUTER_SNAT,#指明创建sg接口
                      'admin_state_up': True,
                      'name': ''}
         snat_port = p_utils.create_port(self._core_plugin, context,
@@ -817,18 +817,19 @@ class _DVRAgentInterfaceMixin(object):
         create a new one.
         """
         l3_agent_db = self._get_agent_by_type_and_host(
-            context, const.AGENT_TYPE_L3, host)
+            context, const.AGENT_TYPE_L3, host) #取指定主机上的l3-agent配置
         if l3_agent_db:
             LOG.debug("Agent ID exists: %s", l3_agent_db['id'])
             f_port = self._get_agent_gw_ports_exist_for_network(
                 context, network_id, host, l3_agent_db['id'])
             if not f_port:
+                #不存在fip gateway port，故创建它
                 LOG.info(_LI('Agent Gateway port does not exist,'
                              ' so create one: %s'), f_port)
                 port_data = {'tenant_id': '',
                              'network_id': network_id,
                              'device_id': l3_agent_db['id'],
-                             'device_owner': const.DEVICE_OWNER_AGENT_GW,
+                             'device_owner': const.DEVICE_OWNER_AGENT_GW,#指明此port类型为agent-gw
                              portbindings.HOST_ID: host,
                              'admin_state_up': True,
                              'name': ''}
@@ -955,10 +956,11 @@ class L3_NAT_with_dvr_db_mixin(_DVRAgentInterfaceMixin,
 
     def _get_device_owner(self, context, router=None):
         """Get device_owner for the specified router."""
-        router_is_uuid = isinstance(router, six.string_types)
+        router_is_uuid = isinstance(router, six.string_types) #取路由器id
         if router_is_uuid:
-            router = self._get_router(context, router)
+            router = self._get_router(context, router) #查出对应路由器
         if is_distributed_router(router):
+            #如果是分布式路由器，则返回dvr_interface
             return const.DEVICE_OWNER_DVR_INTERFACE
         return super(L3_NAT_with_dvr_db_mixin,
                      self)._get_device_owner(context, router)
@@ -1020,6 +1022,7 @@ class L3_NAT_with_dvr_db_mixin(_DVRAgentInterfaceMixin,
 
 def is_distributed_router(router):
     """Return True if router to be handled is distributed."""
+    #检查一个路由器是否为分布式路由器
     try:
         # See if router is a DB object first
         requested_router_type = router.extra_attributes.distributed

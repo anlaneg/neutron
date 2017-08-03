@@ -172,6 +172,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         network_id = port_copy['port']['network_id']
         ips = []
         try:
+            #为port申请ip地址
             ips = self._allocate_ips_for_port(context, port_copy)
             for ip in ips:
                 ip_address = ip['ip_address']

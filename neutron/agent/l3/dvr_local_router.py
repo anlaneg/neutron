@@ -662,6 +662,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         fip_agent_port = self.get_floating_agent_gw_interface(
             ex_gw_port['network_id'])
         if not fip_agent_port:
+            #请求与exteranl-gateway-port处于同一network的fip_agent_port
             fip_agent_port = self.agent.plugin_rpc.get_agent_gateway_port(
                 self.agent.context, ex_gw_port['network_id'])
             LOG.debug("FloatingIP agent gateway port received from the "
