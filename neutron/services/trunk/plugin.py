@@ -250,6 +250,7 @@ class TrunkPlugin(service_base.ServicePluginBase,
                                              current_trunk=trunk_obj)
             registry.notify(constants.TRUNK, events.PRECOMMIT_UPDATE, self,
                             payload=payload)
+        #触发trunk的更新事件
         registry.notify(constants.TRUNK, events.AFTER_UPDATE, self,
                         payload=payload)
         return trunk_obj
