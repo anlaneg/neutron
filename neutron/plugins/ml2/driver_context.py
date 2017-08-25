@@ -21,7 +21,6 @@ from oslo_log import log
 from oslo_serialization import jsonutils
 import sqlalchemy
 
-from neutron._i18n import _LW
 from neutron.db import segments_db
 from neutron.plugins.ml2 import driver_api as api
 
@@ -247,7 +246,7 @@ class PortContext(MechanismDriverContext, api.PortContext):
         segment = segments_db.get_segment_by_id(self._plugin_context,
                                                 segment_id)
         if not segment:
-            LOG.warning(_LW("Could not expand segment %s"), segment_id)
+            LOG.warning("Could not expand segment %s", segment_id)
         return segment
 
     @property

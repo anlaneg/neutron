@@ -19,7 +19,6 @@ from neutron_lib.utils import net
 from oslo_log import log as logging
 import oslo_messaging
 
-from neutron._i18n import _LW
 from neutron.api.rpc.handlers import resources_rpc
 from neutron.callbacks import events
 from neutron.callbacks import registry
@@ -192,9 +191,9 @@ class SecurityGroupAgentRpcCallbackMixin(object):
     sg_agent = None
 
     def _security_groups_agent_not_set(self):
-        LOG.warning(_LW("Security group agent binding currently not set. "
-                        "This should be set by the end of the init "
-                        "process."))
+        LOG.warning("Security group agent binding currently not set. "
+                    "This should be set by the end of the init "
+                    "process.")
 
     def security_groups_rule_updated(self, context, **kwargs):
         """Callback for security group rule update.
@@ -342,6 +341,8 @@ class SecurityGroupServerAPIShim(sg_rpc_base.SecurityGroupInfoAPIMixin):
             # will be required for linux bridge and others that don't have the
             # full port UUID
             port['device'] = port['id']
+            port['port_security_enabled'] = getattr(
+                ovo.security, 'port_security_enabled', True)
             result[device] = port
         return result
 

@@ -38,7 +38,7 @@ from sqlalchemy import and_
 from sqlalchemy import exc as sql_exc
 from sqlalchemy import not_
 
-from neutron._i18n import _, _LE, _LI
+from neutron._i18n import _
 from neutron.api.rpc.agentnotifiers import l3_rpc_agent_api
 from neutron.common import constants as n_const
 from neutron.common import exceptions as n_exc
@@ -357,8 +357,8 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                     objects.append(obj_creator(context, item))
         except Exception:
             with excutils.save_and_reraise_exception():
-                LOG.error(_LE("An exception occurred while creating "
-                              "the %(resource)s:%(item)s"),
+                LOG.error("An exception occurred while creating "
+                          "the %(resource)s:%(item)s",
                           {'resource': resource, 'item': item})
         return objects
 
@@ -381,6 +381,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             args = {'tenant_id': n['tenant_id'],
                     'id': n.get('id') or uuidutils.generate_uuid(),
                     'name': n['name'],
+                    'mtu': n.get('mtu'),
                     'admin_state_up': n['admin_state_up'],
                     'status': n.get('status', constants.NET_STATUS_ACTIVE),
                     'description': n.get('description')}
@@ -469,20 +470,33 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         return self._make_network_dict(network, fields, context=context)
 
     @db_api.retry_if_session_inactive()
+    def _get_networks(self, context, filters=None, fields=None,
+                      sorts=None, limit=None, marker=None,
+                      page_reverse=False):
+        marker_obj = ndb_utils.get_marker_obj(self, context, 'network',
+                                              limit, marker)
+        return model_query.get_collection(
+            context, models_v2.Network,
+            # if caller needs postprocessing, it should implement it explicitly
+            dict_func=None,
+            filters=filters, fields=fields,
+            sorts=sorts,
+            limit=limit,
+            marker_obj=marker_obj,
+            page_reverse=page_reverse)
+
+    @db_api.retry_if_session_inactive()
     def get_networks(self, context, filters=None, fields=None,
                      sorts=None, limit=None, marker=None,
                      page_reverse=False):
-        marker_obj = ndb_utils.get_marker_obj(self, context, 'network',
-                                              limit, marker)
         make_network_dict = functools.partial(self._make_network_dict,
                                               context=context)
-        return model_query.get_collection(context, models_v2.Network,
-                                          make_network_dict,
-                                          filters=filters, fields=fields,
-                                          sorts=sorts,
-                                          limit=limit,
-                                          marker_obj=marker_obj,
-                                          page_reverse=page_reverse)
+        return [
+            make_network_dict(net, fields)
+            for net in self._get_networks(
+                context, filters=filters, fields=fields, sorts=sorts,
+                limit=limit, marker=marker, page_reverse=page_reverse)
+        ]
 
     @db_api.retry_if_session_inactive()
     def get_networks_count(self, context, filters=None):
@@ -958,9 +972,9 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
     def _ensure_no_user_ports_on_subnet(self, context, id):
         alloc = self._subnet_get_user_allocation(context, id)
         if alloc:
-            LOG.info(_LI("Found port (%(port_id)s, %(ip)s) having IP "
-                         "allocation on subnet "
-                         "%(subnet)s, cannot delete"),
+            LOG.info("Found port (%(port_id)s, %(ip)s) having IP "
+                     "allocation on subnet "
+                     "%(subnet)s, cannot delete",
                      {'ip': alloc.ip_address,
                       'port_id': alloc.port_id,
                       'subnet': id})

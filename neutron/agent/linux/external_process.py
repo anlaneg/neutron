@@ -24,7 +24,7 @@ from oslo_utils import fileutils
 import psutil
 import six
 
-from neutron._i18n import _, _LW, _LE
+from neutron._i18n import _
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import utils
 
@@ -254,9 +254,9 @@ class ProcessMonitor(object):
 
             if pm and not pm.active:
                 # pm检查发现不处理active状态（即进程死掉了）
-                LOG.error(_LE("%(service)s for %(resource_type)s "
-                              "with uuid %(uuid)s not found. "
-                              "The process should not have died"),
+                LOG.error("%(service)s for %(resource_type)s "
+                          "with uuid %(uuid)s not found. "
+                          "The process should not have died",
                           {'service': service_id.service,
                            'resource_type': self._resource_type,
                            'uuid': service_id.uuid})
@@ -278,7 +278,7 @@ class ProcessMonitor(object):
 
     def _respawn_action(self, service_id):
         #respawn动作
-        LOG.warning(_LW("Respawning %(service)s for uuid %(uuid)s"),
+        LOG.warning("Respawning %(service)s for uuid %(uuid)s",
                     {'service': service_id.service,
                      'uuid': service_id.uuid})
         #调用此service对应的enable接口
@@ -286,8 +286,8 @@ class ProcessMonitor(object):
 
     def _exit_action(self, service_id):
         #exit动作
-        LOG.error(_LE("Exiting agent as programmed in check_child_processes_"
-                      "actions"))
+        LOG.error("Exiting agent as programmed in check_child_processes_"
+                  "actions")
         self._exit_handler(service_id.uuid, service_id.service)
 
     def _exit_handler(self, uuid, service):
@@ -298,7 +298,7 @@ class ProcessMonitor(object):
         unexpectedly.
         """
         #触发exit异常
-        LOG.error(_LE("Exiting agent because of a malfunction with the "
-                      "%(service)s process identified by uuid %(uuid)s"),
+        LOG.error("Exiting agent because of a malfunction with the "
+                  "%(service)s process identified by uuid %(uuid)s",
                   {'service': service, 'uuid': uuid})
         raise SystemExit(1)

@@ -38,7 +38,7 @@ from oslo_utils import netutils
 from osprofiler import profiler
 from six import moves
 
-from neutron._i18n import _, _LE, _LI, _LW
+from neutron._i18n import _
 from neutron.agent.common import ip_lib
 from neutron.agent.common import ovs_lib
 from neutron.agent.common import polling
@@ -319,8 +319,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                                        self.agent_state,
                                                        True)
             if agent_status == c_const.AGENT_REVIVED:
-                LOG.info(_LI('Agent has just been revived. '
-                             'Doing a full sync.'))
+                LOG.info('Agent has just been revived. '
+                         'Doing a full sync.')
                 self.fullsync = True
 
             # we only want to update resource versions on startup
@@ -330,7 +330,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 # is complete.
                 systemd.notify_once()
         except Exception:
-            LOG.exception(_LE("Failed reporting state!"))
+            LOG.exception("Failed reporting state!")
 
     def _restore_local_vlan_map(self):
         self._local_vlan_hints = {}
@@ -395,6 +395,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
     def setup_old_topic_sinkhole(self):
         class SinkHole(object):
+            target = oslo_messaging.Target(version='1.4')
+
             def __getattr__(self, attr):
                 return self._receiver
 
@@ -431,14 +433,12 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         # they are not used since there is no guarantee the notifications
         # are processed in the same order as the relevant API requests
         self.updated_ports.add(port['id'])
-        LOG.debug("port_update message processed for port %s", port['id'])
 
     #记录port被删除（如果port被移除，需要考虑之前刚收到Port的更新事件)
     def port_delete(self, context, **kwargs):
         port_id = kwargs.get('port_id')
         self.deleted_ports.add(port_id)
         self.updated_ports.discard(port_id)
-        LOG.debug("port_delete message processed for port %s", port_id)
 
     #　收到network更新事件后，检查缓存的此network中的所有port，将其加入到updated_ports表中
     def network_update(self, context, **kwargs):
@@ -495,11 +495,11 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         
         if not tunnel_type:
             #没有指定隧道类型，不处理
-            LOG.error(_LE("No tunnel_type specified, cannot create tunnels"))
+            LOG.error("No tunnel_type specified, cannot create tunnels")
             return
         if tunnel_type not in self.tunnel_types:
             #指定了不认识的隧道类型，不处理
-            LOG.error(_LE("tunnel_type %s not supported by agent"),
+            LOG.error("tunnel_type %s not supported by agent",
                       tunnel_type)
             return
         if tunnel_ip == self.local_ip:
@@ -528,16 +528,16 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         tunnel_ip = kwargs.get('tunnel_ip')
         if not tunnel_ip:
             #未指定tunnel_ip报错，不处理
-            LOG.error(_LE("No tunnel_ip specified, cannot delete tunnels"))
+            LOG.error("No tunnel_ip specified, cannot delete tunnels")
             return
         tunnel_type = kwargs.get('tunnel_type')
         if not tunnel_type:
             #未指定隧道类型
-            LOG.error(_LE("No tunnel_type specified, cannot delete tunnels"))
+            LOG.error("No tunnel_type specified, cannot delete tunnels")
             return
         if tunnel_type not in self.tunnel_types:
             #隧道类型不认识
-            LOG.error(_LE("tunnel_type %s not supported by agent"),
+            LOG.error("tunnel_type %s not supported by agent",
                       tunnel_type)
             return
         #用远端ip找到对应的tunnel port
@@ -635,7 +635,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         elif action == 'remove':
             br.delete_arp_responder(local_vid, ip)
         else:
-            LOG.warning(_LW('Action %s not supported'), action)
+            LOG.warning('Action %s not supported', action)
 
     def _local_vlan_for_flat(self, lvid, physical_network):
         phys_br = self.phys_brs[physical_network]
@@ -685,7 +685,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             if lvid is None:
                 #又确认一遍，确实没有，检查是否有可用的本地vlan,分一个出来
                 if not self.available_local_vlans:
-                    LOG.error(_LE("No local VLAN available for net-id=%s"),
+                    LOG.error("No local VLAN available for net-id=%s",
                               net_uuid)
                     return
                 #没配一个可用的vlan出来
@@ -696,8 +696,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 segmentation_id)
 
         #设置本地vlan使用
-        LOG.info(_LI("Assigning %(vlan_id)s as local vlan for "
-                     "net-id=%(net_uuid)s"),
+        LOG.info("Assigning %(vlan_id)s as local vlan for "
+                 "net-id=%(net_uuid)s",
                  {'vlan_id': lvid, 'net_uuid': net_uuid})
 
         if network_type in constants.TUNNEL_NETWORK_TYPES:
@@ -718,17 +718,17 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                         network_type=network_type, lvid=lvid,
                         segmentation_id=segmentation_id)
             else:
-                LOG.error(_LE("Cannot provision %(network_type)s network for "
-                              "net-id=%(net_uuid)s - tunneling disabled"),
+                LOG.error("Cannot provision %(network_type)s network for "
+                          "net-id=%(net_uuid)s - tunneling disabled",
                           {'network_type': network_type,
                            'net_uuid': net_uuid})
         elif network_type == p_const.TYPE_FLAT:
             if physical_network in self.phys_brs:
                 self._local_vlan_for_flat(lvid, physical_network)
             else:
-                LOG.error(_LE("Cannot provision flat network for "
-                              "net-id=%(net_uuid)s - no bridge for "
-                              "physical_network %(physical_network)s"),
+                LOG.error("Cannot provision flat network for "
+                          "net-id=%(net_uuid)s - no bridge for "
+                          "physical_network %(physical_network)s",
                           {'net_uuid': net_uuid,
                            'physical_network': physical_network})
         elif network_type == p_const.TYPE_VLAN:
@@ -736,17 +736,17 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 self._local_vlan_for_vlan(lvid, physical_network,
                                           segmentation_id)
             else:
-                LOG.error(_LE("Cannot provision VLAN network for "
-                              "net-id=%(net_uuid)s - no bridge for "
-                              "physical_network %(physical_network)s"),
+                LOG.error("Cannot provision VLAN network for "
+                          "net-id=%(net_uuid)s - no bridge for "
+                          "physical_network %(physical_network)s",
                           {'net_uuid': net_uuid,
                            'physical_network': physical_network})
         elif network_type == p_const.TYPE_LOCAL:
             # no flows needed for local networks
             pass
         else:
-            LOG.error(_LE("Cannot provision unknown network type "
-                          "%(network_type)s for net-id=%(net_uuid)s"),
+            LOG.error("Cannot provision unknown network type "
+                      "%(network_type)s for net-id=%(net_uuid)s",
                       {'network_type': network_type,
                        'net_uuid': net_uuid})
 
@@ -761,8 +761,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             LOG.debug("Network %s not used on agent.", net_uuid)
             return
 
-        LOG.info(_LI("Reclaiming vlan = %(vlan_id)s from "
-                     "net-id = %(net_uuid)s"),
+        LOG.info("Reclaiming vlan = %(vlan_id)s from "
+                 "net-id = %(net_uuid)s",
                  {'vlan_id': lvm.vlan, 'net_uuid': net_uuid})
 
         if lvm.network_type in constants.TUNNEL_NETWORK_TYPES:
@@ -806,8 +806,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             # no flows needed for local networks
             pass
         else:
-            LOG.error(_LE("Cannot reclaim unknown network type "
-                          "%(network_type)s for net-id=%(net_uuid)s"),
+            LOG.error("Cannot reclaim unknown network type "
+                      "%(network_type)s for net-id=%(net_uuid)s",
                       {'network_type': lvm.network_type,
                        'net_uuid': net_uuid})
 
@@ -844,7 +844,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             if port.vif_id in self.deleted_ports:
                 LOG.debug("Port %s deleted concurrently", port.vif_id)
             elif port.vif_id in self.updated_ports:
-                LOG.error(_LE("Expected port %s not found"), port.vif_id)
+                LOG.error("Expected port %s not found", port.vif_id)
             else:
                 LOG.debug("Unable to get config for port %s", port.vif_id)
             return False
@@ -939,18 +939,18 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             failed_devices = (devices_set.get('failed_devices_up') +
                 devices_set.get('failed_devices_down'))
             if failed_devices:
-                LOG.error(_LE("Configuration for devices %s failed!"),
+                LOG.error("Configuration for devices %s failed!",
                           failed_devices)
-        LOG.info(_LI("Configuration for devices up %(up)s and devices "
-                     "down %(down)s completed."),
+        LOG.info("Configuration for devices up %(up)s and devices "
+                 "down %(down)s completed.",
                  {'up': devices_up, 'down': devices_down})
         return set(failed_devices)
 
     @staticmethod
     def setup_arp_spoofing_protection(bridge, vif, port_details):
         if not port_details.get('port_security_enabled', True):
-            LOG.info(_LI("Skipping ARP spoofing rules for port '%s' because "
-                         "it has port security disabled"), vif.port_name)
+            LOG.info("Skipping ARP spoofing rules for port '%s' because "
+                     "it has port security disabled", vif.port_name)
             bridge.delete_arp_spoofing_protection(port=vif.ofport)
             bridge.set_allowed_macs_for_port(port=vif.ofport, allow_all=True)
             return
@@ -1011,7 +1011,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             net_uuid = net_uuid or self.vlan_manager.get_net_uuid(vif_id)
         except vlanmanager.VifIdNotFound:
             LOG.info(
-                _LI('port_unbound(): net_uuid %s not managed by VLAN manager'),
+                'port_unbound(): net_uuid %s not managed by VLAN manager',
                 net_uuid)
             return
 
@@ -1088,7 +1088,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         ancillary_bridges = []
         for bridge in ovs_bridges:
             br = ovs_lib.OVSBridge(bridge)
-            LOG.info(_LI('Adding %s to list of bridges.'), bridge)
+            LOG.info('Adding %s to list of bridges.', bridge)
             ancillary_bridges.append(br)
         return ancillary_bridges
 
@@ -1129,10 +1129,10 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         #错误检测
         if ovs_lib.INVALID_OFPORT in (self.patch_tun_ofport,
                                       self.patch_int_ofport):
-            LOG.error(_LE("Failed to create OVS patch port. Cannot have "
-                          "tunneling enabled on this agent, since this "
-                          "version of OVS does not support tunnels or patch "
-                          "ports. Agent terminated!"))
+            LOG.error("Failed to create OVS patch port. Cannot have "
+                      "tunneling enabled on this agent, since this "
+                      "version of OVS does not support tunnels or patch "
+                      "ports. Agent terminated!")
             sys.exit(1)
         
         #依据配置决定是否要清空tunnel桥上的所有流
@@ -1167,16 +1167,16 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         #使物理桥与br-int相连，当前支持两种方式的相连（veth,patch口），临时禁止
         #从物理桥来的报文被丢弃
         for physical_network, bridge in bridge_mappings.items():
-            LOG.info(_LI("Mapping physical network %(physical_network)s to "
-                         "bridge %(bridge)s"),
+            LOG.info("Mapping physical network %(physical_network)s to "
+                     "bridge %(bridge)s",
                      {'physical_network': physical_network,
                       'bridge': bridge})
             # setup physical bridge
             #指定了物理桥，但桥没有创建，直接挂掉
             if bridge not in ovs_bridges:
-                LOG.error(_LE("Bridge %(bridge)s for physical network "
-                              "%(physical_network)s does not exist. Agent "
-                              "terminated!"),
+                LOG.error("Bridge %(bridge)s for physical network "
+                          "%(physical_network)s does not exist. Agent "
+                          "terminated!",
                           {'physical_network': physical_network,
                            'bridge': bridge})
                 sys.exit(1)
@@ -1488,8 +1488,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     and port_tags[port.port_name] != lvm.vlan
                 ):
                     LOG.info(
-                        _LI("Port '%(port_name)s' has lost "
-                            "its vlan tag '%(vlan_tag)d'!"),
+                        "Port '%(port_name)s' has lost "
+                        "its vlan tag '%(vlan_tag)d'!",
                         {'port_name': port.port_name,
                          'vlan_tag': lvm.vlan}
                     )
@@ -1517,8 +1517,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         # error condition of which operators should be aware
         port_needs_binding = True
         if not vif_port.ofport:
-            LOG.warning(_LW("VIF port: %s has no ofport configured, "
-                            "and might not be able to transmit"),
+            LOG.warning("VIF port: %s has no ofport configured, "
+                        "and might not be able to transmit",
                         vif_port.vif_id)
         if vif_port:
             if admin_state_up:
@@ -1527,8 +1527,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     physical_network, segmentation_id,
                     fixed_ips, device_owner, ovs_restarted)
             else:
-                LOG.info(_LI("VIF port: %s admin state up disabled, "
-                             "putting on the dead VLAN"), vif_port.vif_id)
+                LOG.info("VIF port: %s admin state up disabled, "
+                         "putting on the dead VLAN", vif_port.vif_id)
 
                 self.port_dead(vif_port)
                 port_needs_binding = False
@@ -1542,13 +1542,13 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             #ip协议必须匹配
             if (netaddr.IPAddress(self.local_ip).version !=
                 netaddr.IPAddress(remote_ip).version):
-                LOG.error(_LE("IP version mismatch, cannot create tunnel: "
-                              "local_ip=%(lip)s remote_ip=%(rip)s"),
+                LOG.error("IP version mismatch, cannot create tunnel: "
+                          "local_ip=%(lip)s remote_ip=%(rip)s",
                           {'lip': self.local_ip, 'rip': remote_ip})
                 return 0
         except Exception:
-            LOG.error(_LE("Invalid local or remote IP, cannot create tunnel: "
-                          "local_ip=%(lip)s remote_ip=%(rip)s"),
+            LOG.error("Invalid local or remote IP, cannot create tunnel: "
+                      "local_ip=%(lip)s remote_ip=%(rip)s",
                       {'lip': self.local_ip, 'rip': remote_ip})
             return 0
         
@@ -1563,7 +1563,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         
         #创建失败处理
         if ofport == ovs_lib.INVALID_OFPORT:
-            LOG.error(_LE("Failed to set-up %(type)s tunnel port to %(ip)s"),
+            LOG.error("Failed to set-up %(type)s tunnel port to %(ip)s",
                       {'type': tunnel_type, 'ip': remote_ip})
             return 0
 
@@ -1638,14 +1638,14 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             port = vif_by_id.get(device)
             if not port:
                 # The port disappeared and cannot be processed
-                LOG.info(_LI("Port %s was not found on the integration bridge "
-                             "and will therefore not be processed"), device)
+                LOG.info("Port %s was not found on the integration bridge "
+                         "and will therefore not be processed", device)
                 #记住哪些跳过的设备
                 skipped_devices.append(device)
                 continue
 
             if 'port_id' in details:
-                LOG.info(_LI("Port %(device)s updated. Details: %(details)s"),
+                LOG.info("Port %(device)s updated. Details: %(details)s",
                          {'device': device, 'details': details})
                 details['vif_port'] = port
                 need_binding = self.treat_vif_port(port, details['port_id'],
@@ -1664,7 +1664,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 self.ext_manager.handle_port(self.context, details)
             else:
                 LOG.warning(
-                    _LW("Device %s not defined on plugin or binding failed"),
+                    "Device %s not defined on plugin or binding failed",
                     device)
                 if (port and port.ofport != -1):
                     self.port_dead(port)
@@ -1695,14 +1695,13 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                                self.agent_id,
                                                self.conf.host))
         failed_devices |= set(devices_set_up.get('failed_devices_up'))
-        LOG.info(_LI("Ancillary Ports %(added)s added, failed devices "
-                     "%(failed)s"), {'added': devices,
-                                     'failed': failed_devices})
+        LOG.info("Ancillary Ports %(added)s added, failed devices "
+                 "%(failed)s", {'added': devices, 'failed': failed_devices})
         return failed_devices
 
     def treat_devices_removed(self, devices):
         self.sg_agent.remove_devices_filter(devices)
-        LOG.info(_LI("Ports %s removed"), devices)
+        LOG.info("Ports %s removed", devices)
         devices_down = self.plugin_rpc.update_device_list(self.context,
                                                           [],
                                                           devices,
@@ -1716,19 +1715,19 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         return failed_devices
 
     def treat_ancillary_devices_removed(self, devices):
-        LOG.info(_LI("Ancillary ports %s removed"), devices)
+        LOG.info("Ancillary ports %s removed", devices)
         devices_down = self.plugin_rpc.update_device_list(self.context,
                                                           [],
                                                           devices,
                                                           self.agent_id,
                                                           self.conf.host)
-        LOG.info(_LI("Devices down  %s "), devices_down)
+        LOG.info("Devices down  %s ", devices_down)
         failed_devices = set(devices_down.get('failed_devices_down'))
         if failed_devices:
             LOG.debug("Port removal failed for %s", failed_devices)
         for detail in devices_down.get('devices_down'):
             if detail['exists']:
-                LOG.info(_LI("Port %s updated."), detail['device'])
+                LOG.info("Port %s updated.", detail['device'])
                 # Nothing to do regarding local networking
             else:
                 LOG.debug("Device %s not defined on plugin", detail['device'])
@@ -1829,7 +1828,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 iphash = base64.b32encode(sha1.digest())
                 return iphash[:hashlen].decode().lower()
         except Exception:
-            LOG.warning(_LW("Invalid remote IP: %s"), ip_address)
+            LOG.warning("Invalid remote IP: %s", ip_address)
             return
 
     def tunnel_sync(self):
@@ -1896,11 +1895,11 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         # Check for the canary flow
         status = self.int_br.check_canary_table()
         if status == constants.OVS_RESTARTED:
-            LOG.warning(_LW("OVS is restarted. OVSNeutronAgent will reset "
-                            "bridges and recover ports."))
+            LOG.warning("OVS is restarted. OVSNeutronAgent will reset "
+                        "bridges and recover ports.")
         elif status == constants.OVS_DEAD:
-            LOG.warning(_LW("OVS is dead. OVSNeutronAgent will keep running "
-                            "and checking OVS status periodically."))
+            LOG.warning("OVS is dead. OVSNeutronAgent will keep running "
+                        "and checking OVS status periodically.")
         return status
 
     def loop_count_and_wait(self, start_time, port_stats):
@@ -1939,7 +1938,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         if self.enable_tunneling:
             bridges.append(self.tun_br)
         for bridge in bridges:
-            LOG.info(_LI("Cleaning stale %s flows"), bridge.br_name)
+            LOG.info("Cleaning stale %s flows", bridge.br_name)
             bridge.cleanup_flows()
 
     def process_port_info(self, start, polling_manager, sync, ovs_restarted,
@@ -1953,14 +1952,14 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         # linux 系统'get_events'不为None,故相应分支linux不走
         if sync or not (hasattr(polling_manager, 'get_events')):
             if sync:
-                LOG.info(_LI("Agent out of sync with plugin!"))
+                LOG.info("Agent out of sync with plugin!")
                 consecutive_resyncs = consecutive_resyncs + 1
                 if (consecutive_resyncs >=
                         constants.MAX_DEVICE_RETRIES):
-                    LOG.warning(_LW(
+                    LOG.warning(
                         "Clearing cache of registered ports,"
-                        " retries to resync were > %s"),
-                             constants.MAX_DEVICE_RETRIES)
+                        " retries to resync were > %s",
+                        constants.MAX_DEVICE_RETRIES)
                     ports.clear()
                     ancillary_ports.clear()
                     consecutive_resyncs = 0
@@ -2037,9 +2036,9 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 retries = failed_devices_retries_map.get(dev, 0)
                 if retries >= constants.MAX_DEVICE_RETRIES:
                     devices_not_to_retry.add(dev)
-                    LOG.warning(_LW(
+                    LOG.warning(
                         "Device %(dev)s failed for %(times)s times and won't "
-                        "be retried anymore"), {
+                        "be retried anymore", {
                             'dev': dev, 'times': constants.MAX_DEVICE_RETRIES})
                 else:
                     new_failed_devices_retries_map[dev] = retries + 1
@@ -2086,7 +2085,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         while self._check_and_handle_signal():
             if self.fullsync:
                 #需要做一个全同步
-                LOG.info(_LI("rpc_loop doing a full sync."))
+                LOG.info("rpc_loop doing a full sync.")
                 #标记后面需要做全同步，这里将任务已接收，故fullsync置为false
                 sync = True
                 self.fullsync = False
@@ -2148,8 +2147,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     #拉起tunnel配置
                     tunnel_sync = self.tunnel_sync()
                 except Exception:
-                    LOG.exception(
-                            _LE("Error while configuring tunnel endpoints"))
+                    LOG.exception("Error while configuring tunnel endpoints")
                     tunnel_sync = True
             ovs_restarted |= (ovs_status == constants.OVS_RESTARTED)
             devices_need_retry = (any(failed_devices.values()) or
@@ -2225,7 +2223,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     ovs_restarted = False
                     self._dispose_local_vlan_hints()
                 except Exception:
-                    LOG.exception(_LE("Error while processing VIF ports"))
+                    LOG.exception("Error while processing VIF ports")
                     # Put the ports back in self.updated_port
                     self.updated_ports |= updated_ports_copy
                     sync = True
@@ -2234,7 +2232,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
     def daemon_loop(self):
         # Start everything.
-        LOG.info(_LI("Agent initialized successfully, now running... "))
+        LOG.info("Agent initialized successfully, now running... ")
         signal.signal(signal.SIGTERM, self._handle_sigterm)
         if hasattr(signal, 'SIGHUP'):
             signal.signal(signal.SIGHUP, self._handle_sighup)
@@ -2248,7 +2246,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         self.catch_sigterm = True
         if self.quitting_rpc_timeout:
             LOG.info(
-                _LI('SIGTERM received, capping RPC timeout by %d seconds.'),
+                'SIGTERM received, capping RPC timeout by %d seconds.',
                 self.quitting_rpc_timeout)
             self.set_rpc_timeout(self.quitting_rpc_timeout)
 
@@ -2257,11 +2255,11 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
     def _check_and_handle_signal(self):
         if self.catch_sigterm:
-            LOG.info(_LI("Agent caught SIGTERM, quitting daemon loop."))
+            LOG.info("Agent caught SIGTERM, quitting daemon loop.")
             self.run_daemon_loop = False
             self.catch_sigterm = False
         if self.catch_sighup:
-            LOG.info(_LI("Agent caught SIGHUP, resetting."))
+            LOG.info("Agent caught SIGHUP, resetting.")
             self.conf.reload_config_files()
             config.setup_logging()
             LOG.debug('Full set of CONF:')
@@ -2286,8 +2284,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 def validate_local_ip(local_ip):
     """Verify if the ip exists on the agent's host."""
     if not ip_lib.IPWrapper().get_device_by_ip(local_ip):
-        LOG.error(_LE("Tunneling can't be enabled with invalid local_ip '%s'."
-                      " IP couldn't be found on this host's interfaces."),
+        LOG.error("Tunneling can't be enabled with invalid local_ip '%s'."
+                  " IP couldn't be found on this host's interfaces.",
                   local_ip)
         raise SystemExit(1)
 
@@ -2300,7 +2298,7 @@ def validate_tunnel_config(tunnel_types, local_ip):
     validate_local_ip(local_ip)
     for tun in tunnel_types:
         if tun not in constants.TUNNEL_NETWORK_TYPES:
-            LOG.error(_LE('Invalid tunnel type specified: %s'), tun)
+            LOG.error('Invalid tunnel type specified: %s', tun)
             raise SystemExit(1)
 
 
@@ -2325,6 +2323,6 @@ def main(bridge_classes):
         agent = OVSNeutronAgent(bridge_classes, cfg.CONF)
         capabilities.notify_init_event(n_const.AGENT_TYPE_OVS, agent)
     except (RuntimeError, ValueError) as e:
-        LOG.error(_LE("%s Agent terminated!"), e)
+        LOG.error("%s Agent terminated!", e)
         sys.exit(1)
     agent.daemon_loop()

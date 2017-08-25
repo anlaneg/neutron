@@ -21,7 +21,6 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as n_consts
 from oslo_log import log as logging
 
-from neutron._i18n import _, _LE
 from neutron.agent.l3 import namespaces
 from neutron.agent.l3 import router_info as router
 from neutron.agent.linux import external_process
@@ -93,7 +92,7 @@ class HaRouter(router.RouterInfo):
             with open(ha_state_path, 'w') as f:
                 f.write(new_state)
         except (OSError, IOError):
-            LOG.error(_LE('Error while writing HA state for %s'),
+            LOG.error('Error while writing HA state for %s',
                       self.router_id)
 
     @property
@@ -113,8 +112,8 @@ class HaRouter(router.RouterInfo):
         ha_port = self.router.get(n_consts.HA_INTERFACE_KEY)
         if not ha_port:
             #配置内没有给出ha_interface
-            msg = _("Unable to process HA router %s without "
-                    "HA port") % self.router_id
+            msg = ("Unable to process HA router %s without HA port" %
+                   self.router_id)
             LOG.exception(msg)
             raise Exception(msg)
         super(HaRouter, self).initialize(process_monitor)
@@ -298,7 +297,9 @@ class HaRouter(router.RouterInfo):
         if device.addr.list(to=ip_cidr):
             super(HaRouter, self).remove_floating_ip(device, ip_cidr)
 
-    def internal_network_updated(self, interface_name, ip_cidrs):
+    def internal_network_updated(self, interface_name, ip_cidrs, mtu):
+        self.driver.set_mtu(interface_name, mtu, namespace=self.ns_name,
+                            prefix=router.INTERNAL_DEV_PREFIX)
         self._clear_vips(interface_name)
         self._disable_ipv6_addressing_on_interface(interface_name)
         for ip_cidr in ip_cidrs:

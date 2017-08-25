@@ -30,7 +30,6 @@ from oslo_service import service
 from oslo_utils import excutils
 from osprofiler import profiler
 
-from neutron._i18n import _LE, _LW
 from neutron.common import exceptions
 
 
@@ -109,12 +108,12 @@ class _ContextWrapper(object):
     def cast(self, ctxt, method, **kwargs):
         try:
             self._original_context.cast(ctxt, method, **kwargs)
-        except Exception:
+        except Exception as e:
             # TODO(kevinbenton): make catch specific to missing exchange once
             # bug/1705351 is resolved on the oslo.messaging side; if
             # oslo.messaging auto-creates the exchange, then just remove the
             # code completely
-            LOG.exception("Ignored exception during cast")
+            LOG.debug("Ignored exception during cast: %e", e)
 
 
 class _BackingOffContextWrapper(_ContextWrapper):
@@ -170,19 +169,19 @@ class _BackingOffContextWrapper(_ContextWrapper):
                     min(self._METHOD_TIMEOUTS[scoped_method],
                         TRANSPORT.conf.rpc_response_timeout)
                 )
-                LOG.error(_LE("Timeout in RPC method %(method)s. Waiting for "
-                              "%(wait)s seconds before next attempt. If the "
-                              "server is not down, consider increasing the "
-                              "rpc_response_timeout option as Neutron "
-                              "server(s) may be overloaded and unable to "
-                              "respond quickly enough."),
+                LOG.error("Timeout in RPC method %(method)s. Waiting for "
+                          "%(wait)s seconds before next attempt. If the "
+                          "server is not down, consider increasing the "
+                          "rpc_response_timeout option as Neutron "
+                          "server(s) may be overloaded and unable to "
+                          "respond quickly enough.",
                           {'wait': int(round(wait)), 'method': scoped_method})
                 new_timeout = min(
                     self._original_context.timeout * 2, self.get_max_timeout())
                 if new_timeout > self._METHOD_TIMEOUTS[scoped_method]:
-                    LOG.warning(_LW("Increasing timeout for %(method)s calls "
-                                    "to %(new)s seconds. Restart the agent to "
-                                    "restore it to the default value."),
+                    LOG.warning("Increasing timeout for %(method)s calls "
+                                "to %(new)s seconds. Restart the agent to "
+                                "restore it to the default value.",
                                 {'method': scoped_method, 'new': new_timeout})
                     self._METHOD_TIMEOUTS[scoped_method] = new_timeout
                 time.sleep(wait)
