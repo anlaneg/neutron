@@ -20,7 +20,7 @@ from oslo_concurrency import lockutils
 from oslo_log import log as logging
 from oslo_utils import excutils
 
-from neutron._i18n import _, _LE, _LW
+from neutron._i18n import _
 from neutron.agent.l3 import fip_rule_priority_allocator as frpa
 from neutron.agent.l3 import link_local_allocator as lla
 from neutron.agent.l3 import namespaces
@@ -124,8 +124,8 @@ class FipNamespace(namespaces.Namespace):
                 yield
             except Exception:
                 with excutils.save_and_reraise_exception():
-                    LOG.error(_LE('DVR: FIP namespace config failure '
-                                  'for interface %s'), interface_name)
+                    LOG.error('DVR: FIP namespace config failure '
+                              'for interface %s', interface_name)
 
     def create_or_update_gateway_port(self, agent_gateway_port):
         interface_name = self.get_ext_device_name(agent_gateway_port['id'])
@@ -156,8 +156,8 @@ class FipNamespace(namespaces.Namespace):
                     with excutils.save_and_reraise_exception():
                         self.unsubscribe(agent_gateway_port['network_id'])
                         self.delete()
-                        LOG.exception(_LE('DVR: Gateway update in '
-                                          'FIP namespace failed'))
+                        LOG.exception('DVR: Gateway update in '
+                                      'FIP namespace failed')
 
     def _create_gateway_port(self, ex_gw_port, interface_name):
         """Create namespace, request port creationg from Plugin,
@@ -316,8 +316,8 @@ class FipNamespace(namespaces.Namespace):
             with excutils.save_and_reraise_exception():
                 self.unsubscribe(self.agent_gateway_port['network_id'])
                 self.agent_gateway_port = None
-                LOG.exception(_LE('DVR: Gateway setup in FIP namespace '
-                                  'failed'))
+                LOG.exception('DVR: Gateway setup in FIP namespace '
+                              'failed')
 
         # Now add the filter match rule for the table.
         ip_rule = ip_lib.IPRule(namespace=self.get_name())
@@ -351,10 +351,10 @@ class FipNamespace(namespaces.Namespace):
         # the next call will trigger the interface to be plugged.
         if not ipd.exists():
             #报错，ip设置不存在
-            LOG.warning(_LW('DVR: FIP gateway port with interface '
-                            'name: %(device)s does not exist in the given '
-                            'namespace: %(ns)s'), {'device': interface_name,
-                                                   'ns': ns_name})
+            LOG.warning('DVR: FIP gateway port with interface '
+                        'name: %(device)s does not exist in the given '
+                        'namespace: %(ns)s', {'device': interface_name,
+                                              'ns': ns_name})
             msg = _('DVR: Gateway update route in FIP namespace failed, retry '
                     'should be attempted on next call')
             raise n_exc.FloatingIpSetupException(msg)

@@ -19,7 +19,7 @@ from neutron_lib import constants as lib_constants
 from neutron_lib.utils import helpers
 from oslo_log import log as logging
 
-from neutron._i18n import _, _LE, _LW
+from neutron._i18n import _
 from neutron.agent.l3 import namespaces
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_manager
@@ -169,11 +169,12 @@ class RouterInfo(object):
         """Filter Floating IPs to be hosted on this agent."""
         return self.router.get(lib_constants.FLOATINGIP_KEY, [])
 
-    def floating_forward_rules(self, floating_ip, fixed_ip):
-        return [
-                #报文进来后在路由前，将所有目的地址为 $floating_ip/32 的报文，做dnat转换
-                #转换后目的地址为fixed_ip {实现公网ip到私网ip的转换}
-                 ('PREROUTING', '-d %s/32 -j DNAT --to-destination %s' %
+    def floating_forward_rules(self, fip):
+        fixed_ip = fip['fixed_ip_address']
+        floating_ip = fip['floating_ip_address']
+        #报文进来后在路由前，将所有目的地址为 $floating_ip/32 的报文，做dnat转换
+        #转换后目的地址为fixed_ip {实现公网ip到私网ip的转换}
+        return [('PREROUTING', '-d %s/32 -j DNAT --to-destination %s' %
                  (floating_ip, fixed_ip)),
                 #本地下发下来的报文,如果这个ip地址是由本机下发下来的，也需要考虑转换
                 ('OUTPUT', '-d %s/32 -j DNAT --to-destination %s' %
@@ -231,10 +232,8 @@ class RouterInfo(object):
         # Loop once to ensure that floating ips are configured.
         for fip in floating_ips:
             # Rebuild iptables rules for the floating ip.
-            fixed = fip['fixed_ip_address'] #私网ip
-            fip_ip = fip['floating_ip_address'] #公网ip
-            for chain, rule in self.floating_forward_rules(fip_ip, fixed):
-                #在nat表上添加规则
+            #在nat表上添加规则
+            for chain, rule in self.floating_forward_rules(fip):
                 self.iptables_manager.ipv4['nat'].add_rule(chain, rule,
                                                            tag='floating_ip')
 
@@ -315,8 +314,8 @@ class RouterInfo(object):
         except RuntimeError:
             # any exception occurred here should cause the floating IP
             # to be set in error state
-            LOG.warning(_LW("Unable to configure IP address for "
-                            "floating IP: %s"), fip['id'])
+            LOG.warning("Unable to configure IP address for "
+                        "floating IP: %s", fip['id'])
 
     def add_floating_ip(self, fip, interface_name, device):
         raise NotImplementedError()
@@ -505,10 +504,13 @@ class RouterInfo(object):
         for existing_port in existing_ports:
             current_port = current_ports_dict.get(existing_port['id'])
             if current_port:
-                if (sorted(existing_port['fixed_ips'],
+                fixed_ips_changed = (
+                    sorted(existing_port['fixed_ips'],
                            key=helpers.safe_sort_key) !=
-                        sorted(current_port['fixed_ips'],
-                               key=helpers.safe_sort_key)):
+                    sorted(current_port['fixed_ips'],
+                           key=helpers.safe_sort_key))
+                mtu_changed = existing_port['mtu'] != current_port['mtu']
+                if fixed_ips_changed or mtu_changed:
                     updated_ports[current_port['id']] = current_port
         return updated_ports
 
@@ -531,7 +533,9 @@ class RouterInfo(object):
                   self.router_id)
         self.radvd.disable()
 
-    def internal_network_updated(self, interface_name, ip_cidrs):
+    def internal_network_updated(self, interface_name, ip_cidrs, mtu):
+        self.driver.set_mtu(interface_name, mtu, namespace=self.ns_name,
+                            prefix=INTERNAL_DEV_PREFIX)
         self.driver.init_router_port(
             interface_name,
             ip_cidrs=ip_cidrs,
@@ -595,7 +599,8 @@ class RouterInfo(object):
                 ip_cidrs = common_utils.fixed_ip_cidrs(p['fixed_ips'])
                 LOG.debug("updating internal network for port %s", p)
                 updated_cidrs += ip_cidrs
-                self.internal_network_updated(interface_name, ip_cidrs) #更新ip地址
+                self.internal_network_updated(
+                    interface_name, ip_cidrs, p['mtu'])#更新ip地址
                 enable_ra = enable_ra or self._port_has_ipv6_subnet(p)
 
         # Check if there is any pd prefix update
@@ -919,7 +924,7 @@ class RouterInfo(object):
 
         except n_exc.FloatingIpSetupException:
             # All floating IPs must be put in error state
-            LOG.exception(_LE("Failed to process floating IPs."))
+            LOG.exception("Failed to process floating IPs.")
             fip_statuses = self.put_fips_in_error_state()
         finally:
             self.update_fip_statuses(fip_statuses)
@@ -946,7 +951,7 @@ class RouterInfo(object):
         except (n_exc.FloatingIpSetupException,
                 n_exc.IpTablesApplyException):
                 # All floating IPs must be put in error state
-                LOG.exception(_LE("Failed to process floating IPs."))
+                LOG.exception("Failed to process floating IPs.")
                 fip_statuses = self.put_fips_in_error_state()
         finally:
             self.update_fip_statuses(fip_statuses)
@@ -1140,8 +1145,8 @@ class RouterInfo(object):
             self.agent.pd.sync_router(self.router['id'])
             self._process_external_on_delete()
         else:
-            LOG.warning(_LW("Can't gracefully delete the router %s: "
-                            "no router namespace found."), self.router['id'])
+            LOG.warning("Can't gracefully delete the router %s: "
+                        "no router namespace found.", self.router['id'])
 
     @common_utils.exception_logger()
     def process(self):

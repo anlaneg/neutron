@@ -149,6 +149,7 @@ class BasicRouterOperationsFramework(base.BaseTestCase):
         self.snat_ports = [{'subnets': [{'cidr': '152.2.0.0/16',
                                          'gateway_ip': '152.2.0.1',
                                          'id': subnet_id_1}],
+                            'mtu': 1500,
                             'network_id': _uuid(),
                             'device_owner':
                             lib_constants.DEVICE_OWNER_ROUTER_SNAT,
@@ -160,6 +161,7 @@ class BasicRouterOperationsFramework(base.BaseTestCase):
                            {'subnets': [{'cidr': '152.10.0.0/16',
                                          'gateway_ip': '152.10.0.1',
                                          'id': subnet_id_2}],
+                            'mtu': 1450,
                             'network_id': _uuid(),
                             'device_owner':
                             lib_constants.DEVICE_OWNER_ROUTER_SNAT,
@@ -425,6 +427,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
         port = {'network_id': _uuid(),
                 'id': _uuid(),
                 'mac_address': 'ca:fe:de:ad:be:ef',
+                'mtu': 1500,
                 'fixed_ips': [{'subnet_id': _uuid(),
                                'ip_address': '99.0.1.9',
                                'prefixlen': 24}]}
@@ -459,6 +462,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
         port = {'network_id': _uuid(),
                 'id': _uuid(),
                 'mac_address': 'ca:fe:de:ad:be:ef',
+                'mtu': 1500,
                 'fixed_ips': [{'subnet_id': subnet_id,
                                'ip_address': '99.0.1.9',
                                'prefixlen': 24}],
@@ -473,6 +477,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                    'extra_subnets': [{'cidr': '172.16.0.0/24'}],
                    'id': _uuid(),
                    'network_id': _uuid(),
+                   'mtu': 1500,
                    'mac_address': 'ca:fe:de:ad:be:ef'}
         ex_gw_port = {'fixed_ips': [{'ip_address': '20.0.0.30',
                                      'prefixlen': 24,
@@ -482,6 +487,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                       'id': _uuid(),
                       portbindings.HOST_ID: HOSTNAME,
                       'network_id': _uuid(),
+                      'mtu': 1500,
                       'mac_address': 'ca:fe:de:ad:be:ef'}
         ri.snat_ports = sn_port
         ri.ex_gw_port = ex_gw_port
@@ -513,7 +519,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                 sn_port['mac_address'],
                 ri._get_snat_int_device_name(sn_port['id']),
                 lib_constants.SNAT_INT_DEV_PREFIX,
-                mtu=None)
+                mtu=1500)
             self.assertTrue(ri._check_if_address_scopes_match.called)
             if scope_match:
                 self.assertTrue(
@@ -667,10 +673,12 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                       'extra_subnets': [{'cidr': '172.16.0.0/24'}],
                       'id': _uuid(),
                       'network_id': ex_net_id,
+                      'mtu': 1500,
                       'mac_address': 'ca:fe:de:ad:be:ef'}
         ex_gw_port_no_sub = {'fixed_ips': [],
                              'id': _uuid(),
                              'network_id': ex_net_id,
+                             'mtu': 1500,
                              'mac_address': 'ca:fe:de:ad:be:ef'}
         interface_name = ri.get_external_device_name(ex_gw_port['id'])
 
@@ -1159,6 +1167,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                    'gateway_ip': '20.0.0.1'}],
               'id': _uuid(),
               'network_id': fake_network_id,
+              'mtu': 1500,
               'mac_address': 'ca:fe:de:ad:be:ef'}]
         )
 
@@ -1182,6 +1191,8 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
             fip_gw_port.return_value = agent_gateway_port[0]
             ri.create_dvr_external_gateway_on_agent(ext_gw_port)
             ri.connect_rtr_2_fip()
+            ri._get_floatingips_bound_to_host = mock.Mock(
+                return_value=True)
             self.assertTrue(fip_gw_port.called)
             self.assertTrue(create_fip.called)
             self.assertEqual(agent_gateway_port[0],
@@ -1199,6 +1210,72 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
             self.assertTrue(fip_gw_port.called)
             create_fip.assert_called_once_with()
             self.assertEqual(1, ri.fip_ns.create_rtr_2_fip_link.call_count)
+
+    @mock.patch.object(lla.LinkLocalAllocator, '_write')
+    def test_floating_ip_centralized(self, lla_write):
+        fake_network_id = _uuid()
+        subnet_id = _uuid()
+        fake_floatingips = {'floatingips': [
+            {'id': _uuid(),
+             'floating_ip_address': '20.0.0.3',
+             'fixed_ip_address': '192.168.0.1',
+             'floating_network_id': _uuid(),
+             'port_id': _uuid(),
+             'dvr_snat_bound': True,
+             'host': None}]}
+        agent_gateway_port = (
+            [{'fixed_ips': [
+                {'ip_address': '20.0.0.30',
+                 'prefixlen': 24,
+                 'subnet_id': subnet_id}],
+              'subnets': [
+                  {'id': subnet_id,
+                   'cidr': '20.0.0.0/24',
+                   'gateway_ip': '20.0.0.1'}],
+              'id': _uuid(),
+              'network_id': fake_network_id,
+              'mac_address': 'ca:fe:de:ad:be:ef'}]
+        )
+
+        router = l3_test_common.prepare_router_data(enable_snat=True)
+        router[lib_constants.FLOATINGIP_KEY] = fake_floatingips['floatingips']
+        router[n_const.FLOATINGIP_AGENT_INTF_KEY] = agent_gateway_port
+        router['distributed'] = True
+        agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
+        self._set_ri_kwargs(agent, router['id'], router)
+        ri = dvr_router.DvrEdgeRouter(HOSTNAME, **self.ri_kwargs)
+        ext_gw_port = ri.router.get('gw_port')
+        ri.fip_ns = agent.get_fip_ns(ext_gw_port['network_id'])
+        agent.process_router_add = mock.Mock()
+        ri.fip_ns.create_rtr_2_fip_link = mock.Mock()
+        with mock.patch.object(ri, 'get_floating_ips') as fips, \
+                mock.patch.object(ri,
+                                  'add_centralized_floatingip') as add_fip, \
+                mock.patch.object(ri, 'get_floating_agent_gw_interface'
+                                  ) as fip_gw_port, \
+                mock.patch.object(ri.fip_ns,
+                                  'create') as create_fip, \
+                mock.patch.object(ri,
+                                  'remove_centralized_floatingip') as rem_fip:
+            fips.return_value = fake_floatingips
+            fip_gw_port.return_value = agent_gateway_port[0]
+            add_fip.return_value = lib_constants.FLOATINGIP_STATUS_ACTIVE
+            ri.create_dvr_external_gateway_on_agent(ext_gw_port)
+            ri.connect_rtr_2_fip()
+            self.assertTrue(fip_gw_port.called)
+            self.assertTrue(create_fip.called)
+            self.assertEqual(agent_gateway_port[0],
+                             ri.fip_ns.agent_gateway_port)
+            self.assertTrue(ri.rtr_fip_connect)
+            # Now let us associate the fip to the router
+            status = ri.floating_ip_added_dist(fips, "192.168.0.1/32")
+            add_fip.assert_called_once_with(fips, "192.168.0.1/32")
+            self.assertEqual(lib_constants.FLOATINGIP_STATUS_ACTIVE, status)
+            self.assertEqual(set(["192.168.0.1/32"]),
+                             ri.centralized_floatingips_set)
+            ri.floating_ip_removed_dist("192.168.0.1/32")
+            rem_fip.assert_called_once_with("192.168.0.1/32")
+            self.assertEqual(set([]), ri.centralized_floatingips_set)
 
     @mock.patch.object(lla.LinkLocalAllocator, '_write')
     def test_create_dvr_fip_interfaces_for_late_binding(self, lla_write):
@@ -1222,6 +1299,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                   'gateway_ip': '20.0.0.1'}],
              'id': _uuid(),
              'network_id': fake_network_id,
+             'mtu': 1500,
              'mac_address': 'ca:fe:de:ad:be:ef'}
         )
 
@@ -1268,6 +1346,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                    'gateway_ip': '20.0.0.1'}],
               'id': _uuid(),
               'network_id': fake_network_id,
+              'mtu': 1500,
               'mac_address': 'ca:fe:de:ad:be:ef'}]
         )
 
@@ -1291,6 +1370,8 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
             fip_gw_port.return_value = agent_gateway_port[0]
             ri.create_dvr_external_gateway_on_agent(ext_gw_port)
             ri.connect_rtr_2_fip()
+            ri._get_floatingips_bound_to_host = mock.Mock(
+                return_value=True)
             self.assertTrue(fip_gw_port.called)
             self.assertEqual(agent_gateway_port[0],
                              ri.fip_ns.agent_gateway_port)
@@ -1318,6 +1399,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                    'gateway_ip': '20.0.0.1'}],
               'id': _uuid(),
               'network_id': 'fake_network_id',
+              'mtu': 1500,
               'mac_address': 'ca:fe:de:ad:be:ef'}]
         )
 
@@ -1339,6 +1421,8 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
             fip_gw_port.return_value = agent_gateway_port[0]
             ri.create_dvr_external_gateway_on_agent(ext_gw_port)
             ri.connect_rtr_2_fip()
+            ri._get_floatingips_bound_to_host = mock.Mock(
+                return_value=True)
             self.assertTrue(fip_gw_port.called)
             self.assertEqual(agent_gateway_port[0],
                              ri.fip_ns.agent_gateway_port)
@@ -2516,6 +2600,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                                     'gateway_ip': '20.0.0.1'}],
                        'id': port_id,
                        'network_id': _uuid(),
+                       'mtu': 1500,
                        'mac_address': 'ca:fe:de:ad:be:ef'}
 
         interface_name = ri._get_snat_int_device_name(port_id)
