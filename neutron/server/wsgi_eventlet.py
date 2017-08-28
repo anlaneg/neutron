@@ -21,6 +21,7 @@ LOG = log.getLogger(__name__)
 
 
 def eventlet_wsgi_server():
+    #neutron_api走的是paste,故这里启动paste
     neutron_api = service.serve_wsgi(service.NeutronApiService)
     start_api_and_rpc_workers(neutron_api)
 

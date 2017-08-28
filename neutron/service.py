@@ -73,6 +73,7 @@ class NeutronApiService(WsgiService):
 
     @classmethod
     def create(cls, app_name='neutron'):
+        #创建一个app实例
         # Setup logging early
         config.setup_logging()
         service = cls(app_name)
@@ -82,6 +83,7 @@ class NeutronApiService(WsgiService):
 def serve_wsgi(cls):
 
     try:
+        #创建cls,并调用start
         service = cls.create()
         service.start()
     except Exception:
@@ -89,6 +91,7 @@ def serve_wsgi(cls):
             LOG.exception('Unrecoverable error: please check log '
                           'for details.')
 
+    #触发进程的before_spawn事件
     registry.notify(resources.PROCESS, events.BEFORE_SPAWN, service)
     return service
 
@@ -218,7 +221,7 @@ class AllServicesNeutronWorker(neutron_worker.BaseWorker):
 
 
 def _start_workers(workers):
-    #启动必要的workers
+    #启动必要的workers(这些workers有些是插件引入的，有些是neutron内部的，例如ovn引入的数据库同步worker）
     process_workers = [
         plugin_worker for plugin_worker in workers
         if plugin_worker.worker_process_count > 0
@@ -284,11 +287,13 @@ def start_plugins_workers():
 def _get_api_workers():
     workers = cfg.CONF.api_workers
     if workers is None:
+        #如果不配置workers的数量，则默认每cpu上对应一个worker
         workers = processutils.get_worker_count()
     return workers
 
 
 def _run_wsgi(app_name):
+    #加载app对应的paste的配置文件
     app = config.load_paste_app(app_name)
     if not app:
         LOG.error('No known API applications configured.')
@@ -298,6 +303,7 @@ def _run_wsgi(app_name):
 
 def run_wsgi_app(app):
     server = wsgi.Server("Neutron")
+    #启动paste的app
     server.start(app, cfg.CONF.bind_port, cfg.CONF.bind_host,
                  workers=_get_api_workers())
     LOG.info("Neutron service started, listening on %(host)s:%(port)s",

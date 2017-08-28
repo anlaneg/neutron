@@ -16,6 +16,7 @@ from neutron.server import wsgi_eventlet
 
 
 def main():
+    #完成初始化，并调用eventlet_wsgi_server方法
     server.boot_server(wsgi_eventlet.eventlet_wsgi_server)
 
 

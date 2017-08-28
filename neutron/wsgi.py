@@ -194,6 +194,8 @@ class Server(object):
             # wait interval past the default of 0.01s.
             self._server = common_service.ProcessLauncher(cfg.CONF,
                                                           wait_interval=1.0)
+            #启动多个service(通过调用service的start来启动，通过service的wiat来等待退出，通过restart来
+            #重新启动service)
             self._server.launch_service(service,
                                         workers=service.worker_process_count)
 
