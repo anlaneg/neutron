@@ -33,12 +33,14 @@ def build_plural_mappings(special_mappings, resource_map):
     case the singular form will end with a 'y' (e.g.: policy/policies)
     """
     plural_mappings = {}
+    #遍历resource_map的key
     for plural in resource_map:
         singular = special_mappings.get(plural)
         if not singular:
             if plural.endswith('ies'):
                 singular = "%sy" % plural[:-3]
             else:
+                #取掉其结尾的最后一个字符，例如routers->router
                 singular = plural[:-1]
         plural_mappings[plural] = singular
     return plural_mappings
@@ -69,6 +71,7 @@ def build_resource_info(plural_mappings, resource_map, which_service,
     """
     resources = []
     if not which_service:
+        #若未指定service,则使用core插件
         which_service = constants.CORE
     if action_map is None:
         action_map = {}

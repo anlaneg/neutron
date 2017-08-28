@@ -889,6 +889,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         return True
 
     def get_workers(self):
+        #获取各驱动的workers
         workers = []
         for driver in self.ordered_mech_drivers:
             workers += driver.obj.get_workers()

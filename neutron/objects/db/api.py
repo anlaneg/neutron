@@ -21,6 +21,7 @@ from neutron.objects import utils as obj_utils
 
 
 # Common database operation implementations
+#查表model,并进行filter(**kwargs)
 def _get_filter_query(context, model, **kwargs):
     with context.session.begin(subtransactions=True):
         filters = _kwargs_to_filters(**kwargs)
@@ -29,6 +30,7 @@ def _get_filter_query(context, model, **kwargs):
 
 
 def get_object(context, model, **kwargs):
+    #给kwargs做fitler进行查询，返回一条记录
     return _get_filter_query(context, model, **kwargs).first()
 
 
@@ -36,6 +38,7 @@ def count(context, model, **kwargs):
     return _get_filter_query(context, model, **kwargs).count()
 
 
+#构造查询dict
 def _kwargs_to_filters(**kwargs):
     return {k: v if (isinstance(v, list) or
                      isinstance(v, obj_utils.StringMatchingFilterObj))

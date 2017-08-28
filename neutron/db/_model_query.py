@@ -1,3 +1,4 @@
+# encoding:utf-8
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -113,6 +114,7 @@ def register_hook(model, name, query_hook, filter_hook,
         filter_hook = utils.make_weak_ref(filter_hook)
     if callable(result_filters):
         result_filters = utils.make_weak_ref(result_filters)
+    #为model表，注册名称为name的hook
     _model_query_hooks.setdefault(model, {})[name] = {
         'query': query_hook,
         'filter': filter_hook,
@@ -130,10 +132,13 @@ def get_hooks(model):
     :rtype: list of dict of callable
 
     """
+    #为表model注册的所有hook
     return _model_query_hooks.get(model, {}).values()
 
 
+#执行model定义的hooks
 def query_with_hooks(context, model):
+    #构造表model的查询器
     query = context.session.query(model)
     # define basic filter condition for model query
     query_filter = None
@@ -155,21 +160,25 @@ def query_with_hooks(context, model):
     for hook in get_hooks(model):
         query_hook = utils.resolve_ref(hook.get('query'))
         if query_hook:
+            #使能此model的query hook (针对query可做一些连接）
             query = query_hook(context, model, query)
 
         filter_hook = utils.resolve_ref(hook.get('filter'))
         if filter_hook:
+            #使能此model的filter hook（针对query_filter,可增加一些filter)
             query_filter = filter_hook(context, model, query_filter)
 
     # NOTE(salvatore-orlando): 'if query_filter' will try to evaluate the
     # condition, raising an exception
     if query_filter is not None:
+        #实现查询（并进行过滤）
         query = query.filter(query_filter)
     return query
 
 
 def get_by_id(context, model, object_id):
     query = query_with_hooks(context=context, model=model)
+    #再过滤id号
     return query.filter(model.id == object_id).one()
 
 
@@ -183,6 +192,7 @@ def apply_filters(query, model, filters, context=None):
             # See "An Important Expression Language Gotcha" in:
             # docs.sqlalchemy.org/en/rel_0_9/changelog/migration_06.html
             if column is not None:
+                #model表中无此列
                 if not value:
                     query = query.filter(sql.false())
                     return query
@@ -242,15 +252,18 @@ def apply_filters(query, model, filters, context=None):
         for hook in get_hooks(model):
             result_filter = utils.resolve_ref(hook.get('result_filters', None))
             if result_filter:
+                #执行result_filter（hook可能在query时引入新的表，故result_filters时，可提供提执行filter)
                 query = result_filter(query, filters)
     return query
 
 
+#查表model,可返回多条
 def get_collection_query(context, model, filters=None, sorts=None, limit=None,
                          marker_obj=None, page_reverse=False):
     collection = query_with_hooks(context, model)
     collection = apply_filters(collection, model, filters, context)
     if sorts:
+        #排序处理
         sort_keys = db_utils.get_and_validate_sort_keys(sorts, model)
         sort_dirs = db_utils.get_sort_dirs(sorts, page_reverse)
         # we always want deterministic results for sorted queries
@@ -286,11 +299,13 @@ def get_collection(context, model, dict_func,
                                  filters=filters, sorts=sorts,
                                  limit=limit, marker_obj=marker_obj,
                                  page_reverse=page_reverse)
+    #容许对记录进行处理
     items = [
         attributes.populate_project_info(
             dict_func(c, fields) if dict_func else c)
         for c in query
     ]
+    #序列反转
     if limit and page_reverse:
         items.reverse()
     return items

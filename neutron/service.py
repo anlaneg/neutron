@@ -219,6 +219,7 @@ class AllServicesNeutronWorker(neutron_worker.BaseWorker):
 
 
 def _start_workers(workers):
+    #启动必要的workers
     process_workers = [
         plugin_worker for plugin_worker in workers
         if plugin_worker.worker_process_count > 0
@@ -261,8 +262,10 @@ def _start_workers(workers):
 
 
 def start_all_workers():
+    #启动所有的workers
     workers = _get_rpc_workers() + _get_plugins_workers()
     launcher = _start_workers(workers)
+    #通知进程启动完成
     registry.notify(resources.PROCESS, events.AFTER_SPAWN, None)
     return launcher
 

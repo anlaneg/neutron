@@ -166,6 +166,7 @@ def _get_standard_attr_id(context, object_id, object_type):
                                "adding provisioning blocks for a new resource "
                                "you must call add_model_for_resource during "
                                "initialization for your type.") % object_type)
+    #按object_id取出obj
     obj = (context.session.query(model).enable_eagerloads(False).
            filter_by(id=object_id).first())
     if not obj:

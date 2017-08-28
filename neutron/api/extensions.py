@@ -391,6 +391,7 @@ class ExtensionManager(object):
     def _check_extension(self, extension):
         """Checks for required methods in extension objects."""
         try:
+            #检查扩展是否提供了必要的属性
             LOG.debug('Ext name="%(name)s" alias="%(alias)s" '
                       'description="%(desc)s" updated="%(updated)s"',
                       {'name': extension.get_name(),
@@ -400,6 +401,7 @@ class ExtensionManager(object):
         except AttributeError:
             LOG.exception(_LE("Exception loading extension"))
             return False
+        #确认是否为相应的子类
         return isinstance(extension, api_extensions.ExtensionDescriptor)
 
     def _load_all_extensions(self):
@@ -429,6 +431,7 @@ class ExtensionManager(object):
                 mod_name, file_ext = os.path.splitext(os.path.split(f)[-1])
                 ext_path = os.path.join(path, f)
                 if file_ext.lower() == '.py' and not mod_name.startswith('_'):
+                    #动态加载扩展模块
                     mod = imp.load_source(mod_name, ext_path)
                     ext_name = mod_name.capitalize()
                     new_ext_class = getattr(mod, ext_name, None)

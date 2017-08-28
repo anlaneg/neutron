@@ -130,6 +130,7 @@ class NeutronManager(object):
         # NOTE(armax): keep hold of the actual plugin object
         plugin = self._get_plugin_instance(CORE_PLUGINS_NAMESPACE,
                                            plugin_provider)
+        #添加核心插件
         directory.add_plugin(lib_const.CORE, plugin)
         msg = validate_post_plugin_load()
         if msg:
@@ -173,6 +174,7 @@ class NeutronManager(object):
         for ext_alias in getattr(plugin, "supported_extension_aliases", []):
             if ext_alias in constants.EXT_TO_SERVICE_MAPPING:
                 service_type = constants.EXT_TO_SERVICE_MAPPING[ext_alias]
+                #指明服务插件
                 directory.add_plugin(service_type, plugin)
                 LOG.info(_LI("Service %s is supported by the core plugin"),
                          service_type)
@@ -182,6 +184,7 @@ class NeutronManager(object):
         return constants.DEFAULT_SERVICE_PLUGINS.keys()
 
     def _load_service_plugins(self):
+        #加载服务插件
         """Loads service plugins.
 
         Starts from the core plugin and checks if it supports
@@ -208,6 +211,7 @@ class NeutronManager(object):
                 raise ValueError(_("Multiple plugins for service "
                                    "%s were configured") % plugin_type)
 
+            #指明插件被加载
             directory.add_plugin(plugin_type, plugin_inst)
 
             # search for possible agent notifiers declared in service plugin
@@ -238,6 +242,7 @@ class NeutronManager(object):
 
     @classmethod
     def get_instance(cls):
+        #获取其对应实例
         # double checked locking
         if not cls.has_instance():
             cls._create_instance()
@@ -245,6 +250,7 @@ class NeutronManager(object):
 
     @classmethod
     def set_plugin_for_resource(cls, resource, plugin):
+        #设置插件负责的资源
         cls.get_instance().resource_plugin_mappings[resource] = plugin
 
     @classmethod
@@ -289,4 +295,5 @@ class NeutronManager(object):
 def init():
     """Call to load the plugins (core+services) machinery."""
     if not directory.is_loaded():
+        #如果没有加载插件，则初始化实例
         NeutronManager.get_instance()

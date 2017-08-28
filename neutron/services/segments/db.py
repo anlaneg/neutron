@@ -53,6 +53,7 @@ class SegmentDbMixin(common_db_mixin.CommonDbMixin):
         return db_utils.resource_fields(res, fields)
 
     def _get_segment(self, context, segment_id):
+        #取id为segment_id的segment
         segment = network.NetworkSegment.get_object(context, id=segment_id)
         if not segment:
             raise exceptions.SegmentNotFound(segment_id=segment_id)
@@ -105,13 +106,14 @@ class SegmentDbMixin(common_db_mixin.CommonDbMixin):
                 # NOTE(xiaohhui): The new index is the last index + 1, this
                 # may cause discontinuous segment_index. But segment_index
                 # can functionally work as the order index for segments.
-                segment_index = (segments[-1].get('segment_index') + 1)
+                segment_index = (segments[-1].get('segment_index') + 1) #生成新序列
             args['segment_index'] = segment_index
 
             new_segment = network.NetworkSegment(context, **args)
             new_segment.create()
             # Do some preliminary operations before committing the segment to
             # db
+            # 触发segment创建事件
             registry.notify(
                 resources.SEGMENT, events.PRECOMMIT_CREATE, self,
                 context=context, segment=new_segment)
@@ -242,6 +244,7 @@ def map_segment_to_hosts(context, segment_id, hosts):
     """Map segment to a collection of hosts."""
     with db_api.context_manager.writer.using(context):
         for host in hosts:
+            #写入记录
             network.SegmentHostMapping(
                 context, segment_id=segment_id, host=host).create()
 

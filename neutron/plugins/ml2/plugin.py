@@ -192,6 +192,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         self._setup_dhcp()
         self._start_rpc_notifiers()
         self.add_agent_status_check_worker(self.agent_health_check)
+        #添加机制引入的workers
         self.add_workers(self.mechanism_manager.get_workers())
         self._verify_service_plugins_requirements()
         LOG.info(_LI("Modular L2 Plugin initialization complete"))

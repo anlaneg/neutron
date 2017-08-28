@@ -28,12 +28,15 @@ We use the STATUS field on objects to indicate when a resource is ready
 by setting it to ACTIVE so external systems know when it's safe to use
 that resource. Knowing when to set the status to ACTIVE is simple when
 there is only one entity responsible for provisioning a given object.
+当仅有一个实体来反馈某一个对象的供给状态时，通过状status字段设置为active，很容易实现
 When that entity has finishing provisioning, we just update the STATUS
 directly to active. However, there are resources in Neutron that require
 provisioning by multiple asynchronous entities before they are ready to
 be used so managing the transition to the ACTIVE status becomes more
 complex. To handle these cases, Neutron has `the provisioning_blocks
 module
+但当有多个实体来反馈某一个对象的供给状态时（反馈方式将会是异步的），就需要一个机制，知道
+所有实体均已完成反馈。Neutron中privisioning_blocks模块即解决此问题。
 <http://git.openstack.org/cgit/openstack/neutron/tree/neutron/db/provisioning_blocks.py>`_
 to track the entities that are still provisioning a resource.
 
@@ -47,6 +50,8 @@ use the port and not have connectivity. To solve this, the
 provisioning_blocks module is used to track the provisioning state
 of each agent and the status is only updated when both complete.
 
+对于一个port,当其创建并绑定到host,此时其为down状态，接下来，l2 agent 设置flow,安全组规则等，
+dhcp agent 完成此port的dhcp信息预设（此port的ip,mac),两个agent完成这些任务后，port才能处于up状态。
 
 High Level View
 ---------------
@@ -58,29 +63,32 @@ accomplished by calling the add_provisioning_component method for
 each entity. Then as each entity finishes provisioning the object,
 the provisioning_complete must be called to lift the provisioning
 block.
+通过在工作完成前调用add_provisioning_component,在工作完成后调用provisioning_complete
+来使用provisioning_blocks模块
 
 When the last provisioning block is removed, the provisioning_blocks
 module will trigger a callback notification containing the object ID
 for the object's resource type with the event PROVISIONING_COMPLETE.
 A subscriber to this event can now update the status of this object
 to ACTIVE or perform any other necessary actions.
+如果最后一个privisioning块被移除，将触发PROVISIONING_COMPLETE事件
 
 A normal state transition will look something like the following:
 
 1. Request comes in to create an object
 2. Logic on the Neutron server determines which entities are required
    to provision the object and adds a provisioning component for each
-   entity for that object.
-3. A notification is emitted to the entities so they start their work.
-4. Object is returned to the API caller in the DOWN (or BUILD) state.
+   entity for that object. （决定哪些entity来进行工作）
+3. A notification is emitted to the entities so they start their work.(通知开启工作）
+4. Object is returned to the API caller in the DOWN (or BUILD) state. （工作已开始）
 5. Each entity tells the server when it has finished provisioning the
    object. The server calls provisioning_complete for each entity that
-   finishes.
+   finishes. (每个entity独立通知server自已已完成工作，server通过调用provisioning_complete，来完成工作）
 6. When provisioning_complete is called on the last remaining entity,
    the provisioning_blocks module will emit an event indicating that
-   provisioning has completed for that object.
+   provisioning has completed for that object. (provisioning_complete 函数在发现整个工作完成后，通知事件）
 7. A subscriber to this event on the server will then update the status
-   of the object to ACTIVE to indicate that it is fully provisioned.
+   of the object to ACTIVE to indicate that it is fully provisioned. （事件注册者收到事件，完成向active的更新）
 
 For a more concrete example, see the section below.
 
@@ -96,13 +104,13 @@ When a port is created or updated, the following happens to register
 the DHCP agent's provisioning blocks:
 
 1. The subnet_ids are extracted from the fixed_ips field of the port
-   and then ML2 checks to see if DHCP is enabled on any of the subnets.
+   and then ML2 checks to see if DHCP is enabled on any of the subnets. （dhcp是否被开启）
 2. The configuration for the DHCP agents hosting the network are looked
-   up to ensure that at least one of them is new enough to report back
+   up to ensure that at least one of them is new enough to report back   （dhcp agent完成工作，并响应）
    that it has finished setting up the port reservation.
 3. If either of the preconditions above fail, a provisioning block for
    the DHCP agent is not added and any existing DHCP agent blocks for
-   that port are cleared to ensure the port isn't blocked waiting for an
+   that port are cleared to ensure the port isn't blocked waiting for an （provisioning 块被加入，如果2失败，则不加入）
    event that will never happen.
 4. If the preconditions pass, a provisioning block is added for the port
    under the 'DHCP' entity.
@@ -115,24 +123,24 @@ L2 agent's provisioning blocks:
    binds it.
 2. Once the port is bound, the agent based mechanism drivers will check
    if they have an agent on the bound host and if the VNIC type belongs
-   to the mechanism driver, a provisioning block is added for the port
+   to the mechanism driver, a provisioning block is added for the port （bound后，会检查并加入provisioning block)
    under the 'L2 Agent' entity.
 
 
-Once the DHCP agent has finished setting up the reservation, it calls
-dhcp_ready_on_ports via the RPC API with the port ID. The DHCP RPC
+Once the DHCP agent has finished setting up the reservation, it calls   (dhcp情况：调dhcp_ready_on_ports来使得rpc调
+dhcp_ready_on_ports via the RPC API with the port ID. The DHCP RPC                provisioning_complete来完成block移除 ）
 handler receives this and calls 'provisioning_complete' in the
 provisioning module with the port ID and the 'DHCP' entity to remove
 the provisioning block.
 
 Once the L2 agent has finished setting up the reservation, it calls
-the normal update_device_list (or update_device_up) via the RPC API.
-The RPC callbacks handler calls 'provisioning_complete' with the
+the normal update_device_list (or update_device_up) via the RPC API.   (l2 agent情况：update_device_list来使得rpc调用
+The RPC callbacks handler calls 'provisioning_complete' with the                     provisioning_complete来完成block移除）
 port ID and the 'L2 Agent' entity to remove the provisioning block.
 
 On the 'provisioning_complete' call that removes the last record,
-the provisioning_blocks module emits a callback PROVISIONING_COMPLETE
-event with the port ID. A function subscribed to this in ML2 then calls
+the provisioning_blocks module emits a callback PROVISIONING_COMPLETE   （最后一个块被移除，事件PROVISIONING_COMPLETE将触发，
+event with the port ID. A function subscribed to this in ML2 then calls      注册的函数将更为active)
 update_port_status to set the port to ACTIVE.
 
 At this point the normal notification is emitted to Nova allowing the

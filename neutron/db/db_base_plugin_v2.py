@@ -1219,6 +1219,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                 raise exc.MacAddressInUse(net_id=port_data['network_id'],
                                           mac=mac_address)
         else:
+            #生成mac地址
             mac_address = self._generate_mac()
         #在数据库中添加记录
         db_port = models_v2.Port(mac_address=mac_address, **port_data)

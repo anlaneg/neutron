@@ -106,11 +106,13 @@ class NeutronObject(obj_base.VersionedObject,
         self.obj_set_defaults()
 
     def _synthetic_fields_items(self):
+        #遍历所有synthetic_fields
         for field in self.synthetic_fields:
             if field in self:
                 yield field, getattr(self, field)
 
     def to_dict(self):
+        #自身内容转换为dict格式
         dict_ = {}
         # not using obj_to_primitive because it skips extra fields
         for name, value in self.items():

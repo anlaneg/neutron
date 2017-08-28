@@ -429,6 +429,7 @@ class Controller(object):
                 # it is then deleted
 
     def create(self, request, body=None, **kwargs):
+        #资源创建
         self._notifier.info(request.context,
                             self._resource + '.create.start',
                             body)
