@@ -37,6 +37,7 @@ def _init_configuration():
 
 
 def boot_server(server_func):
+    #初始化配置
     _init_configuration()
     try:
         server_func()

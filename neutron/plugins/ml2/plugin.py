@@ -1078,6 +1078,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
     @db_api.retry_if_session_inactive()
     def create_subnet(self, context, subnet):
         self._before_create_subnet(context, subnet)
+        #创建subnet
         result, mech_context = self._create_subnet_db(context, subnet)
         return self._after_create_subnet(context, result, mech_context)
 
