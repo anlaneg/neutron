@@ -357,9 +357,11 @@ class OVSBridge(BaseOVS):
 
     @_ovsdb_retry
     def _get_datapath_id(self):
+        #列出桥的datapath_id
         return self.db_get_val('Bridge', self.br_name, 'datapath_id')
 
     def get_datapath_id(self):
+        #返回桥的datapath_id
         try:
             return self._get_datapath_id()
         except tenacity.RetryError:
@@ -497,6 +499,7 @@ class OVSBridge(BaseOVS):
     def get_port_stats(self, port_name):
         return self.db_get_val("Interface", port_name, "statistics")
 
+    #列出指定ports或者所有ports的属性
     def get_ports_attributes(self, table, columns=None, ports=None,
                              check_error=True, log_errors=True,
                              if_exists=False):
@@ -541,6 +544,7 @@ class OVSBridge(BaseOVS):
                 pass
         return port_map
 
+    #列出所有本桥上相应的接口id
     def get_vif_port_set(self):
         edge_ports = set()
         #列出所有Interface,并相应给定的相应列
@@ -581,6 +585,7 @@ class OVSBridge(BaseOVS):
         """
         results = self.get_ports_attributes(
             'Port', columns=['name', 'tag'], if_exists=True)
+        #列出port上对应的tag信息（vlan信息）
         return {p['name']: p['tag'] for p in results}
 
     def get_vifs_by_ids(self, port_ids):

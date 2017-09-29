@@ -176,6 +176,7 @@ def get_port(context, port_id):
 
 @db_api.context_manager.reader
 def get_port_from_device_mac(context, device_mac):
+    #通过mac地址查找指定port
     LOG.debug("get_port_from_device_mac() called for mac %s", device_mac)
     ports = port_obj.Port.get_objects(context, mac_address=device_mac)
     return ports.pop() if ports else None

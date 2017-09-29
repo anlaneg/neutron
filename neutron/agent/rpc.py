@@ -144,6 +144,7 @@ class PluginApi(object):
         return cctxt.call(context, 'update_device_up', device=device,
                           agent_id=agent_id, host=host)
 
+    #更新设备列表
     def update_device_list(self, context, devices_up, devices_down,
                            agent_id, host):
         cctxt = self.client.prepare(version='1.5')

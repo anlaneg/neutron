@@ -36,9 +36,9 @@ class OVSIntegrationBridge(ovs_bridge.OVSAgentBridge):
     #集成桥默认配置
     def setup_default_table(self):
         #标记为normal状态
-        self.setup_canary_table()
-        self.install_goto(dest_table_id=constants.TRANSIENT_TABLE)
-        self.install_normal(table_id=constants.TRANSIENT_TABLE, priority=3)
+        self.setup_canary_table() #canary表默认丢弃
+        self.install_goto(dest_table_id=constants.TRANSIENT_TABLE) #0号表默认查TRANSIENT_TABLE
+        self.install_normal(table_id=constants.TRANSIENT_TABLE, priority=3) #TRANSIENT_TABLE默认为normal方式转发
         #将arp_spoof表置为drop状态（防arp攻击）
         self.install_drop(table_id=constants.ARP_SPOOF_TABLE)
 

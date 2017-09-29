@@ -30,6 +30,7 @@ class OVSPhysicalBridge(ovs_bridge.OVSAgentBridge,
     dvr_process_next_table_id = constants.LOCAL_VLAN_TRANSLATION
 
     def setup_default_table(self):
+        #指定为normal格式
         self.install_normal()
 
     def provision_local_vlan(self, port, lvid, segmentation_id, distributed):

@@ -245,8 +245,10 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
                   {'device': device, 'agent_id': agent_id})
         plugin = directory.get_plugin()
         port_id = plugin._device_to_port_id(rpc_context, device)
+        #此接口在此host上出现，将其绑定到此host上。
         port = plugin.port_bound_to_host(rpc_context, port_id, host)
         if host and not port:
+            #此接口未绑定信息
             LOG.debug("Device %(device)s not bound to the"
                       " agent host %(host)s",
                       {'device': device, 'host': host})
@@ -261,9 +263,11 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
             else:
                 if port.device_owner.startswith(
                         n_const.DEVICE_OWNER_COMPUTE_PREFIX):
+                    #接口是vm对应的接口，通知nova,接口已出现在ovs上。
                     plugin.nova_notifier.notify_port_active_direct(port)
                     return
         else:
+            #已绑定，通知状态为active
             self.update_port_status_to_active(port, rpc_context, port_id, host)
         self.notify_l2pop_port_wiring(port_id, rpc_context,
                                       n_const.PORT_STATUS_ACTIVE, host)
@@ -337,6 +341,7 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
         failed_devices_down = []
         devices = kwargs.get('devices_up')
         if devices:
+            #置device相关的设备up
             for device in devices:
                 try:
                     self.update_device_up(
@@ -351,6 +356,7 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
 
         devices = kwargs.get('devices_down')
         if devices:
+            #置device相关的设备down
             for device in devices:
                 try:
                     dev = self.update_device_down(

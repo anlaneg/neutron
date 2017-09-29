@@ -1839,6 +1839,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
     @db_api.retry_if_session_inactive()
     def port_bound_to_host(self, context, port_id, host):
+        #如果此接口已绑定在host上，则返回port_id对应的port
+        #如果此接口未绑定在host上，则返回None
         if not host:
             return
         port = db.get_port(context, port_id)
@@ -1846,14 +1848,17 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             LOG.debug("No Port match for: %s", port_id)
             return
         if port['device_owner'] == const.DEVICE_OWNER_DVR_INTERFACE:
+            #接口是分布式路由器的接口，获取此port的binding信息
             bindings = db.get_distributed_port_bindings(context,
                                                         port_id)
             for b in bindings:
                 if b.host == host:
                     return port
             LOG.debug("No binding found for DVR port %s", port['id'])
+            #没有绑定返回NULL
             return
         else:
+            #接口是普通接口，获取此接口binding信息
             port_host = db.get_port_binding_host(context, port_id)
             return port if (port_host == host) else None
 
@@ -1879,13 +1884,16 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         # of device prefixes to strip.
         for prefix in n_const.INTERFACE_PREFIXES:
             if device.startswith(prefix):
+                #返回port_id
                 return device[len(prefix):]
         # REVISIT(irenab): Consider calling into bound MD to
         # handle the get_device_details RPC
         if not uuidutils.is_uuid_like(device):
             port = db.get_port_from_device_mac(context, device)
             if port:
+                #返回设备id
                 return port.id
+        #设备id就是uuid,直接返回
         return device
 
     def filter_hosts_with_network_access(

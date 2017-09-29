@@ -217,6 +217,7 @@ class Notifier(object):
 
     def send_port_status(self, mapper, connection, port):
         event = getattr(port, "_notify_event", None)
+        #将事件加入
         self.batch_notifier.queue_event(event)
         port._notify_event = None
 
@@ -232,13 +233,14 @@ class Notifier(object):
             return
 
         port._notify_event = (
-            {'server_uuid': port.device_id,
-             'name': VIF_PLUGGED,
+            {'server_uuid': port.device_id,#属于那个vm
+             'name': VIF_PLUGGED,#事件名称
              'status': 'completed',
              'tag': port.id})
         self.send_port_status(None, None, port)
 
     def send_events(self, batched_events):
+        #批量发送事件
         LOG.debug("Sending events: %s", batched_events)
         try:
             response = self.nclient.server_external_events.create(
