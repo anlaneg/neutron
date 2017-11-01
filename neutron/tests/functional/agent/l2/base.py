@@ -31,7 +31,6 @@ from neutron.common import utils
 from neutron.conf.agent import common as agent_config
 from neutron.conf import common as common_config
 from neutron.conf.plugins.ml2.drivers import ovs_conf
-from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2.drivers.openvswitch.agent.common import constants
 from neutron.plugins.ml2.drivers.openvswitch.agent.openflow.ovs_ofctl \
     import br_int
@@ -70,8 +69,8 @@ class OVSAgentTestFramework(base.BaseOVSLinuxTestCase):
     def _get_config_opts(self):
         config = cfg.ConfigOpts()
         config.register_opts(common_config.core_opts)
-        config.register_opts(interface.OPTS)
         ovs_conf.register_ovs_agent_opts(config)
+        agent_config.register_interface_opts(config)
         agent_config.register_interface_driver_opts_helper(config)
         agent_config.register_agent_state_opts_helper(config)
         ext_manager.register_opts(config)
@@ -100,7 +99,7 @@ class OVSAgentTestFramework(base.BaseOVSLinuxTestCase):
     def create_agent(self, create_tunnels=True, ancillary_bridge=None,
                      local_ip='192.168.10.1'):
         if create_tunnels:
-            tunnel_types = [p_const.TYPE_VXLAN]
+            tunnel_types = [n_const.TYPE_VXLAN]
         else:
             tunnel_types = None
         bridge_mappings = ['physnet:%s' % self.br_phys]
@@ -110,8 +109,9 @@ class OVSAgentTestFramework(base.BaseOVSLinuxTestCase):
         self.config.set_override('bridge_mappings', bridge_mappings, "OVS")
         # Physical bridges should be created prior to running
         self._bridge_classes()['br_phys'](self.br_phys).create()
+        ext_mgr = ext_manager.L2AgentExtensionsManager(self.config)
         agent = ovs_agent.OVSNeutronAgent(self._bridge_classes(),
-                                          self.config)
+                                          ext_mgr, self.config)
         self.addCleanup(self.ovs.delete_bridge, self.br_int)
         if tunnel_types:
             self.addCleanup(self.ovs.delete_bridge, self.br_tun)

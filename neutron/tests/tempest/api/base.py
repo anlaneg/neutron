@@ -17,6 +17,8 @@ import functools
 import math
 
 import netaddr
+from neutron_lib import constants as const
+from tempest.common import utils as tutils
 from tempest.lib.common.utils import data_utils
 from tempest.lib import exceptions as lib_exc
 from tempest import test
@@ -77,7 +79,7 @@ class BaseNetworkTest(test.BaseTestCase):
         if cls._ip_version == 6 and not CONF.network_feature_enabled.ipv6:
             raise cls.skipException("IPv6 Tests are disabled.")
         for req_ext in getattr(cls, 'required_extensions', []):
-            if not test.is_extension_enabled(req_ext, 'network'):
+            if not tutils.is_extension_enabled(req_ext, 'network'):
                 msg = "%s extension not enabled." % req_ext
                 raise cls.skipException(msg)
 
@@ -99,6 +101,7 @@ class BaseNetworkTest(test.BaseTestCase):
         cls.networks = []
         cls.admin_networks = []
         cls.subnets = []
+        cls.admin_subnets = []
         cls.ports = []
         cls.routers = []
         cls.floating_ips = []
@@ -114,18 +117,11 @@ class BaseNetworkTest(test.BaseTestCase):
         cls.subnetpools = []
         cls.admin_subnetpools = []
         cls.security_groups = []
+        cls.projects = []
 
     @classmethod
     def resource_cleanup(cls):
         if CONF.service_available.neutron:
-            # Clean up QoS rules
-            for qos_rule in cls.qos_rules:
-                cls._try_delete_resource(cls.admin_client.delete_qos_rule,
-                                         qos_rule['id'])
-            # Clean up QoS policies
-            for qos_policy in cls.qos_policies:
-                cls._try_delete_resource(cls.admin_client.delete_qos_policy,
-                                         qos_policy['id'])
             # Clean up floating IPs
             for floating_ip in cls.floating_ips:
                 cls._try_delete_resource(cls.client.delete_floatingip,
@@ -162,6 +158,10 @@ class BaseNetworkTest(test.BaseTestCase):
             for subnet in cls.subnets:
                 cls._try_delete_resource(cls.client.delete_subnet,
                                          subnet['id'])
+            # Clean up admin subnets
+            for subnet in cls.admin_subnets:
+                cls._try_delete_resource(cls.admin_client.delete_subnet,
+                                         subnet['id'])
             # Clean up networks
             for network in cls.networks:
                 cls._try_delete_resource(cls.client.delete_network,
@@ -194,6 +194,22 @@ class BaseNetworkTest(test.BaseTestCase):
                     cls.admin_client.delete_address_scope,
                     address_scope['id'])
 
+            for project in cls.projects:
+                cls._try_delete_resource(
+                    cls.identity_admin_client.delete_project,
+                    project['id'])
+
+            # Clean up QoS rules
+            for qos_rule in cls.qos_rules:
+                cls._try_delete_resource(cls.admin_client.delete_qos_rule,
+                                         qos_rule['id'])
+            # Clean up QoS policies
+            # as all networks and ports are already removed, QoS policies
+            # shouldn't be "in use"
+            for qos_policy in cls.qos_policies:
+                cls._try_delete_resource(cls.admin_client.delete_qos_policy,
+                                         qos_policy['id'])
+
         super(BaseNetworkTest, cls).resource_cleanup()
 
     @classmethod
@@ -224,7 +240,10 @@ class BaseNetworkTest(test.BaseTestCase):
         client = client or cls.client
         body = client.create_network(name=network_name, **kwargs)
         network = body['network']
-        cls.networks.append(network)
+        if client is cls.client:
+            cls.networks.append(network)
+        else:
+            cls.admin_networks.append(network)
         return network
 
     @classmethod
@@ -302,7 +321,10 @@ class BaseNetworkTest(test.BaseTestCase):
             message = 'Available CIDR for subnet creation could not be found'
             raise ValueError(message)
         subnet = body['subnet']
-        cls.subnets.append(subnet)
+        if client is cls.client:
+            cls.subnets.append(subnet)
+        else:
+            cls.admin_subnets.append(subnet)
         return subnet
 
     @classmethod
@@ -370,10 +392,10 @@ class BaseNetworkTest(test.BaseTestCase):
 
     @classmethod
     def create_qos_policy(cls, name, description=None, shared=False,
-                          tenant_id=None):
+                          tenant_id=None, is_default=False):
         """Wrapper utility that returns a test QoS policy."""
         body = cls.admin_client.create_qos_policy(
-            name, description, shared, tenant_id)
+            name, description, shared, tenant_id, is_default)
         qos_policy = body['policy']
         cls.qos_policies.append(qos_policy)
         return qos_policy
@@ -381,7 +403,7 @@ class BaseNetworkTest(test.BaseTestCase):
     @classmethod
     def create_qos_bandwidth_limit_rule(cls, policy_id, max_kbps,
                                         max_burst_kbps,
-                                        direction=constants.EGRESS_DIRECTION):
+                                        direction=const.EGRESS_DIRECTION):
         """Wrapper utility that returns a test QoS bandwidth limit rule."""
         body = cls.admin_client.create_bandwidth_limit_rule(
             policy_id, max_kbps, max_burst_kbps, direction)
@@ -392,7 +414,8 @@ class BaseNetworkTest(test.BaseTestCase):
     @classmethod
     def delete_router(cls, router):
         body = cls.client.list_router_interfaces(router['id'])
-        interfaces = body['ports']
+        interfaces = [port for port in body['ports']
+                      if port['device_owner'] in const.ROUTER_INTERFACE_OWNERS]
         for i in interfaces:
             try:
                 cls.client.remove_router_interface_with_subnet_id(
@@ -420,6 +443,22 @@ class BaseNetworkTest(test.BaseTestCase):
             body = cls.client.create_subnetpool(name, **kwargs)
             cls.subnetpools.append(body['subnetpool'])
         return body['subnetpool']
+
+    @classmethod
+    def create_project(cls, name=None, description=None):
+        test_project = name or data_utils.rand_name('test_project_')
+        test_description = description or data_utils.rand_name('desc_')
+        project = cls.identity_admin_client.create_project(
+            name=test_project,
+            description=test_description)['project']
+        cls.projects.append(project)
+        return project
+
+    @classmethod
+    def create_security_group(cls, name, **kwargs):
+        body = cls.client.create_security_group(name=name, **kwargs)
+        cls.security_groups.append(body['security_group'])
+        return body['security_group']
 
 
 class BaseAdminNetworkTest(BaseNetworkTest):
@@ -528,7 +567,7 @@ def require_qos_rule_type(rule_type):
 def _require_sorting(f):
     @functools.wraps(f)
     def inner(self, *args, **kwargs):
-        if not test.is_extension_enabled("sorting", "network"):
+        if not tutils.is_extension_enabled("sorting", "network"):
             self.skipTest('Sorting feature is required')
         return f(self, *args, **kwargs)
     return inner
@@ -537,7 +576,7 @@ def _require_sorting(f):
 def _require_pagination(f):
     @functools.wraps(f)
     def inner(self, *args, **kwargs):
-        if not test.is_extension_enabled("pagination", "network"):
+        if not tutils.is_extension_enabled("pagination", "network"):
             self.skipTest('Pagination feature is required')
         return f(self, *args, **kwargs)
     return inner

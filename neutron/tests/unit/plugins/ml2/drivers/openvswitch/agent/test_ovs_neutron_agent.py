@@ -16,6 +16,7 @@ import sys
 import time
 
 import mock
+from neutron_lib.agent import constants as agent_consts
 from neutron_lib import constants as n_const
 from oslo_config import cfg
 from oslo_log import log
@@ -27,9 +28,7 @@ from neutron.agent.common import ovs_lib
 from neutron.agent.common import utils
 from neutron.agent.linux import async_process
 from neutron.agent.linux import ip_lib
-from neutron.common import constants as c_const
 from neutron.common import rpc as n_rpc
-from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2.drivers.l2pop import rpc as l2pop_rpc
 from neutron.plugins.ml2.drivers.openvswitch.agent.common import constants
 from neutron.plugins.ml2.drivers.openvswitch.agent import ovs_neutron_agent \
@@ -83,7 +82,7 @@ class ValidateTunnelTypes(ovs_test_base.OVSAgentConfigTestBase):
 
     def test_validate_tunnel_types_succeeds(self):
         cfg.CONF.set_override('local_ip', '10.10.10.10', group='OVS')
-        cfg.CONF.set_override('tunnel_types', [p_const.TYPE_GRE],
+        cfg.CONF.set_override('tunnel_types', [n_const.TYPE_GRE],
                               group='AGENT')
         self.mod_agent.validate_tunnel_config(cfg.CONF.AGENT.tunnel_types,
                                               cfg.CONF.OVS.local_ip)
@@ -143,8 +142,9 @@ class TestOvsNeutronAgent(object):
                 mock.patch(
                     'neutron.agent.common.ovs_lib.OVSBridge.' 'get_vif_ports',
                     return_value=[]):
+            ext_manager = mock.Mock()
             agent = self.mod_agent.OVSNeutronAgent(self._bridge_classes(),
-                                                   cfg.CONF)
+                                                   ext_manager, cfg.CONF)
             agent.tun_br = self.br_tun_cls(br_name='br-tun')
             return agent
 
@@ -204,8 +204,9 @@ class TestOvsNeutronAgent(object):
             cfg.CONF.set_override('datapath_type',
                                   expected,
                                   group='OVS')
+            ext_manager = mock.Mock()
             self.agent = self.mod_agent.OVSNeutronAgent(self._bridge_classes(),
-                                                        cfg.CONF)
+                                                        ext_manager, cfg.CONF)
             self.assertEqual(expected, self.agent.int_br.datapath_type)
 
     def test_agent_type_ovs(self):
@@ -215,13 +216,13 @@ class TestOvsNeutronAgent(object):
                          self.agent.agent_state['agent_type'])
 
     def test_agent_available_local_vlans(self):
-        expected = [p_const.MIN_VLAN_TAG,
-                    p_const.MIN_VLAN_TAG + 1,
-                    p_const.MAX_VLAN_TAG - 1,
-                    p_const.MAX_VLAN_TAG]
-        exception = [p_const.MIN_VLAN_TAG - 1,
-                     p_const.MAX_VLAN_TAG + 1,
-                     p_const.MAX_VLAN_TAG + 2]
+        expected = [n_const.MIN_VLAN_TAG,
+                    n_const.MIN_VLAN_TAG + 1,
+                    n_const.MAX_VLAN_TAG - 1,
+                    n_const.MAX_VLAN_TAG]
+        exception = [n_const.MIN_VLAN_TAG - 1,
+                     n_const.MAX_VLAN_TAG + 1,
+                     n_const.MAX_VLAN_TAG + 2]
         available_vlan = self.agent.available_local_vlans
         for tag in expected:
             self.assertIn(tag, available_vlan)
@@ -248,8 +249,9 @@ class TestOvsNeutronAgent(object):
             cfg.CONF.set_override('agent_type',
                                   expected,
                                   group='AGENT')
+            ext_manager = mock.Mock()
             self.agent = self.mod_agent.OVSNeutronAgent(self._bridge_classes(),
-                                                        cfg.CONF)
+                                                        ext_manager, cfg.CONF)
             self.assertEqual(expected,
                              self.agent.agent_state['agent_type'])
 
@@ -989,7 +991,11 @@ class TestOvsNeutronAgent(object):
                                   "treat_devices_removed",
                                   return_value=(
                                       failed_devices[
-                                          'removed'])) as device_removed:
+                                          'removed'])) as device_removed,\
+                mock.patch.object(self.agent,
+                                  "treat_devices_skipped",
+                                  return_value=(
+                                      skipped_devices)) as device_skipped:
             self.assertEqual(
                 failed_devices,
                 self.agent.process_network_ports(port_info, False))
@@ -1003,6 +1009,8 @@ class TestOvsNeutronAgent(object):
                     devices_added_updated, False)
             if port_info.get('removed', set()):
                 device_removed.assert_called_once_with(port_info['removed'])
+            if skipped_devices:
+                device_skipped.assert_called_once_with(set(skipped_devices))
 
     def test_process_network_ports(self):
         self._test_process_network_ports(
@@ -1086,7 +1094,7 @@ class TestOvsNeutronAgent(object):
     def test_report_state_revived(self):
         with mock.patch.object(self.agent.state_rpc,
                                "report_state") as report_st:
-            report_st.return_value = c_const.AGENT_REVIVED
+            report_st.return_value = agent_consts.AGENT_REVIVED
             self.agent._report_state()
             self.assertTrue(self.agent.fullsync)
 
@@ -1649,14 +1657,14 @@ class TestOvsNeutronAgent(object):
                 mock.patch.object(self.mod_agent.LOG, 'error') as log_error_fn:
             self.agent.local_ip = '1.2.3.4'
             ofport = self.agent._setup_tunnel_port(
-                self.agent.tun_br, 'gre-1', remote_ip, p_const.TYPE_GRE)
+                self.agent.tun_br, 'gre-1', remote_ip, n_const.TYPE_GRE)
             add_tunnel_port_fn.assert_called_once_with(
-                'gre-1', remote_ip, self.agent.local_ip, p_const.TYPE_GRE,
+                'gre-1', remote_ip, self.agent.local_ip, n_const.TYPE_GRE,
                 self.agent.vxlan_udp_port, self.agent.dont_fragment,
                 self.agent.tunnel_csum)
             log_error_fn.assert_called_once_with(
                 _("Failed to set-up %(type)s tunnel port to %(ip)s"),
-                {'type': p_const.TYPE_GRE, 'ip': remote_ip})
+                {'type': n_const.TYPE_GRE, 'ip': remote_ip})
             self.assertEqual(0, ofport)
 
     def test_setup_tunnel_port_invalid_address_mismatch(self):
@@ -1664,7 +1672,7 @@ class TestOvsNeutronAgent(object):
         with mock.patch.object(self.mod_agent.LOG, 'error') as log_error_fn:
             self.agent.local_ip = '1.2.3.4'
             ofport = self.agent._setup_tunnel_port(
-                self.agent.tun_br, 'gre-1', remote_ip, p_const.TYPE_GRE)
+                self.agent.tun_br, 'gre-1', remote_ip, n_const.TYPE_GRE)
             log_error_fn.assert_called_once_with(
                 _("IP version mismatch, cannot create tunnel: "
                   "local_ip=%(lip)s remote_ip=%(rip)s"),
@@ -1676,7 +1684,7 @@ class TestOvsNeutronAgent(object):
         with mock.patch.object(self.mod_agent.LOG, 'error') as log_error_fn:
             self.agent.local_ip = '1.2.3.4.5'
             ofport = self.agent._setup_tunnel_port(
-                self.agent.tun_br, 'gre-1', remote_ip, p_const.TYPE_GRE)
+                self.agent.tun_br, 'gre-1', remote_ip, n_const.TYPE_GRE)
             log_error_fn.assert_called_once_with(
                 _("Invalid local or remote IP, cannot create tunnel: "
                   "local_ip=%(lip)s remote_ip=%(rip)s"),
@@ -1694,14 +1702,14 @@ class TestOvsNeutronAgent(object):
             self.agent.tunnel_csum = False
             self.agent.local_ip = '2.3.4.5'
             ofport = self.agent._setup_tunnel_port(
-                self.agent.tun_br, 'gre-1', remote_ip, p_const.TYPE_GRE)
+                self.agent.tun_br, 'gre-1', remote_ip, n_const.TYPE_GRE)
             add_tunnel_port_fn.assert_called_once_with(
-                'gre-1', remote_ip, self.agent.local_ip, p_const.TYPE_GRE,
+                'gre-1', remote_ip, self.agent.local_ip, n_const.TYPE_GRE,
                 self.agent.vxlan_udp_port, self.agent.dont_fragment,
                 self.agent.tunnel_csum)
             log_error_fn.assert_called_once_with(
                 _("Failed to set-up %(type)s tunnel port to %(ip)s"),
-                {'type': p_const.TYPE_GRE, 'ip': remote_ip})
+                {'type': n_const.TYPE_GRE, 'ip': remote_ip})
             self.assertEqual(0, ofport)
 
     def test_setup_tunnel_port_error_negative_tunnel_csum(self):
@@ -1715,14 +1723,14 @@ class TestOvsNeutronAgent(object):
             self.agent.tunnel_csum = True
             self.agent.local_ip = '2.3.4.5'
             ofport = self.agent._setup_tunnel_port(
-                self.agent.tun_br, 'gre-1', remote_ip, p_const.TYPE_GRE)
+                self.agent.tun_br, 'gre-1', remote_ip, n_const.TYPE_GRE)
             add_tunnel_port_fn.assert_called_once_with(
-                'gre-1', remote_ip, self.agent.local_ip, p_const.TYPE_GRE,
+                'gre-1', remote_ip, self.agent.local_ip, n_const.TYPE_GRE,
                 self.agent.vxlan_udp_port, self.agent.dont_fragment,
                 self.agent.tunnel_csum)
             log_error_fn.assert_called_once_with(
                 _("Failed to set-up %(type)s tunnel port to %(ip)s"),
-                {'type': p_const.TYPE_GRE, 'ip': remote_ip})
+                {'type': n_const.TYPE_GRE, 'ip': remote_ip})
             self.assertEqual(0, ofport)
 
     def test_tunnel_sync_with_ml2_plugin(self):
@@ -2214,8 +2222,9 @@ class AncillaryBridgesTest(object):
                 mock.patch(
                     'neutron.agent.common.ovs_lib.OVSBridge.' 'get_vif_ports',
                     return_value=[]):
+            ext_manager = mock.Mock()
             self.agent = self.mod_agent.OVSNeutronAgent(self._bridge_classes(),
-                                                        cfg.CONF)
+                                                        ext_manager, cfg.CONF)
             self.assertEqual(len(ancillary), len(self.agent.ancillary_brs))
             if ancillary:
                 bridges = [br.br_name for br in self.agent.ancillary_brs]
@@ -2251,8 +2260,9 @@ class AncillaryBridgesTest(object):
                 mock.patch('neutron.agent.common.ovs_lib.OVSBridge.'
                            'get_vif_port_set',
                            return_value=vif_port_set):
+            ext_manager = mock.Mock()
             self.agent = self.mod_agent.OVSNeutronAgent(self._bridge_classes(),
-                                                        cfg.CONF)
+                                                        ext_manager, cfg.CONF)
             return self.agent.scan_ancillary_ports(registered_ports, sync)
 
     def test_scan_ancillary_ports_returns_cur_only_for_unchanged_ports(self):
@@ -2325,8 +2335,9 @@ class TestOvsDvrNeutronAgent(object):
                 mock.patch(
                     'neutron.agent.common.ovs_lib.OVSBridge.' 'get_vif_ports',
                     return_value=[]):
+            ext_manager = mock.Mock()
             self.agent = self.mod_agent.OVSNeutronAgent(self._bridge_classes(),
-                                                       cfg.CONF)
+                                                       ext_manager, cfg.CONF)
             self.agent.tun_br = self.br_tun_cls(br_name='br-tun')
         self.agent.sg_agent = mock.Mock()
 
@@ -2412,7 +2423,7 @@ class TestOvsDvrNeutronAgent(object):
         self._compute_port.vif_mac = '77:88:99:00:11:22'
         physical_network = self._physical_network
         segmentation_id = self._segmentation_id
-        network_type = p_const.TYPE_VLAN
+        network_type = n_const.TYPE_VLAN
         int_br = mock.create_autospec(self.agent.int_br)
         tun_br = mock.create_autospec(self.agent.tun_br)
         phys_br = mock.create_autospec(self.br_phys_cls('br-phys'))
@@ -2498,7 +2509,7 @@ class TestOvsDvrNeutronAgent(object):
         else:
             gateway_ip = '2001:100::1'
             cidr = '2001:100::0/64'
-        network_type = p_const.TYPE_VXLAN
+        network_type = n_const.TYPE_VXLAN
         self._port.vif_mac = gateway_mac = 'aa:bb:cc:11:22:33'
         self._compute_port.vif_mac = '77:88:99:00:11:22'
         physical_network = self._physical_network

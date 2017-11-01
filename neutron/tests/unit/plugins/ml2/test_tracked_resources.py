@@ -15,6 +15,7 @@ from neutron_lib import context
 from oslo_utils import uuidutils
 
 from neutron.db.quota import api as quota_db_api
+from neutron.tests import tools
 from neutron.tests.unit.api import test_extensions
 from neutron.tests.unit.extensions import test_l3
 from neutron.tests.unit.extensions import test_securitygroup
@@ -36,15 +37,6 @@ class BaseTestTrackedResources(test_plugin.Ml2PluginV2TestCase,
 
     def setUp(self):
         self.ctx = context.get_admin_context()
-        # Prevent noise from default security group operations
-        def_sec_group_patch = mock.patch(
-            'neutron.db.securitygroups_db.SecurityGroupDbMixin.'
-            '_ensure_default_security_group')
-        def_sec_group_patch.start()
-        get_sec_group_port_patch = mock.patch(
-            'neutron.db.securitygroups_db.SecurityGroupDbMixin.'
-            '_get_security_groups_on_port')
-        get_sec_group_port_patch.start()
         super(BaseTestTrackedResources, self).setUp()
         self._tenant_id = uuidutils.generate_uuid()
 
@@ -56,6 +48,15 @@ class BaseTestTrackedResources(test_plugin.Ml2PluginV2TestCase,
 class BaseTestEventHandler(object):
 
     def setUp(self):
+        # Prevent noise from default security group operations
+        def_sec_group_patch = mock.patch(
+            'neutron.db.securitygroups_db.SecurityGroupDbMixin.'
+            '_ensure_default_security_group')
+        def_sec_group_patch.start()
+        get_sec_group_port_patch = mock.patch(
+            'neutron.db.securitygroups_db.SecurityGroupDbMixin.'
+            '_get_security_groups_on_port')
+        get_sec_group_port_patch.start()
         handler_patch = mock.patch(
             'neutron.quota.resource.TrackedResource._db_event_handler')
         self.handler_mock = handler_patch.start()
@@ -161,6 +162,7 @@ class TestL3ResourcesEventHandler(BaseTestEventHandler,
 
     def setUp(self):
         super(TestL3ResourcesEventHandler, self).setUp()
+        self.useFixture(tools.AttributeMapMemento())
         ext_mgr = test_l3.L3TestExtensionManager()
         self.ext_api = test_extensions.setup_extensions_middleware(ext_mgr)
 

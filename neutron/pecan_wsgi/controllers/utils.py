@@ -18,15 +18,21 @@ import copy
 import functools
 
 from neutron_lib import constants
+from oslo_log import log as logging
+from oslo_utils import excutils
 import pecan
 from pecan import request
 
+from neutron._i18n import _
 from neutron.api import api_common
 from neutron.api.v2 import attributes as api_attributes
 from neutron.db import api as db_api
 from neutron import manager
+from neutron_lib import exceptions
 
 # Utility functions for Pecan controllers.
+
+LOG = logging.getLogger(__name__)
 
 
 class Fakecode(object):
@@ -140,6 +146,10 @@ class NeutronPecanController(object):
             self._mandatory_fields = set([field for (field, data) in
                                           self.resource_info.items() if
                                           data.get('required_by_policy')])
+            if 'tenant_id' in self._mandatory_fields:
+                # ensure that project_id is queried in the database when
+                # tenant_id is required
+                self._mandatory_fields.add('project_id')
         else:
             self._mandatory_fields = set()
         self.allow_pagination = allow_pagination
@@ -152,6 +162,11 @@ class NeutronPecanController(object):
             self.plugin)
         self.native_sorting = api_common.is_native_sorting_supported(
             self.plugin)
+        if self.allow_pagination and self.native_pagination:
+            if not self.native_sorting:
+                raise exceptions.Invalid(
+                    _("Native pagination depends on native sorting")
+                )
         self.primary_key = self._get_primary_key()
 
         self.parent = parent_resource
@@ -177,11 +192,13 @@ class NeutronPecanController(object):
     def build_field_list(self, request_fields):
         added_fields = []
         combined_fields = []
-        if request_fields:
-            req_fields_set = set(request_fields)
+        req_fields_set = {f for f in request_fields if f}
+        if req_fields_set:
             added_fields = self._mandatory_fields - req_fields_set
             combined_fields = req_fields_set | self._mandatory_fields
-        return list(combined_fields), list(added_fields)
+        # field sorting is to match old behavior of legacy API and to make
+        # this drop-in compatible with the old API unit tests
+        return sorted(combined_fields), list(added_fields)
 
     @property
     def plugin(self):
@@ -223,8 +240,32 @@ class NeutronPecanController(object):
 
     @property
     def plugin_bulk_creator(self):
-        return getattr(self.plugin,
-                       '%s_bulk' % self._plugin_handlers[self.CREATE])
+        native = getattr(self.plugin,
+                         '%s_bulk' % self._plugin_handlers[self.CREATE],
+                         None)
+        # NOTE(kevinbenton): this flag is just to make testing easier since we
+        # don't have any in-tree plugins without native bulk support
+        if getattr(self.plugin, '_FORCE_EMULATED_BULK', False) or not native:
+            return self._emulated_bulk_creator
+        return native
+
+    def _emulated_bulk_creator(self, context, **kwargs):
+        objs = []
+        body = kwargs[self.collection]
+        try:
+            for item in body[self.collection]:
+                objs.append(self.plugin_creator(context, item))
+            return objs
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                for obj in objs:
+                    try:
+                        self.plugin_deleter(context, obj['id'])
+                    except Exception:
+                        LOG.exception("Unable to undo bulk create for "
+                                      "%(resource)s %(id)s",
+                                      {'resource': self.collection,
+                                       'id': obj['id']})
 
     @property
     def plugin_deleter(self):
@@ -301,8 +342,8 @@ class ShimItemController(NeutronPecanController):
         shim_request = ShimRequest(request.context['neutron_context'])
         kwargs = request.context['uri_identifiers']
         try:
-            kwargs['body'] = request.json
-        except ValueError:
+            kwargs['body'] = request.context['request_data']
+        except KeyError:
             pass
         result = self.controller_update(shim_request, self.item,
                                         **kwargs)
@@ -353,7 +394,7 @@ class ShimCollectionsController(NeutronPecanController):
         uri_identifiers = request.context['uri_identifiers']
         args = [shim_request]
         if request.method == 'PUT':
-            args.append(request.json)
+            args.append(request.context.get('request_data'))
         result = controller_method(*args, **uri_identifiers)
         if not status:
             self._set_response_code(result, 'index')
@@ -367,7 +408,8 @@ class ShimCollectionsController(NeutronPecanController):
             pecan.abort(405)
         shim_request = ShimRequest(request.context['neutron_context'])
         uri_identifiers = request.context['uri_identifiers']
-        result = self.controller_create(shim_request, request.json,
+        result = self.controller_create(shim_request,
+                                        request.context.get('request_data'),
                                         **uri_identifiers)
         self._set_response_code(result, 'create')
         return result

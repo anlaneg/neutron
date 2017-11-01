@@ -13,6 +13,7 @@
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
+from neutron_lib.services.qos import constants as qos_consts
 from oslo_log import log as logging
 
 from neutron.api.rpc.callbacks import events as rpc_events
@@ -22,7 +23,6 @@ from neutron.api.rpc.handlers import resources_rpc
 from neutron.common import constants
 from neutron.common import exceptions
 from neutron.objects.qos import policy as policy_object
-from neutron.services.qos import qos_consts
 
 
 LOG = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ class QosServiceDriverManager(object):
         # notify any registered QoS driver that we're ready, those will
         # call the driver manager back with register_driver if they
         # are enabled
-        registry.notify(qos_consts.QOS_PLUGIN, events.AFTER_INIT, self)
+        registry.publish(qos_consts.QOS_PLUGIN, events.AFTER_INIT, self)
 
         if self.rpc_notifications_required:
             self.push_api = resources_rpc.ResourcesPushRpcApi()

@@ -22,7 +22,6 @@ from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging
 
-from neutron.common import constants as n_const
 from neutron.common import rpc as n_rpc
 from neutron.common import topics
 from neutron.common import utils
@@ -36,7 +35,7 @@ class DhcpAgentNotifyAPI(object):
 
     This class implements the client side of an rpc interface.  The server side
     is neutron.agent.dhcp.agent.DhcpAgent.  For more information about changing
-    rpc interfaces, please see doc/source/devref/rpc_api.rst.
+    rpc interfaces, please see doc/source/contributor/internals/rpc_api.rst.
     """
     # It seems dhcp agent does not support bulk operation
     VALID_RESOURCES = ['network', 'subnet', 'port']
@@ -144,7 +143,7 @@ class DhcpAgentNotifyAPI(object):
         return enabled_agents
 
     def _is_reserved_dhcp_port(self, port):
-        return port.get('device_id') == n_const.DEVICE_ID_RESERVED_DHCP_PORT
+        return port.get('device_id') == constants.DEVICE_ID_RESERVED_DHCP_PORT
 
     def _notify_agents(self, context, method, payload, network_id):
         """Notify all the agents that are hosting the network."""

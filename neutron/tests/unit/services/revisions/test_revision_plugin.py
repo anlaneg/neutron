@@ -17,6 +17,7 @@ import netaddr
 from neutron_lib import context as nctx
 from neutron_lib.plugins import constants
 from neutron_lib.plugins import directory
+from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_utils import uuidutils
 from sqlalchemy.orm import session as se
@@ -25,7 +26,6 @@ from webob import exc
 from neutron.db import api as db_api
 from neutron.db import models_v2
 from neutron.objects import ports as port_obj
-from neutron.plugins.ml2 import config
 from neutron.tests.unit.plugins.ml2 import test_plugin
 
 
@@ -44,9 +44,9 @@ class TestRevisionPlugin(test_plugin.Ml2PluginV2TestCase):
         return p
 
     def setUp(self):
-        config.cfg.CONF.set_override('extension_drivers',
-                                     self._extension_drivers,
-                                     group='ml2')
+        cfg.CONF.set_override('extension_drivers',
+                              self._extension_drivers,
+                              group='ml2')
         super(TestRevisionPlugin, self).setUp()
         self.cp = directory.get_plugin()
         self.l3p = directory.get_plugin(constants.L3)
@@ -132,7 +132,9 @@ class TestRevisionPlugin(test_plugin.Ml2PluginV2TestCase):
                 db_api.sqla_remove(se.Session, 'before_commit',
                                    concurrent_increment)
                 # slip in a concurrent update that will bump the revision
-                self._update('ports', port['port']['id'], new)
+                plugin = directory.get_plugin()
+                plugin.update_port(nctx.get_admin_context(),
+                                   port['port']['id'], new)
                 raise db_exc.DBDeadlock()
             db_api.sqla_listen(se.Session, 'before_commit',
                                concurrent_increment)

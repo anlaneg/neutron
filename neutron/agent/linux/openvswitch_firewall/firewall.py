@@ -23,6 +23,7 @@ from oslo_utils import netutils
 from neutron.agent import firewall
 from neutron.agent.linux.openvswitch_firewall import constants as ovsfw_consts
 from neutron.agent.linux.openvswitch_firewall import exceptions
+from neutron.agent.linux.openvswitch_firewall import iptables
 from neutron.agent.linux.openvswitch_firewall import rules
 from neutron.common import constants
 from neutron.plugins.ml2.drivers.openvswitch.agent.common import constants \
@@ -82,11 +83,27 @@ class SecurityGroup(object):
         self.ports = set()
 
     def update_rules(self, rules):
-        """Separate raw and remote rules."""
-        self.raw_rules = [rule for rule in rules
-                          if 'remote_group_id' not in rule]
-        self.remote_rules = [rule for rule in rules
-                             if 'remote_group_id' in rule]
+        """Separate raw and remote rules.
+        If a rule has a protocol field, it is normalized to a number
+        here in order to ease later processing.
+        """
+        self.raw_rules = []
+        self.remote_rules = []
+        for rule in rules:
+            protocol = rule.get('protocol')
+            if protocol is not None:
+                if protocol.isdigit():
+                    rule['protocol'] = int(protocol)
+                elif (rule.get('ethertype') == lib_const.IPv6 and
+                      protocol == lib_const.PROTO_NAME_ICMP):
+                    rule['protocol'] = lib_const.PROTO_NUM_IPV6_ICMP
+                else:
+                    rule['protocol'] = lib_const.IP_PROTOCOL_MAP.get(
+                        protocol, protocol)
+            if 'remote_group_id' in rule:
+                self.remote_rules.append(rule)
+            else:
+                self.raw_rules.append(rule)
 
     def get_ethertype_filtered_addresses(self, ethertype):
         return self.members.get(ethertype, [])
@@ -370,6 +387,9 @@ class OVSFirewallDriver(firewall.FirewallDriver):
         self._drop_all_unmatched_flows()
         self.conj_ip_manager = ConjIPFlowManager(self)
 
+        self.iptables_helper = iptables.Helper(self.int_br.br)
+        self.iptables_helper.load_driver_if_needed()
+
     def security_group_updated(self, action_type, sec_group_ids,
                                device_ids=None):
         """The current driver doesn't make use of this method.
@@ -454,6 +474,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
         return port['device'] in self.sg_port_map.ports
 
     def prepare_port_filter(self, port):
+        self.iptables_helper.cleanup_port(port)
         if not firewall.port_sec_enabled(port):
             self._initialize_egress_no_port_security(port['device'])
             return

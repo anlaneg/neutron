@@ -17,6 +17,7 @@ from collections import defaultdict
 
 from neutron_lib.plugins import constants as lib_const
 from neutron_lib.plugins import directory
+from neutron_lib.utils import runtime
 from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging
@@ -26,7 +27,6 @@ from osprofiler import profiler
 import six
 
 from neutron._i18n import _
-from neutron.common import utils
 from neutron.plugins.common import constants
 
 
@@ -156,8 +156,8 @@ class NeutronManager(object):
         """
 
         try:
-            return utils.load_class_by_alias_or_classname(namespace,
-                    plugin_provider)
+            return runtime.load_class_by_alias_or_classname(namespace,
+                                                            plugin_provider)
         except ImportError:
             with excutils.save_and_reraise_exception():
                 LOG.error("Plugin '%s' not found.", plugin_provider)
@@ -227,7 +227,7 @@ class NeutronManager(object):
                        "desc": plugin_inst.get_plugin_description()})
 
     @classmethod
-    @utils.synchronized("manager")
+    @runtime.synchronized("manager")
     def _create_instance(cls):
         if not cls.has_instance():
             cls._instance = cls()

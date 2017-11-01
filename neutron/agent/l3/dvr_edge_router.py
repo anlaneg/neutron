@@ -283,9 +283,11 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
         """
         fip_cidrs = super(DvrEdgeRouter, self).get_router_cidrs(device)
         centralized_cidrs = set()
-        if self.get_ex_gw_port():
+        # Call _get_centralized_fip_cidr only when snat_namespace exists
+        if self.get_ex_gw_port() and self.snat_namespace.exists():
             centralized_cidrs = self._get_centralized_fip_cidr_set()
-        return fip_cidrs | centralized_cidrs
+        existing_centralized_cidrs = self.centralized_floatingips_set
+        return fip_cidrs | centralized_cidrs | existing_centralized_cidrs
 
     def remove_centralized_floatingip(self, fip_cidr):
         """Function to handle the centralized Floatingip remove."""
@@ -321,8 +323,7 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
         # centralized floatingip configured.
         ip_lib.send_ip_addr_adv_notif(self.snat_namespace.name,
                                       interface_name,
-                                      fip['floating_ip_address'],
-                                      self.agent_conf)
+                                      fip['floating_ip_address'])
         return lib_constants.FLOATINGIP_STATUS_ACTIVE
 
     def _centralized_floating_forward_rules(self, floating_ip, fixed_ip):

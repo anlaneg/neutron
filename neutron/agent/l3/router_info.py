@@ -320,6 +320,9 @@ class RouterInfo(object):
     def add_floating_ip(self, fip, interface_name, device):
         raise NotImplementedError()
 
+    def migrate_centralized_floating_ip(self, fip, interface_name, device):
+        pass
+
     def gateway_redirect_cleanup(self, rtr_interface):
         pass
 
@@ -335,6 +338,9 @@ class RouterInfo(object):
     #返回设备所有ip地址
     def get_router_cidrs(self, device):
         return set([addr['cidr'] for addr in device.addr.list()])
+
+    def get_centralized_router_cidrs(self):
+        return set()
 
     def process_floating_ip_addresses(self, interface_name):
         """Configure IP addresses on router's external gateway interface.
@@ -361,6 +367,8 @@ class RouterInfo(object):
             ip_cidr = common_utils.ip_to_cidr(fip_ip)
             new_cidrs.add(ip_cidr)
             fip_statuses[fip['id']] = lib_constants.FLOATINGIP_STATUS_ACTIVE
+            cent_router_cidrs = self.get_centralized_router_cidrs()
+
             if ip_cidr not in existing_cidrs:
                 #当前配置了此ip地址，但还不在实际中存在，故在interface_name上添加浮动ip
                 fip_statuses[fip['id']] = self.add_floating_ip(
@@ -376,6 +384,12 @@ class RouterInfo(object):
                           {'old': self.fip_map[fip_ip],
                            'new': fip['fixed_ip_address']})
                 fip_statuses[fip['id']] = self.move_floating_ip(fip)
+            elif (ip_cidr in cent_router_cidrs and
+                fip.get('host') == self.host):
+                LOG.debug("Floating IP is migrating from centralized "
+                          "to distributed: %s", fip)
+                fip_statuses[fip['id']] = self.migrate_centralized_floating_ip(
+                    fip, interface_name, device)
             elif fip_statuses[fip['id']] == fip['status']:
                 # mark the status as not changed. we can't remove it because
                 # that's how the caller determines that it was removed

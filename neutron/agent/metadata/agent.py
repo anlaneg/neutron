@@ -53,7 +53,7 @@ class MetadataPluginAPI(object):
     side is defined in
     neutron.api.rpc.handlers.metadata_rpc.MetadataRpcCallback.  For more
     information about changing rpc interfaces, see
-    doc/source/devref/rpc_api.rst.
+    doc/source/contributor/internals/rpc_api.rst.
 
     API version history:
         1.0 - Initial version.
@@ -159,6 +159,11 @@ class MetadataProxyHandler(object):
         router_id = req.headers.get('X-Neutron-Router-ID')
 
         ports = self._get_ports(remote_address, network_id, router_id)
+        LOG.debug("Gotten ports for remote_address %(remote_address)s, "
+                  "network_id %(network_id)s, router_id %(router_id)s are: "
+                  "%(ports)s", {"remote_address": remote_address,
+                  "network_id": network_id, "router_id": router_id,
+                  "ports": ports})
 
         if len(ports) == 1:
             return ports[0]['device_id'], ports[0]['tenant_id']

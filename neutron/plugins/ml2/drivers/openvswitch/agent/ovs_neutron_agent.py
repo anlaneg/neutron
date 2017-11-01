@@ -22,6 +22,7 @@ import sys
 import time
 
 import netaddr
+from neutron_lib.agent import constants as agent_consts
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import events as callback_events
 from neutron_lib.callbacks import registry
@@ -51,10 +52,9 @@ from neutron.api.rpc.callbacks import resources
 from neutron.api.rpc.handlers import dvr_rpc
 from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
 from neutron.common import config
-from neutron.common import constants as c_const
 from neutron.common import topics
+from neutron.common import utils as n_utils
 from neutron.conf.agent import xenapi_conf
-from neutron.plugins.common import constants as p_const
 from neutron.plugins.common import utils as p_utils
 from neutron.plugins.ml2.drivers.agent import capabilities
 from neutron.plugins.ml2.drivers.l2pop.rpc_manager import l2population_rpc
@@ -125,7 +125,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
     #   1.4 Added support for network_update
     target = oslo_messaging.Target(version='1.4')
 
-    def __init__(self, bridge_classes, conf=None):
+    def __init__(self, bridge_classes, ext_manager, conf=None):
         '''Constructor.
 
         :param bridge_classes: a dict for bridge classes.
@@ -134,6 +134,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         super(OVSNeutronAgent, self).__init__()
         self.conf = conf or cfg.CONF
         self.ovs = ovs_lib.BaseOVS()
+        self.ext_manager = ext_manager
         agent_conf = self.conf.AGENT
         ovs_conf = self.conf.OVS
 
@@ -149,9 +150,9 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         self.use_veth_interconnection = ovs_conf.use_veth_interconnection
         self.veth_mtu = agent_conf.veth_mtu
         # 将可用的本地vlan处理为1－4094
-        self.available_local_vlans = set(moves.range(p_const.MIN_VLAN_TAG,
+        self.available_local_vlans = set(moves.range(n_const.MIN_VLAN_TAG,
+                                                     n_const.MAX_VLAN_TAG + 1))
         #配置的要采用的隧道类型
-                                                     p_const.MAX_VLAN_TAG + 1))
         self.tunnel_types = agent_conf.tunnel_types or []
         #是否启用l2　pop功能
         self.l2_pop = agent_conf.l2_population
@@ -216,7 +217,9 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             self.setup_tunnel_br(ovs_conf.tunnel_bridge)
             self.setup_tunnel_br_flows()
 
-        self.init_extension_manager(self.connection)
+        agent_api = ovs_ext_api.OVSAgentExtensionAPI(self.int_br, self.tun_br)
+        self.ext_manager.initialize(
+            self.connection, constants.EXTENSION_DRIVER_TYPE, agent_api)
 
         self.dvr_agent = ovs_dvr_neutron_agent.OVSDVRNeutronAgent(
             self.context,
@@ -323,7 +326,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             agent_status = self.state_rpc.report_state(self.context,
                                                        self.agent_state,
                                                        True)
-            if agent_status == c_const.AGENT_REVIVED:
+            if agent_status == agent_consts.AGENT_REVIVED:
                 LOG.info('Agent has just been revived. '
                          'Doing a full sync.')
                 self.fullsync = True
@@ -371,9 +374,9 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
     # tun_br_ofports 变更reset
     def _reset_tunnel_ofports(self):
         #记录的是每种隧道类型，去往某个remote ip的port-id是什么
-        self.tun_br_ofports = {p_const.TYPE_GENEVE: {},
-                               p_const.TYPE_GRE: {},
-                               p_const.TYPE_VXLAN: {}}
+        self.tun_br_ofports = {n_const.TYPE_GENEVE: {},
+                               n_const.TYPE_GRE: {},
+                               n_const.TYPE_VXLAN: {}}
 
     def setup_rpc(self):
         self.plugin_rpc = OVSPluginApi(topics.PLUGIN)
@@ -419,16 +422,6 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             [self._sinkhole], topics.AGENT, old_consumers,
             start_listening=False
         )
-
-    def init_extension_manager(self, connection):
-        ext_manager.register_opts(self.conf)
-        self.ext_manager = (
-            ext_manager.L2AgentExtensionsManager(self.conf))
-        self.agent_api = ovs_ext_api.OVSAgentExtensionAPI(self.int_br,
-                                                          self.tun_br)
-        self.ext_manager.initialize(
-            connection, constants.EXTENSION_DRIVER_TYPE,
-            self.agent_api)
 
     #记录port被更新
     def port_update(self, context, **kwargs):
@@ -727,7 +720,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                           "net-id=%(net_uuid)s - tunneling disabled",
                           {'network_type': network_type,
                            'net_uuid': net_uuid})
-        elif network_type == p_const.TYPE_FLAT:
+        elif network_type == n_const.TYPE_FLAT:
             if physical_network in self.phys_brs:
                 self._local_vlan_for_flat(lvid, physical_network)
             else:
@@ -736,7 +729,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                           "physical_network %(physical_network)s",
                           {'net_uuid': net_uuid,
                            'physical_network': physical_network})
-        elif network_type == p_const.TYPE_VLAN:
+        elif network_type == n_const.TYPE_VLAN:
             if physical_network in self.phys_brs:
                 self._local_vlan_for_vlan(lvid, physical_network,
                                           segmentation_id)
@@ -746,7 +739,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                           "physical_network %(physical_network)s",
                           {'net_uuid': net_uuid,
                            'physical_network': physical_network})
-        elif network_type == p_const.TYPE_LOCAL:
+        elif network_type == n_const.TYPE_LOCAL:
             # no flows needed for local networks
             pass
         else:
@@ -783,7 +776,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     for ofport in lvm.tun_ofports:
                         self.cleanup_tunnel_port(self.tun_br, ofport,
                                                  lvm.network_type)
-        elif lvm.network_type == p_const.TYPE_FLAT:
+        elif lvm.network_type == n_const.TYPE_FLAT:
             if lvm.physical_network in self.phys_brs:
                 # outbound
                 br = self.phys_brs[lvm.physical_network]
@@ -795,7 +788,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 br.reclaim_local_vlan(
                     port=self.int_ofports[lvm.physical_network],
                     segmentation_id=None)
-        elif lvm.network_type == p_const.TYPE_VLAN:
+        elif lvm.network_type == n_const.TYPE_VLAN:
             if lvm.physical_network in self.phys_brs:
                 # outbound
                 br = self.phys_brs[lvm.physical_network]
@@ -807,7 +800,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 br.reclaim_local_vlan(
                     port=self.int_ofports[lvm.physical_network],
                     segmentation_id=lvm.segmentation_id)
-        elif lvm.network_type == p_const.TYPE_LOCAL:
+        elif lvm.network_type == n_const.TYPE_LOCAL:
             # no flows needed for local networks
             pass
         else:
@@ -1755,6 +1748,17 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 LOG.debug("Device %s not defined on plugin", detail['device'])
         return failed_devices
 
+    def treat_devices_skipped(self, devices):
+        LOG.info("Ports %s skipped, changing status to down", devices)
+        devices_down = self.plugin_rpc.update_device_list(self.context,
+                                                          [],
+                                                          devices,
+                                                          self.agent_id,
+                                                          self.conf.host)
+        failed_devices = set(devices_down.get('failed_devices_down'))
+        if failed_devices:
+            LOG.debug("Port down failed for %s", failed_devices)
+
     def process_network_ports(self, port_info, ovs_restarted):
         failed_devices = {'added': set(), 'removed': set()}
         # TODO(salv-orlando): consider a solution for ensuring notifications
@@ -1806,6 +1810,13 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 port_info['removed'])
             LOG.debug("process_network_ports - iteration:%(iter_num)d - "
                       "treat_devices_removed completed in %(elapsed).3f",
+                      {'iter_num': self.iter_num,
+                       'elapsed': time.time() - start})
+        if skipped_devices:
+            start = time.time()
+            self.treat_devices_skipped(skipped_devices)
+            LOG.debug("process_network_ports - iteration:%(iter_num)d - "
+                      "treat_devices_skipped completed in %(elapsed).3f",
                       {'iter_num': self.iter_num,
                        'elapsed': time.time() - start})
         return failed_devices
@@ -2346,10 +2357,17 @@ def prepare_xen_compute():
 def main(bridge_classes):
     prepare_xen_compute()
     ovs_capabilities.register()
+    ext_manager.register_opts(cfg.CONF)
+
+    ext_mgr = ext_manager.L2AgentExtensionsManager(cfg.CONF)
+
+    # now that all extensions registered their options, we can log them
+    n_utils.log_opt_values(LOG)
+
     validate_tunnel_config(cfg.CONF.AGENT.tunnel_types, cfg.CONF.OVS.local_ip)
 
     try:
-        agent = OVSNeutronAgent(bridge_classes, cfg.CONF)
+        agent = OVSNeutronAgent(bridge_classes, ext_mgr, cfg.CONF)
         capabilities.notify_init_event(n_const.AGENT_TYPE_OVS, agent)
     except (RuntimeError, ValueError) as e:
         LOG.error("%s Agent terminated!", e)

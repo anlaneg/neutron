@@ -93,8 +93,8 @@ class TestLegacyL3Agent(TestL3Agent):
         return namespaces.build_ns_name(namespaces.NS_PREFIX, router_id)
 
     def _assert_namespace_exists(self, ns_name):
-        ip = ip_lib.IPWrapper(ns_name)
-        common_utils.wait_until_true(lambda: ip.netns.exists(ns_name))
+        common_utils.wait_until_true(
+            lambda: ip_lib.network_namespace_exists(ns_name))
 
     def test_namespace_exists(self):
         tenant_id = uuidutils.generate_uuid()
@@ -232,9 +232,12 @@ class TestHAL3Agent(TestL3Agent):
 
         tenant_id = uuidutils.generate_uuid()
         router = self.safe_client.create_router(tenant_id, ha=True)
-        agents = self.client.list_l3_agent_hosting_routers(router['id'])
-        self.assertEqual(2, len(agents['agents']),
-                         'HA router must be scheduled to both nodes')
+
+        common_utils.wait_until_true(
+            lambda:
+            len(self.client.list_l3_agent_hosting_routers(
+                router['id'])['agents']) == 2,
+            timeout=90)
 
         common_utils.wait_until_true(
             functools.partial(

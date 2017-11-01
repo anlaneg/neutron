@@ -29,6 +29,7 @@ import fixtures
 import netaddr
 from neutron_lib import constants as n_const
 from oslo_config import cfg
+from oslo_log import log as logging
 from oslo_utils import uuidutils
 import six
 
@@ -45,6 +46,8 @@ from neutron.plugins.ml2.drivers.linuxbridge.agent import \
     linuxbridge_neutron_agent as linuxbridge_agent
 from neutron.tests.common import base as common_base
 from neutron.tests import tools
+
+LOG = logging.getLogger(__name__)
 
 UNDEFINED = object()
 
@@ -66,10 +69,13 @@ LB_DEVICE_NAME_MAX_LEN = 10
 SS_SOURCE_PORT_PATTERN = re.compile(
     r'^.*\s+\d+\s+.*:(?P<port>\d+)\s+[^\s]+:.*')
 
-READ_TIMEOUT = os.environ.get('OS_TEST_READ_TIMEOUT', 5)
+READ_TIMEOUT = int(
+    os.environ.get('OS_TEST_READ_TIMEOUT', 5))
 
-CHILD_PROCESS_TIMEOUT = os.environ.get('OS_TEST_CHILD_PROCESS_TIMEOUT', 20)
-CHILD_PROCESS_SLEEP = os.environ.get('OS_TEST_CHILD_PROCESS_SLEEP', 0.5)
+CHILD_PROCESS_TIMEOUT = int(
+    os.environ.get('OS_TEST_CHILD_PROCESS_TIMEOUT', 20))
+CHILD_PROCESS_SLEEP = float(
+    os.environ.get('OS_TEST_CHILD_PROCESS_SLEEP', 0.5))
 
 TRANSPORT_PROTOCOLS = (n_const.PROTO_NAME_TCP, n_const.PROTO_NAME_UDP,
                        n_const.PROTO_NAME_SCTP)
@@ -186,7 +192,7 @@ def _get_source_ports_from_ss_output(output):
 def get_unused_port(used, start=1024, end=None):
     if end is None:
         port_range = utils.execute(
-            ['sysctl', '-n', 'net.ipv4.ip_local_port_range'])
+            ['sysctl', '-n', 'net.ipv4.ip_local_port_range'], run_as_root=True)
         end = int(port_range.split()[0]) - 1
 
     candidates = set(range(start, end + 1))
@@ -216,7 +222,7 @@ def get_free_namespace_port(protocol, namespace=None, start=1024, end=None):
         raise ValueError("Unsupported protocol %s" % protocol)
 
     ip_wrapper = ip_lib.IPWrapper(namespace=namespace)
-    output = ip_wrapper.netns.execute(['ss', param])
+    output = ip_wrapper.netns.execute(['ss', param], run_as_root=True)
     used_ports = _get_source_ports_from_ss_output(output)
 
     return get_unused_port(used_ports, start, end)
@@ -277,6 +283,7 @@ class RootHelperProcess(subprocess.Popen):
         root_helper = config.get_root_helper(utils.cfg.CONF)
         cmd = shlex.split(root_helper) + cmd
         self.child_pid = None
+        LOG.debug("Spawning process %s", cmd)
         super(RootHelperProcess, self).__init__(cmd, *args, **kwargs)
         self._wait_for_child_process()
 
@@ -654,8 +661,7 @@ class MacvtapFixture(fixtures.Fixture):
         self.addCleanup(self.destroy)
 
     def destroy(self):
-        ip_wrapper = ip_lib.IPWrapper(self.ip_dev.namespace)
-        if (ip_wrapper.netns.exists(self.ip_dev.namespace) or
+        if (ip_lib.network_namespace_exists(self.ip_dev.namespace) or
             self.ip_dev.namespace is None):
             try:
                 self.ip_dev.link.delete()
@@ -763,7 +769,7 @@ class OVSPortFixture(PortFixture):
         # machines as the port should be treated by OVS agent and not by
         # external party
         interface_config = cfg.ConfigOpts()
-        interface_config.register_opts(interface.OPTS)
+        config.register_interface_opts(interface_config)
         ovs_interface = interface.OVSInterfaceDriver(interface_config)
         ovs_interface.plug_new(
             None,

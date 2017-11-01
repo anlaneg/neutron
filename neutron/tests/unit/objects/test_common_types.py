@@ -16,11 +16,11 @@ import itertools
 import random
 
 from neutron_lib import constants as const
+from neutron_lib.db import constants as db_const
 from neutron_lib.utils import net
 from oslo_serialization import jsonutils
 
 from neutron.common import constants
-from neutron.extensions import dns as dns_ext
 from neutron.objects import common_types
 from neutron.tests import base as test_base
 from neutron.tests import tools
@@ -84,7 +84,7 @@ class DscpMarkFieldTest(test_base.BaseTestCase, TestField):
         super(DscpMarkFieldTest, self).setUp()
         self.field = common_types.DscpMarkField()
         self.coerce_good_values = [(val, val)
-                                   for val in constants.VALID_DSCP_MARKS]
+                                   for val in const.VALID_DSCP_MARKS]
         self.coerce_bad_values = ['6', 'str', [], {}, object()]
         self.to_primitive_values = self.coerce_good_values
         self.from_primitive_values = self.coerce_good_values
@@ -176,7 +176,7 @@ class FlowDirectionEnumFieldTest(test_base.BaseTestCase, TestField):
         super(FlowDirectionEnumFieldTest, self).setUp()
         self.field = common_types.FlowDirectionEnumField()
         self.coerce_good_values = [(val, val)
-                                   for val in constants.VALID_DIRECTIONS]
+                                   for val in const.VALID_DIRECTIONS]
         self.coerce_bad_values = ['test', '8', 10, []]
         self.to_primitive_values = self.coerce_good_values
         self.from_primitive_values = self.coerce_good_values
@@ -194,7 +194,7 @@ class DomainNameFieldTest(test_base.BaseTestCase, TestField):
             (val, val)
             for val in ('www.google.com', 'hostname', '1abc.com')
         ]
-        self.coerce_bad_values = ['x' * (dns_ext.FQDN_MAX_LEN + 1), 10, []]
+        self.coerce_bad_values = ['x' * (db_const.FQDN_FIELD_SIZE + 1), 10, []]
         self.to_primitive_values = self.coerce_good_values
         self.from_primitive_values = self.coerce_good_values
 

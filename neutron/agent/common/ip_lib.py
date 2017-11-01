@@ -17,11 +17,13 @@ import os
 
 if os.name == 'nt':
     from neutron.agent.windows import ip_lib
+    from neutron.conf.agent import windows
+    OPTS = windows.IP_LIB_OPTS_WINDOWS
 else:
     from neutron.agent.linux import ip_lib
+    from neutron.conf.agent import linux
+    OPTS = linux.IP_LIB_OPTS_LINUX
 
-
-OPTS = ip_lib.OPTS
 
 IPWrapper = ip_lib.IPWrapper
 IPDevice = ip_lib.IPDevice

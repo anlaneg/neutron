@@ -313,6 +313,11 @@ class SecurityGroupDbMixinTestCase(testlib_api.SqlTestCase):
                 mock.call('security_group', 'after_create', mock.ANY,
                           context=mock.ANY, is_default=False,
                           security_group=sg_dict)])
+            # Ensure that the result of create is same as get.
+            # Especially we want to check the revision number here.
+            sg_dict_got = self.mixin.get_security_group(
+                self.ctx, sg_dict['id'])
+            self.assertEqual(sg_dict, sg_dict_got)
 
     def test_security_group_precommit_create_event_with_revisions(self):
         revision = revision_plugin.RevisionPlugin()
@@ -440,3 +445,20 @@ class SecurityGroupDbMixinTestCase(testlib_api.SqlTestCase):
                     {'port_range_min': pmin,
                      'port_range_max': pmax,
                      'protocol': protocol})
+
+    def test__validate_port_range_exception(self):
+        self.assertRaises(securitygroup.SecurityGroupInvalidPortValue,
+                          self.mixin._validate_port_range,
+                          {'port_range_min': 0,
+                           'port_range_max': None,
+                           'protocol': constants.PROTO_NAME_TCP})
+        self.assertRaises(securitygroup.SecurityGroupInvalidPortRange,
+                          self.mixin._validate_port_range,
+                          {'port_range_min': 1,
+                           'port_range_max': None,
+                           'protocol': constants.PROTO_NAME_SCTP})
+        self.assertRaises(securitygroup.SecurityGroupInvalidPortRange,
+                          self.mixin._validate_port_range,
+                          {'port_range_min': 1000,
+                           'port_range_max': 1,
+                           'protocol': constants.PROTO_NAME_UDPLITE})

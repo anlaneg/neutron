@@ -17,6 +17,7 @@ import abc
 import sys
 
 from neutron_lib import constants
+from neutron_lib.services.qos import constants as qos_consts
 from neutron_lib.utils import helpers
 from oslo_utils import versionutils
 from oslo_versionedobjects import base as obj_base
@@ -24,12 +25,10 @@ from oslo_versionedobjects import exception
 from oslo_versionedobjects import fields as obj_fields
 import six
 
-from neutron.common import constants as n_const
 from neutron.db import api as db_api
 from neutron.db.qos import models as qos_db_model
 from neutron.objects import base
 from neutron.objects import common_types
-from neutron.services.qos import qos_consts
 
 DSCP_MARK = 'dscp_mark'
 
@@ -110,7 +109,7 @@ class QosBandwidthLimitRule(QosRule):
         'max_kbps': obj_fields.IntegerField(nullable=True),
         'max_burst_kbps': obj_fields.IntegerField(nullable=True),
         'direction': common_types.FlowDirectionEnumField(
-            default=n_const.EGRESS_DIRECTION)
+            default=constants.EGRESS_DIRECTION)
     }
 
     rule_type = qos_consts.RULE_TYPE_BANDWIDTH_LIMIT
@@ -119,7 +118,7 @@ class QosBandwidthLimitRule(QosRule):
         _target_version = versionutils.convert_version_to_tuple(target_version)
         if _target_version < (1, 3) and 'direction' in primitive:
             direction = primitive.pop('direction')
-            if direction == n_const.INGRESS_DIRECTION:
+            if direction == constants.INGRESS_DIRECTION:
                 raise exception.IncompatibleObjectVersion(
                     objver=target_version,
                     objtype="QosBandwidthLimitRule")

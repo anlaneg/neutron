@@ -24,6 +24,7 @@ from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
+from neutron_lib.services.qos import constants as qos_consts
 from oslo_config import cfg
 from oslo_context import context as oslo_context
 from sqlalchemy.orm import exc
@@ -31,14 +32,14 @@ from sqlalchemy.orm import exc
 from neutron.agent import rpc as agent_rpc
 from neutron.common import topics
 from neutron.db import provisioning_blocks
+from neutron.plugins.ml2 import db as ml2_db
 from neutron.plugins.ml2.drivers import type_tunnel
 from neutron.plugins.ml2 import managers
 from neutron.plugins.ml2 import rpc as plugin_rpc
-from neutron.services.qos import qos_consts
 from neutron.tests import base
 
 
-cfg.CONF.import_group('ml2', 'neutron.plugins.ml2.config')
+cfg.CONF.import_group('ml2', 'neutron.conf.plugins.ml2.config')
 
 
 class RpcCallbacksTestCase(base.BaseTestCase):
@@ -222,11 +223,12 @@ class RpcCallbacksTestCase(base.BaseTestCase):
         return res
 
     def test_update_device_up_with_device_not_bound_to_host(self):
-        self.assertIsNone(self._test_update_device_not_bound_to_host(
-            self.callbacks.update_device_up))
-        port = self.plugin._get_port.return_value
-        (self.plugin.nova_notifier.notify_port_active_direct.
-         assert_called_once_with(port))
+        with mock.patch.object(ml2_db, 'get_port') as ml2_db_get_port:
+            self.assertIsNone(self._test_update_device_not_bound_to_host(
+                self.callbacks.update_device_up))
+            port = ml2_db_get_port.return_value
+            (self.plugin.nova_notifier.notify_port_active_direct.
+             assert_called_once_with(port))
 
     def test_update_device_down_with_device_not_bound_to_host(self):
         self.assertEqual(

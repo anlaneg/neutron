@@ -115,7 +115,8 @@ class DVRResourceOperationHandler(object):
 
     @registry.receives(resources.ROUTER, [events.PRECOMMIT_UPDATE])
     def _handle_distributed_migration(self, resource, event, trigger, context,
-                                      router_id, router, router_db, **kwargs):
+                                      router_id, router, router_db, old_router,
+                                      **kwargs):
         """Event handler for router update migration to distributed."""
         if not self._validate_router_migration(context, router_db, router):
             return
@@ -125,24 +126,41 @@ class DVRResourceOperationHandler(object):
             router.get('distributed') is True)
 
         if migrating_to_distributed:
+            if old_router['ha']:
+                old_owner = const.DEVICE_OWNER_HA_REPLICATED_INT
+            else:
+                old_owner = const.DEVICE_OWNER_ROUTER_INTF
             self.l3plugin._migrate_router_ports(
                 context, router_db,
-                old_owner=const.DEVICE_OWNER_ROUTER_INTF,
+                old_owner=old_owner,
                 new_owner=const.DEVICE_OWNER_DVR_INTERFACE)
-            self.l3plugin.set_extra_attr_value(context, router_db,
-                                               'distributed', True)
         else:
+            if router.get('ha'):
+                new_owner = const.DEVICE_OWNER_HA_REPLICATED_INT
+            else:
+                new_owner = const.DEVICE_OWNER_ROUTER_INTF
             self.l3plugin._migrate_router_ports(
                 context, router_db,
                 old_owner=const.DEVICE_OWNER_DVR_INTERFACE,
-                new_owner=const.DEVICE_OWNER_ROUTER_INTF)
-            self.l3plugin.set_extra_attr_value(context, router_db,
-                                               'distributed', False)
+                new_owner=new_owner)
 
         cur_agents = self.l3plugin.list_l3_agents_hosting_router(
             context, router_db['id'])['agents']
         for agent in cur_agents:
             self.l3plugin._unbind_router(context, router_db['id'], agent['id'])
+        self.l3plugin.set_extra_attr_value(
+            context, router_db, 'distributed', migrating_to_distributed)
+
+    @registry.receives(resources.ROUTER, [events.AFTER_UPDATE])
+    def _delete_snat_interfaces_after_change(self, resource, event, trigger,
+                                             context, router_id, router,
+                                             request_attrs, router_db,
+                                             **kwargs):
+        if router.get(l3.EXTERNAL_GW_INFO) and not router['distributed']:
+            old_router = kwargs['old_router']
+            if old_router and old_router['distributed']:
+                self.delete_csnat_router_interface_ports(
+                    context.elevated(), router_db)
 
     #在路由器创建及更新后，尝试创建sg口
     @registry.receives(resources.ROUTER,
@@ -200,17 +218,19 @@ class DVRResourceOperationHandler(object):
             msg = _("Unable to create the SNAT Interface Port")
             raise n_exc.BadRequest(resource='router', msg=msg)
 
-        l3_obj.RouterPort(
-            context,
-            port_id=snat_port['id'],
-            router_id=router.id,
-            port_type=const.DEVICE_OWNER_ROUTER_SNAT
-        ).create()
+        with p_utils.delete_port_on_error(
+            self.l3plugin._core_plugin, context.elevated(), snat_port['id']):
+            l3_obj.RouterPort(
+                context,
+                port_id=snat_port['id'],
+                router_id=router.id,
+                port_type=const.DEVICE_OWNER_ROUTER_SNAT
+            ).create()
 
-        if do_pop:
-            return self.l3plugin._populate_mtu_and_subnets_for_ports(
-                context, [snat_port])
-        return snat_port
+            if do_pop:
+                return self.l3plugin._populate_mtu_and_subnets_for_ports(
+                    context, [snat_port])
+            return snat_port
 
     #尝试着创建snat接口
     def _create_snat_intf_ports_if_not_exists(self, context, router):
@@ -229,10 +249,8 @@ class DVRResourceOperationHandler(object):
 
         #取出所有qr口
         int_ports = (
-            rp.port for rp in
-            router.attached_ports.filter_by(
-                port_type=const.DEVICE_OWNER_DVR_INTERFACE
-            )
+            rp.port for rp in router.attached_ports
+            if rp.port_type == const.DEVICE_OWNER_DVR_INTERFACE
         )
         LOG.info('SNAT interface port list does not exist,'
                  ' so create one: %s', port_list)
@@ -359,11 +377,10 @@ class DVRResourceOperationHandler(object):
                         if not addr_pair_active_service_port_list:
                             return
                         self._inherit_service_port_and_arp_update(
-                            context, addr_pair_active_service_port_list[0],
-                            port)
+                            context, addr_pair_active_service_port_list[0])
 
     def _inherit_service_port_and_arp_update(
-        self, context, service_port, allowed_address_port):
+        self, context, service_port):
         """Function inherits port host bindings for allowed_address_pair."""
         service_port_dict = self.l3plugin._core_plugin._make_port_dict(
             service_port)
@@ -537,19 +554,11 @@ class DVRResourceOperationHandler(object):
         # Each csnat router interface port is associated
         # with a subnet, so we need to pass the subnet id to
         # delete the right ports.
-
-        # TODO(markmcclain): This is suboptimal but was left to reduce
-        # changeset size since it is late in cycle
-        ports = [
-            rp.port.id for rp in
-            router.attached_ports.filter_by(
-                    port_type=const.DEVICE_OWNER_ROUTER_SNAT)
-            if rp.port
-        ]
-
+        filters = {'device_owner': [const.DEVICE_OWNER_ROUTER_SNAT],
+                   'device_id': [router.id]}
         c_snat_ports = self.l3plugin._core_plugin.get_ports(
             context,
-            filters={'id': ports}
+            filters=filters
         )
         for p in c_snat_ports:
             if subnet_id is None or not p['fixed_ips']:
@@ -636,57 +645,55 @@ class _DVRAgentInterfaceMixin(object):
 
         return routers_dict
 
+    @staticmethod
+    def _get_floating_ip_host(floating_ip):
+        """Function to return floating IP host binding state
+
+        By default, floating IPs are not bound to any host.  Instead
+        of using the empty string to denote this use a constant.
+        """
+        return floating_ip.get('host', l3_const.FLOATING_IP_HOST_UNBOUND)
+
     def _process_floating_ips_dvr(self, context, routers_dict,
                                   floating_ips, host, agent):
         LOG.debug("FIP Agent : %s ", agent.id)
         for floating_ip in floating_ips:
             router = routers_dict.get(floating_ip['router_id'])
             if router:
-                router_floatingips = router.get(const.FLOATINGIP_KEY, [])
                 if router['distributed']:
-                    fip_host = floating_ip.get('host')
-                    fip_dest_host = floating_ip.get('dest_host')
-                    # Skip if floatingip need not be processed for the
-                    # given agent.
-                    if self._should_skip_floating_ip_processed_for_given_agent(
-                        floating_ip, fip_host, fip_dest_host, agent):
+                    if self._skip_floating_ip_for_mismatched_agent_or_host(
+                        floating_ip, agent, host):
                         continue
-                    # Also skip floatingip if the fip port have a host defined
-                    # and if the host does not match.
-                    if self._check_floating_ip_not_valid_for_given_host(
-                        fip_host, fip_dest_host, host):
-                        continue
-                    LOG.debug("Floating IP host: %s", fip_host)
+                router_floatingips = router.get(const.FLOATINGIP_KEY, [])
                 router_floatingips.append(floating_ip)
                 router[const.FLOATINGIP_KEY] = router_floatingips
 
-    def _check_floating_ip_not_valid_for_given_host(
-        self, fip_host, fip_dest_host, host):
-        """Function to check if floatingip host match for the given agent.
+    def _skip_floating_ip_for_mismatched_agent_or_host(self, floating_ip,
+                                                       agent, host):
+        """Function to check if floating IP processing can be skipped."""
+        fip_host = self._get_floating_ip_host(floating_ip)
 
-        Check if the given floatingip host matches with the requesting
-        host when floatingip dest_host is None.
-        If floatingip dest_host is not None it means that the floatingip
-        is migrating to a new compute host and the original host will not
-        match.
-        """
-        host_mismatch = (
-            fip_host != host and fip_dest_host is None)
-        return (fip_host is not None and host_mismatch)
+        # Skip if it is unbound
+        if fip_host == l3_const.FLOATING_IP_HOST_UNBOUND:
+            return True
 
-    def _should_skip_floating_ip_processed_for_given_agent(
-        self, floating_ip, fip_host, fip_dest_host, agent):
-        """Function to check if floatingip need to be processed or skipped.
-
-        Skip if host and dest_host is none and the agent
-        requesting is not dvr_snat agent, and the fip has
-        not already been assigned 'dvr_snat_bound' state.
-        """
+        # Skip if the given agent is in the wrong mode - SNAT bound
+        # requires DVR_SNAT agent.
         agent_mode = self._get_agent_mode(agent)
-        return (fip_host is None and (fip_dest_host is None) and
-                agent_mode in [const.L3_AGENT_MODE_LEGACY,
-                               const.L3_AGENT_MODE_DVR] and
-                not floating_ip.get(l3_const.DVR_SNAT_BOUND))
+        if (agent_mode in [const.L3_AGENT_MODE_LEGACY,
+                           const.L3_AGENT_MODE_DVR] and
+                floating_ip.get(l3_const.DVR_SNAT_BOUND)):
+            return True
+
+        # Skip if it is bound, but not to the given host
+        fip_dest_host = floating_ip.get('dest_host')
+        if (fip_host != l3_const.FLOATING_IP_HOST_NEEDS_BINDING and
+            fip_host != host and fip_dest_host is None):
+            return True
+
+        # not being skipped, log host
+        LOG.debug("Floating IP host: %s", fip_host)
+        return False
 
     def _get_fip_agent_gw_ports(self, context, fip_agent_id):
         """Return list of floating agent gateway ports for the agent."""
@@ -750,30 +757,29 @@ class _DVRAgentInterfaceMixin(object):
                             port_dict.update({port['id']: port})
             # Add the port binding host to the floatingip dictionary
             for fip in floating_ips:
+                # Assume no host binding required
+                fip['host'] = l3_const.FLOATING_IP_HOST_UNBOUND
                 vm_port = port_dict.get(fip['port_id'], None)
                 if vm_port:
+                    # Default value if host port-binding required
+                    fip['host'] = l3_const.FLOATING_IP_HOST_NEEDS_BINDING
                     port_host = vm_port[portbindings.HOST_ID]
                     if port_host:
-                        fip['host'] = port_host
                         fip['dest_host'] = (
                             self._get_dvr_migrating_service_port_hostid(
                                 context, fip['port_id'], port=vm_port))
                         vm_port_agent_mode = vm_port.get('agent', None)
-                        if vm_port_agent_mode == (
+                        if vm_port_agent_mode != (
                             l3_const.L3_AGENT_MODE_DVR_NO_EXTERNAL):
-                            # For floatingip configured on ports that
-                            # reside on 'dvr_no_external' agent, get rid of
-                            # the fip host binding since it would be created
+                            # For floatingip configured on ports that do not
+                            # reside on a 'dvr_no_external' agent, add the
+                            # fip host binding, else it will be created
                             # in the 'dvr_snat' agent.
-                            fip['host'] = None
-                    else:
-                        # If no port-binding assign the fip['host']
-                        # value to None.
-                        fip['host'] = None
+                            fip['host'] = port_host
                     # Handle the case were there is no host binding
                     # for the private ports that are associated with
                     # floating ip.
-                    if not fip['host'] or fip['host'] is None:
+                    if fip['host'] == l3_const.FLOATING_IP_HOST_NEEDS_BINDING:
                         fip[l3_const.DVR_SNAT_BOUND] = True
         routers_dict = self._process_routers(context, routers, agent)
         self._process_floating_ips_dvr(context, routers_dict,
@@ -851,7 +857,10 @@ class _DVRAgentInterfaceMixin(object):
         create a new one.
         """
         l3_agent_db = self._get_agent_by_type_and_host(
-            context, const.AGENT_TYPE_L3, host) #取指定主机上的l3-agent配置
+            context, const.AGENT_TYPE_L3, host)#取指定主机上的l3-agent配置
+        l3_agent_mode = self._get_agent_mode(l3_agent_db)
+        if l3_agent_mode == l3_const.L3_AGENT_MODE_DVR_NO_EXTERNAL:
+            return
         if l3_agent_db:
             LOG.debug("Agent ID exists: %s", l3_agent_db['id'])
             f_port = self._get_agent_gw_ports_exist_for_network(

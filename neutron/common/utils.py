@@ -38,16 +38,12 @@ from eventlet.green import subprocess
 import netaddr
 from neutron_lib import constants as n_const
 from neutron_lib.utils import helpers
-from neutron_lib.utils import net
-from oslo_concurrency import lockutils
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import fileutils
-from oslo_utils import importutils
 import six
-from stevedore import driver
 
 import neutron
 from neutron._i18n import _
@@ -55,13 +51,10 @@ from neutron.db import api as db_api
 
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 LOG = logging.getLogger(__name__)
-SYNCHRONIZED_PREFIX = 'neutron-'
 
 DEFAULT_THROTTLER_VALUE = 2
 
 _SEPARATOR_REGEX = re.compile(r'[/\\]+')
-
-synchronized = lockutils.synchronized_with_prefix(SYNCHRONIZED_PREFIX)
 
 
 class WaitTimeout(Exception):
@@ -146,15 +139,6 @@ def is_extension_supported(plugin, ext_alias):
 
 def log_opt_values(log):
     cfg.CONF.log_opt_values(log, logging.DEBUG)
-
-
-@removals.remove(
-    message="Use get_random_mac from neutron_lib.utils.net",
-    version="Pike",
-    removal_version="Queens"
-)
-def get_random_mac(base_mac):
-    return net.get_random_mac(base_mac)
 
 
 def get_dhcp_agent_device_id(network_id, host):
@@ -297,37 +281,6 @@ class DelayedStringRenderer(object):
 
     def __str__(self):
         return str(self.function(*self.args, **self.kwargs))
-
-
-def load_class_by_alias_or_classname(namespace, name):
-    """Load class using stevedore alias or the class name
-
-    :param namespace: namespace where the alias is defined
-    :param name: alias or class name of the class to be loaded
-    :returns: class if calls can be loaded
-    :raises ImportError if class cannot be loaded
-    """
-
-    if not name:
-        LOG.error("Alias or class name is not set")
-        raise ImportError(_("Class not found."))
-    try:
-        # Try to resolve class by alias
-        mgr = driver.DriverManager(
-            namespace, name, warn_on_missing_entrypoint=False)
-        class_to_load = mgr.driver
-    except RuntimeError:
-        e1_info = sys.exc_info()
-        # Fallback to class name
-        try:
-            class_to_load = importutils.import_class(name)
-        except (ImportError, ValueError):
-            LOG.error("Error loading class by alias",
-                      exc_info=e1_info)
-            LOG.error("Error loading class by class name",
-                      exc_info=True)
-            raise ImportError(_("Class not found."))
-    return class_to_load
 
 
 def _hex_format(port, mask=0):

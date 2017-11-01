@@ -20,14 +20,15 @@ from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib import constants
 from oslo_config import cfg
+from oslo_log import log
 
 from neutron.agent import securitygroups_rpc
-from neutron.plugins.common import constants as p_constants
 from neutron.plugins.ml2.drivers import mech_agent
 from neutron.plugins.ml2.drivers.openvswitch.agent.common \
     import constants as a_const
 from neutron.services.qos.drivers.openvswitch import driver as ovs_qos_driver
 
+LOG = log.getLogger(__name__)
 
 IPTABLES_FW_DRIVER_FULL = ("neutron.agent.linux.iptables_firewall."
                            "OVSHybridIptablesFirewallDriver")
@@ -66,8 +67,8 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     def get_allowed_network_types(self, agent):
         #返回自身支持哪些网络类型
         return (agent['configurations'].get('tunnel_types', []) +
-                [p_constants.TYPE_LOCAL, p_constants.TYPE_FLAT,
-                 p_constants.TYPE_VLAN])
+                [constants.TYPE_LOCAL, constants.TYPE_FLAT,
+                 constants.TYPE_VLAN])
 
     def get_mappings(self, agent):
         #返回自身桥配置
@@ -77,6 +78,20 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         """Currently Openvswitch driver doesn't support vlan transparency."""
         #当前openvswitch驱动不支持vlan透传
         return False
+
+    def bind_port(self, context):
+        vnic_type = context.current.get(portbindings.VNIC_TYPE,
+                                        portbindings.VNIC_NORMAL)
+        profile = context.current.get(portbindings.PROFILE)
+        capabilities = []
+        if profile:
+            capabilities = profile.get('capabilities', [])
+        if (vnic_type == portbindings.VNIC_DIRECT and
+            'switchdev' not in capabilities):
+            LOG.debug("Refusing to bind due to unsupported vnic_type: %s with "
+                      "no switchdev capability", portbindings.VNIC_DIRECT)
+            return
+        super(OpenvswitchMechanismDriver, self).bind_port(context)
 
     def get_vif_type(self, context, agent, segment):
         caps = agent['configurations'].get('ovs_capabilities', {})

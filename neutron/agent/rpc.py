@@ -69,7 +69,8 @@ class PluginReportStateAPI(object):
 
     This class implements the client side of an rpc interface.  The server side
     can be found in neutron.db.agents_db.AgentExtRpcCallback.  For more
-    information on changing rpc interfaces, see doc/source/devref/rpc_api.rst.
+    information on changing rpc interfaces, see
+    doc/source/contributor/internals/rpc_api.rst.
     """
     def __init__(self, topic):
         target = oslo_messaging.Target(topic=topic, version='1.0',
@@ -231,6 +232,9 @@ class CacheBackedPluginApi(PluginApi):
             LOG.warning("Device %s is not bound.", port_obj)
             return {'device': device}
         segment = port_obj.binding_levels[-1].segment
+        if not segment:
+            LOG.debug("Device %s is not bound to any segment.", port_obj)
+            return {'device': device}
         net = self.remote_resource_cache.get_resource_by_id(
             resources.NETWORK, port_obj.network_id)
         net_qos_policy_id = net.qos_policy_id

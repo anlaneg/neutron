@@ -28,6 +28,7 @@ MITAKA = 'mitaka'
 NEWTON = 'newton'
 OCATA = 'ocata'
 PIKE = 'pike'
+QUEENS = 'queens'
 
 NEUTRON_MILESTONES = [
     # earlier milestones were not tagged
@@ -35,6 +36,7 @@ NEUTRON_MILESTONES = [
     MITAKA,
     NEWTON,
     OCATA,
+    PIKE,
     # Do not add the milestone until the end of the release
 ]
 
@@ -164,7 +166,7 @@ def alter_enum(table, column, enum_type, nullable, do_drop=True,
         op.execute("ALTER TABLE %(table)s RENAME COLUMN %(column)s TO "
                    "old_%(column)s" % values)
         op.add_column(table, sa.Column(column, enum_type, nullable=nullable))
-        op.execute("UPDATE %(table)s SET %(column)s = "
+        op.execute("UPDATE %(table)s SET %(column)s = "  # nosec
                    "old_%(column)s::text::%(name)s" % values)
         op.execute("ALTER TABLE %(table)s DROP COLUMN old_%(column)s" % values)
         if do_drop:

@@ -20,7 +20,6 @@ import random
 import time
 import warnings
 
-from debtcollector import removals
 import fixtures
 import mock
 import netaddr
@@ -34,7 +33,6 @@ import unittest2
 
 from neutron.api.v2 import attributes
 from neutron.common import constants as n_const
-from neutron.plugins.common import constants as p_const
 from neutron.services.logapi.common import constants as log_const
 
 
@@ -232,7 +230,7 @@ def get_random_port(start=n_const.PORT_RANGE_MIN):
 
 
 def get_random_vlan():
-    return random.randint(p_const.MIN_VLAN_TAG, p_const.MAX_VLAN_TAG)
+    return random.randint(constants.MIN_VLAN_TAG, constants.MAX_VLAN_TAG)
 
 
 def get_random_ip_version():
@@ -245,16 +243,6 @@ def get_random_cidr(version=4):
                                   random.randint(3, 254),
                                   24)
     return '2001:db8:%x::/%d' % (random.getrandbits(16), 64)
-
-
-@removals.remove(
-    message="Use get_random_mac from neutron_lib.utils.net",
-    version="Pike",
-    removal_version="Queens"
-)
-def get_random_mac():
-    """Generate a random mac address starting with fe:16:3e"""
-    return net.get_random_mac(['fe', '16', '3e', '00', '00', '00'])
 
 
 def get_random_EUI():
@@ -286,7 +274,11 @@ def get_random_floatingip_status():
 
 
 def get_random_flow_direction():
-    return random.choice(n_const.VALID_DIRECTIONS)
+    return random.choice(constants.VALID_DIRECTIONS)
+
+
+def get_random_ha_states():
+    return random.choice(n_const.VALID_HA_STATES)
 
 
 def get_random_ether_type():

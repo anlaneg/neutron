@@ -17,9 +17,11 @@ import collections
 import os
 
 import eventlet
+from neutron_lib.agent import constants as agent_consts
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib import exceptions
+from neutron_lib.utils import runtime
 from oslo_concurrency import lockutils
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -65,7 +67,7 @@ def _wait_if_syncing(f):
 def _net_lock(network_id):
     """Returns a context manager lock based on network_id."""
     lock_name = 'dhcp-agent-network-lock-%s' % network_id
-    return lockutils.lock(lock_name, utils.SYNCHRONIZED_PREFIX)
+    return lockutils.lock(lock_name, runtime.SYNCHRONIZED_PREFIX)
 
 
 class DhcpAgent(manager.Manager):
@@ -75,7 +77,7 @@ class DhcpAgent(manager.Manager):
     of an rpc interface.  The neutron server uses
     neutron.api.rpc.agentnotifiers.dhcp_rpc_agent_api.DhcpAgentNotifyApi as the
     client side to execute the methods here.  For more information about
-    changing rpc interfaces, see doc/source/devref/rpc_api.rst.
+    changing rpc interfaces, see doc/source/contributor/internals/rpc_api.rst.
     """
     target = oslo_messaging.Target(version='1.0')
 
@@ -515,8 +517,11 @@ class DhcpAgent(manager.Manager):
                                 {'port_num': len(router_ports),
                                  'port_id': router_ports[0].id,
                                  'router_id': router_ports[0].device_id})
-                kwargs = {'router_id': router_ports[0].device_id}
-                self._metadata_routers[network.id] = router_ports[0].device_id
+                all_subnets = self.dhcp_driver_cls._get_all_subnets(network)
+                if self.dhcp_driver_cls.has_metadata_subnet(all_subnets):
+                    kwargs = {'router_id': router_ports[0].device_id}
+                    self._metadata_routers[network.id] = (
+                        router_ports[0].device_id)
 
         metadata_driver.MetadataDriver.spawn_monitored_metadata_proxy(
             self._process_monitor, network.namespace, dhcp.METADATA_PORT,
@@ -542,7 +547,8 @@ class DhcpPluginApi(object):
     This class implements the client side of an rpc interface.  The server side
     of this interface can be found in
     neutron.api.rpc.handlers.dhcp_rpc.DhcpRpcCallback.  For more information
-    about changing rpc interfaces, see doc/source/devref/rpc_api.rst.
+    about changing rpc interfaces, see
+    doc/source/contributor/internals/rpc_api.rst.
 
     API version history:
         1.0 - Initial version.
@@ -744,7 +750,7 @@ class DhcpAgentWithStateReport(DhcpAgent):
             #向server上报状态
             agent_status = self.state_rpc.report_state(
                 ctx, self.agent_state, True)
-            if agent_status == n_const.AGENT_REVIVED:
+            if agent_status == agent_consts.AGENT_REVIVED:
                 LOG.info("Agent has just been revived. "
                          "Scheduling full sync")
                 self.schedule_resync("Agent has just been revived")

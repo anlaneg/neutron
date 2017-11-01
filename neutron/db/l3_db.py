@@ -17,7 +17,6 @@ import functools
 import itertools
 import random
 
-from debtcollector import removals
 import netaddr
 from neutron_lib.api import validators
 from neutron_lib.callbacks import events
@@ -212,7 +211,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                 tenant_id=router['tenant_id'],
                 name=router['name'],
                 admin_state_up=router['admin_state_up'],
-                status=n_const.ROUTER_STATUS_ACTIVE,
+                status=constants.ACTIVE,
                 description=router.get('description'))
             context.session.add(router_db)
             registry.notify(resources.ROUTER, events.PRECOMMIT_CREATE,
@@ -431,6 +430,8 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         self._delete_router_gw_port_db(context, router)
         self._core_plugin.delete_port(
             admin_ctx, gw_port_id, l3_port_check=False)
+        with context.session.begin(subtransactions=True):
+            context.session.refresh(router)
         registry.notify(resources.ROUTER_GATEWAY,
                         events.AFTER_DELETE, self,
                         router_id=router_id,
@@ -442,11 +443,9 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
 
     def _delete_router_gw_port_db(self, context, router):
         with context.session.begin(subtransactions=True):
-            gw_port = router.gw_port
             router.gw_port = None
             if router not in context.session:
                 context.session.add(router)
-            context.session.expire(gw_port)
             try:
                 kwargs = {'context': context, 'router_id': router.id}
                 registry.notify(
@@ -542,7 +541,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         router = self._get_router(context, router_id)
         device_owner = self._get_device_owner(context, router)
         if any(rp.port_type == device_owner
-               for rp in router.attached_ports.all()):
+               for rp in router.attached_ports):
             raise l3.RouterInUse(router_id=router_id)
         return router
 
@@ -554,13 +553,16 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         router = self._ensure_router_not_in_use(context, id)
         original = self._make_router_dict(router)
         self._delete_current_gw_port(context, id, router, None)
+        with context.session.begin(subtransactions=True):
+            context.session.refresh(router)
 
-        router_ports = router.attached_ports.all()
+        router_ports = router.attached_ports
         for rp in router_ports:
             self._core_plugin.delete_port(context.elevated(),
                                           rp.port.id,
                                           l3_port_check=False)
         with context.session.begin(subtransactions=True):
+            context.session.refresh(router)
             registry.notify(resources.ROUTER, events.PRECOMMIT_DELETE,
                             self, context=context, router_db=router,
                             router_id=id)
@@ -922,6 +924,8 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                         new_interface=new_router_intf,
                         interface_info=interface_info)
 
+        with context.session.begin(subtransactions=True):
+            context.session.refresh(router)
         return self._make_router_interface_info(
             router.id, port['tenant_id'], port['id'], port['network_id'],
             subnets[-1]['id'], [subnet['id'] for subnet in subnets])
@@ -1048,6 +1052,8 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                         port=port,
                         router_id=router_id,
                         interface_info=interface_info)
+        with context.session.begin(subtransactions=True):
+            context.session.refresh(router)
         return self._make_router_interface_info(router_id, port['tenant_id'],
                                                 port['id'], port['network_id'],
                                                 subnets[0]['id'],
@@ -1963,14 +1969,7 @@ class L3_NAT_db_mixin(L3_NAT_dbonly_mixin, L3RpcNotifierMixin):
     def _migrate_router_ports(
         self, context, router_db, old_owner, new_owner):
         """Update the model to support the dvr case of a router."""
-        for rp in router_db.attached_ports.filter_by(port_type=old_owner):
-            rp.port_type = new_owner
-            rp.port.device_owner = new_owner
-
-
-@removals.remove(
-    message="This will be removed in the Pike release. "
-            "Subscriptions are now registered during object creation."
-)
-def subscribe():
-    pass
+        for rp in router_db.attached_ports:
+            if rp.port_type == old_owner:
+                rp.port_type = new_owner
+                rp.port.device_owner = new_owner

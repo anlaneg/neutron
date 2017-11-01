@@ -340,8 +340,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                 ip_version, ipv6_subnet_modes, interface_id)
 
     def _namespace_exists(self, namespace):
-        ip = ip_lib.IPWrapper(namespace=namespace)
-        return ip.netns.exists(namespace)
+        return ip_lib.network_namespace_exists(namespace)
 
     def _metadata_proxy_exists(self, conf, router):
         pm = external_process.ProcessManager(
@@ -617,6 +616,12 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
     def _assert_no_ip_addresses_on_interface(self, namespace, interface):
         self.assertEqual(
             [], self._get_addresses_on_device(namespace, interface))
+
+    def _assert_ip_addresses_on_interface(self,
+                                          namespace, interface, ip_addresses):
+        for ip_address in ip_addresses:
+            self._assert_ip_address_on_interface(namespace, interface,
+                                                 ip_address)
 
     def _assert_ip_address_on_interface(self,
                                         namespace, interface, ip_address):

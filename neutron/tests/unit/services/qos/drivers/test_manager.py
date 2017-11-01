@@ -12,16 +12,17 @@
 
 import mock
 from neutron_lib.api.definitions import portbindings
+from neutron_lib import constants as lib_consts
 from neutron_lib import context
+from neutron_lib.services.qos import base as qos_driver_base
+from neutron_lib.services.qos import constants as qos_consts
 from oslo_utils import uuidutils
 
 from neutron.common import constants
 from neutron.common import exceptions
 from neutron.objects import ports as ports_object
 from neutron.objects.qos import rule as rule_object
-from neutron.services.qos.drivers import base as qos_driver_base
 from neutron.services.qos.drivers import manager as driver_mgr
-from neutron.services.qos import qos_consts
 from neutron.tests.unit.services.qos import base
 
 
@@ -95,7 +96,7 @@ class TestQoSDriversRulesValidations(TestQosDriversManagerBase):
                     qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH: {
                         "min_kbps": {'type:values': None},
                         'direction': {
-                            'type:values': constants.VALID_DIRECTIONS}
+                            'type:values': lib_consts.VALID_DIRECTIONS}
                     }
                 },
                 'vif_types': [portbindings.VIF_TYPE_OVS],
@@ -156,7 +157,7 @@ class TestQosDriversManagerRules(TestQosDriversManagerBase):
                     qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH: {
                         "min_kbps": {'type:values': None},
                         'direction': {
-                            'type:values': constants.VALID_DIRECTIONS}
+                            'type:values': lib_consts.VALID_DIRECTIONS}
                     }
                 }
             },
@@ -166,11 +167,11 @@ class TestQosDriversManagerRules(TestQosDriversManagerBase):
                     qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH: {
                         "min_kbps": {'type:values': None},
                         'direction': {
-                            'type:values': constants.VALID_DIRECTIONS}
+                            'type:values': lib_consts.VALID_DIRECTIONS}
                     },
                     qos_consts.RULE_TYPE_DSCP_MARKING: {
                         "dscp_mark": {
-                            'type:values': constants.VALID_DSCP_MARKS}
+                            'type:values': lib_consts.VALID_DSCP_MARKS}
                     }
                 }
             }
@@ -195,11 +196,11 @@ class TestQosDriversManagerRules(TestQosDriversManagerBase):
                     qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH: {
                         "min_kbps": {'type:values': None},
                         'direction': {
-                            'type:values': constants.VALID_DIRECTIONS}
+                            'type:values': lib_consts.VALID_DIRECTIONS}
                     },
                     qos_consts.RULE_TYPE_DSCP_MARKING: {
                         "dscp_mark": {
-                            'type:values': constants.VALID_DSCP_MARKS}
+                            'type:values': lib_consts.VALID_DSCP_MARKS}
                     }
                 }
             }
@@ -245,11 +246,11 @@ class TestQosDriversManagerRules(TestQosDriversManagerBase):
                     qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH: {
                         "min_kbps": {'type:range': [0, 1000]},
                         'direction': {
-                            'type:values': constants.VALID_DIRECTIONS}
+                            'type:values': lib_consts.VALID_DIRECTIONS}
                     },
                     qos_consts.RULE_TYPE_DSCP_MARKING: {
                         "dscp_mark": {
-                            'type:values': constants.VALID_DSCP_MARKS}
+                            'type:values': lib_consts.VALID_DSCP_MARKS}
                     }
                 }
             }

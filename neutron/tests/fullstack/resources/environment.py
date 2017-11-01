@@ -36,7 +36,7 @@ class EnvironmentDescription(object):
     def __init__(self, network_type='vxlan', l2_pop=True, qos=False,
                  mech_drivers='openvswitch,linuxbridge',
                  service_plugins='router,trunk', arp_responder=False,
-                 agent_down_time=75):
+                 agent_down_time=75, router_scheduler=None):
         self.network_type = network_type
         self.l2_pop = l2_pop
         self.qos = qos
@@ -44,6 +44,7 @@ class EnvironmentDescription(object):
         self.mech_drivers = mech_drivers
         self.arp_responder = arp_responder
         self.agent_down_time = agent_down_time
+        self.router_scheduler = router_scheduler
 
         self.service_plugins = service_plugins
         if self.qos:
@@ -63,13 +64,16 @@ class HostDescription(object):
     def __init__(self, l3_agent=False, dhcp_agent=False,
                  of_interface='ovs-ofctl', ovsdb_interface='vsctl',
                  l2_agent_type=constants.AGENT_TYPE_OVS,
-                 firewall_driver='noop'):
+                 firewall_driver='noop', availability_zone=None,
+                 l3_agent_mode=None):
         self.l2_agent_type = l2_agent_type
         self.l3_agent = l3_agent
         self.dhcp_agent = dhcp_agent
         self.of_interface = of_interface
         self.ovsdb_interface = ovsdb_interface
         self.firewall_driver = firewall_driver
+        self.availability_zone = availability_zone
+        self.l3_agent_mode = l3_agent_mode
 
 
 class Host(fixtures.Fixture):

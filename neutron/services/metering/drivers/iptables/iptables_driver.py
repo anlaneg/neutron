@@ -20,7 +20,6 @@ from oslo_utils import importutils
 from neutron._i18n import _
 from neutron.agent.l3 import dvr_snat_ns
 from neutron.agent.l3 import namespaces
-from neutron.agent.linux import interface
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_manager
 from neutron.common import constants
@@ -39,7 +38,7 @@ RULE = '-r-'
 LABEL = '-l-'
 
 config.register_interface_driver_opts_helper(cfg.CONF)
-cfg.CONF.register_opts(interface.OPTS)
+config.register_interface_opts()
 
 
 class IptablesManagerTransaction(object):
@@ -82,7 +81,7 @@ class RouterWithMetering(object):
                 self.id)
             # Check for namespace existence before we assign the
             # snat_iptables_manager
-            if ip_lib.IPWrapper().netns.exists(snat_ns_name):
+            if ip_lib.network_namespace_exists(snat_ns_name):
                 self.snat_iptables_manager = iptables_manager.IptablesManager(
                     namespace=snat_ns_name,
                     binary_name=WRAP_NAME,
@@ -92,8 +91,7 @@ class RouterWithMetering(object):
         # NOTE(Swami): If distributed routers, all external traffic on a
         # compute node will flow through the rfp interface in the router
         # namespace.
-        ip_wrapper = ip_lib.IPWrapper(namespace=self.ns_name)
-        if ip_wrapper.netns.exists(self.ns_name):
+        if ip_lib.network_namespace_exists(self.ns_name):
             self.iptables_manager = iptables_manager.IptablesManager(
                 namespace=self.ns_name,
                 binary_name=WRAP_NAME,

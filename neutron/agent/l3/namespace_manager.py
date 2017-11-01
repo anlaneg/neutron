@@ -121,8 +121,7 @@ class NamespaceManager(object):
         """Get a set of all namespaces on host managed by this manager."""
         try:
             #获取系统中所有namespace,并过滤出可被本mg管理的ns并将其返回
-            root_ip = ip_lib.IPWrapper()
-            namespaces = root_ip.get_namespaces()
+            namespaces = ip_lib.list_network_namespaces()
             return set(ns for ns in namespaces if self.is_managed(ns))
         except RuntimeError:
             LOG.exception('RuntimeError in obtaining namespace list for '

@@ -15,6 +15,7 @@
 
 import copy
 
+from oslo_log import log as logging
 from oslo_policy import policy as oslo_policy
 from oslo_utils import excutils
 from pecan import hooks
@@ -28,6 +29,8 @@ from neutron.pecan_wsgi import constants as pecan_constants
 from neutron.pecan_wsgi.controllers import quota
 from neutron.pecan_wsgi.hooks import utils
 from neutron import policy
+
+LOG = logging.getLogger(__name__)
 
 
 def _custom_getter(resource, resource_id):
@@ -136,10 +139,10 @@ class PolicyHook(hooks.PecanHook):
                     # If a tenant is modifying it's own object, it's safe to
                     # return a 403. Otherwise, pretend that it doesn't exist
                     # to avoid giving away information.
-                    orig_item_tenant_id = item.get('tenant_id')
-                    if (needs_prefetch and
-                        (neutron_context.tenant_id != orig_item_tenant_id or
-                         orig_item_tenant_id is None)):
+                    controller = utils.get_controller(state)
+                    s_action = controller.plugin_handlers[controller.SHOW]
+                    if not policy.check(neutron_context, s_action, item,
+                                        pluralized=collection):
                         ctxt.reraise = False
                 msg = _('The resource could not be found.')
                 raise webob.exc.HTTPNotFound(msg)
@@ -187,10 +190,10 @@ class PolicyHook(hooks.PecanHook):
         except oslo_policy.PolicyNotAuthorized:
             # This exception must be explicitly caught as the exception
             # translation hook won't be called if an error occurs in the
-            # 'after' handler.  Instead of raising an HTTPForbidden exception,
+            # 'after' handler.  Instead of raising an HTTPNotFound exception,
             # we have to set the status_code here to prevent the catch_errors
             # middleware from turning this into a 500.
-            state.response.status_code = 403
+            state.response.status_code = 404
             return
 
         if is_single:
@@ -208,10 +211,8 @@ class PolicyHook(hooks.PecanHook):
         # This routine will remove the fields that were requested to the
         # plugin for policy evaluation but were not specified in the
         # API request
-        user_fields = request.params.getall('fields')
         return dict(item for item in data.items()
-                    if (item[0] not in fields_to_strip and
-                        (not user_fields or item[0] in user_fields)))
+                    if item[0] not in fields_to_strip)
 
     def _exclude_attributes_by_policy(self, context, controller, resource,
                                       collection, data):
@@ -250,4 +251,7 @@ class PolicyHook(hooks.PecanHook):
             # This should be migrated to project_id later.
             if attr_name == 'tenant_id':
                 attributes_to_exclude.append('project_id')
+        if attributes_to_exclude:
+            LOG.debug("Attributes excluded by policy engine: %s",
+                      attributes_to_exclude)
         return attributes_to_exclude

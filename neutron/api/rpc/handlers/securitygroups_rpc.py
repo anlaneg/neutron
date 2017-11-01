@@ -37,7 +37,7 @@ class SecurityGroupServerRpcApi(object):
     is used by agents to call security group related methods implemented on the
     plugin side.  The other side of this interface is defined in
     SecurityGroupServerRpcCallback.  For more information about changing rpc
-    interfaces, see doc/source/devref/rpc_api.rst.
+    interfaces, see doc/source/contributor/internals/rpc_api.rst.
     """
     def __init__(self, topic):
         target = oslo_messaging.Target(
@@ -65,7 +65,7 @@ class SecurityGroupServerRpcCallback(object):
 
     This class implements the server side of an rpc interface.  The client side
     can be found in SecurityGroupServerRpcApi. For more information on changing
-    rpc interfaces, see doc/source/devref/rpc_api.rst.
+    rpc interfaces, see doc/source/contributor/internals/rpc_api.rst.
     """
 
     # API version history:
@@ -126,7 +126,7 @@ class SecurityGroupAgentRpcApiMixin(object):
     is used by plugins to call security group methods implemented on the
     agent side.  The other side of this interface can be found in
     SecurityGroupAgentRpcCallbackMixin.  For more information about changing
-    rpc interfaces, see doc/source/devref/rpc_api.rst.
+    rpc interfaces, see doc/source/contributor/internals/rpc_api.rst.
     """
 
     # history
@@ -158,32 +158,13 @@ class SecurityGroupAgentRpcApiMixin(object):
         cctxt.cast(context, 'security_groups_member_updated',
                    security_groups=security_groups)
 
-    def security_groups_provider_updated(self, context,
-                                         devices_to_update=None):
-        """Notify provider updated security groups."""
-        # TODO(kevinbenton): remove in Queens
-        # NOTE(ihrachys) the version here should really be 1.3, but since we
-        # don't support proper version pinning yet, we leave it intact to allow
-        # to work with older agents. The reason why we should not require the
-        # version here is that in rolling upgrade scenarios we always upgrade
-        # server first, and since the notification is directed from the newer
-        # server to older agents, and those agents don't have their RPC entry
-        # point bumped to 1.3 yet, we cannot safely enforce the minimal
-        # version. Newer payload works for older agents because agent handlers
-        # are written so that we silently ignore unknown parameters.
-        cctxt = self.client.prepare(version=self.SG_RPC_VERSION,
-                                    topic=self._get_security_group_topic(),
-                                    fanout=True)
-        cctxt.cast(context, 'security_groups_provider_updated',
-                   devices_to_update=devices_to_update)
-
 
 class SecurityGroupAgentRpcCallbackMixin(object):
     """A mix-in that enable SecurityGroup support in agent implementations.
 
     This class implements the server side of an rpc interface.  The client side
-    can be found in SecurityGroupServerRpcApi. For more information on changing
-    rpc interfaces, see doc/source/devref/rpc_api.rst.
+    can be found in SecurityGroupAgentRpcApiMixin. For more information on
+    changing rpc interfaces, see doc/source/contributor/internals/rpc_api.rst.
 
     The sg_agent reference implementation is available in neutron/agent
     """
@@ -218,14 +199,6 @@ class SecurityGroupAgentRpcCallbackMixin(object):
         if not self.sg_agent:
             return self._security_groups_agent_not_set()
         self.sg_agent.security_groups_member_updated(security_groups)
-
-    def security_groups_provider_updated(self, context, **kwargs):
-        """Callback for security group provider update.
-
-        This is now a NOOP since provider rules are static. The server just
-        generates the notification for agents running older versions that have
-        IP-specific rules.
-        """
 
 
 class SecurityGroupServerAPIShim(sg_rpc_base.SecurityGroupInfoAPIMixin):

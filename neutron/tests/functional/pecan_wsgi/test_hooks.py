@@ -209,6 +209,23 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
         self.assertEqual(1, self.mock_plugin.get_meh.call_count)
         self.assertEqual(0, self.mock_plugin.update_meh.call_count)
 
+    def test_before_on_put_not_found_when_not_authorized_to_get(self):
+        # the user won't even have permission to view this resource
+        # so the error on unauthorized updates should be translated into
+        # a 404
+        self.mock_plugin.get_meh.return_value = {
+            'id': 'yyy',
+            'attr': 'meh',
+            'restricted_attr': '',
+            'tenant_id': 'tenid'}
+        response = self.app.put_json('/v2.0/mehs/yyy.json',
+                                     params={'meh': {'attr': 'meh'}},
+                                     headers={'X-Project-Id': 'tenid'},
+                                     expect_errors=True)
+        self.assertEqual(404, response.status_int)
+        self.assertEqual(1, self.mock_plugin.get_meh.call_count)
+        self.assertEqual(0, self.mock_plugin.update_meh.call_count)
+
     def test_before_on_delete_not_authorized(self):
         # The policy hook here should load the resource, and therefore we must
         # mock a get response
@@ -227,9 +244,10 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
         self.assertEqual(1, self.mock_plugin.get_meh.call_count)
         self.assertEqual(0, self.mock_plugin.delete_meh.call_count)
 
-    def test_after_on_get_not_authorized(self):
+    def test_after_on_get_not_found(self):
         # The GET test policy will deny access to anything whose id is not
-        # 'xxx', so the following request should be forbidden
+        # 'xxx', so the following request should be forbidden and presented
+        # to the user as an HTTPNotFound
         self.mock_plugin.get_meh.return_value = {
             'id': 'yyy',
             'attr': 'meh',
@@ -240,7 +258,7 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
         response = self.app.get('/v2.0/mehs/yyy.json',
                                 headers={'X-Project-Id': 'tenid'},
                                 expect_errors=True)
-        self.assertEqual(403, response.status_int)
+        self.assertEqual(404, response.status_int)
         self.assertEqual(1, self.mock_plugin.get_meh.call_count)
 
     def test_after_on_get_excludes_admin_attribute(self):
@@ -316,13 +334,16 @@ class TestMetricsNotifierHook(test_functional.PecanFunctionalTest):
             self.mock_notifier.mock_calls)
         self.mock_notifier.reset_mock()
 
+        before_payload = {'network_id': network_id}
+        after_payload = before_payload.copy()
+        after_payload['network'] = directory.get_plugin().get_network(
+            context.get_admin_context(), network_id)
         response = self.app.delete(
             '/v2.0/networks/%s.json' % network_id, headers=req_headers)
         self.assertEqual(204, response.status_int)
-        payload = {'network_id': network_id}
         self.assertEqual(
-            [mock.call(mock.ANY, 'network.delete.start', payload),
-             mock.call(mock.ANY, 'network.delete.end', payload)],
+            [mock.call(mock.ANY, 'network.delete.start', before_payload),
+             mock.call(mock.ANY, 'network.delete.end', after_payload)],
             self.mock_notifier.mock_calls)
 
     def test_bulk_create_triggers_notification(self):

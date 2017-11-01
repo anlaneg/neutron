@@ -47,7 +47,12 @@ class NotifierHook(hooks.PecanHook):
         if action in ('create', 'update'):
             # notifier just gets plain old body without any treatment other
             # than the population of the object ID being operated on
-            payload = state.request.json.copy()
+            try:
+                payload = state.request.json.copy()
+                if not payload:
+                    return
+            except ValueError:
+                return
             if action == 'update':
                 payload['id'] = state.request.context.get('resource_id')
         elif action == 'delete':
@@ -60,14 +65,14 @@ class NotifierHook(hooks.PecanHook):
         resource_name = state.request.context.get('resource')
         collection_name = state.request.context.get('collection')
         neutron_context = state.request.context.get('neutron_context')
-        if not resource_name:
-            LOG.debug("Skipping NotifierHook processing as there was no "
-                      "resource associated with the request")
-            return
         action = pecan_constants.ACTION_MAP.get(state.request.method)
         if not action or action not in ('create', 'update', 'delete'):
             return
         if utils.is_member_action(utils.get_controller(state)):
+            return
+        if not resource_name:
+            LOG.debug("Skipping NotifierHook processing as there was no "
+                      "resource associated with the request")
             return
         if state.response.status_int > 300:
             LOG.debug("No notification will be sent due to unsuccessful "
@@ -100,5 +105,6 @@ class NotifierHook(hooks.PecanHook):
 
         if action == 'delete':
             resource_id = state.request.context.get('resource_id')
-            result = {resource_name + '_id': resource_id}
+            result[resource_name + '_id'] = resource_id
+
         self._notifier.info(neutron_context, notifier_method, result)

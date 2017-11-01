@@ -16,14 +16,15 @@
 
 import datetime
 
-import debtcollector
 from eventlet import greenthread
+from neutron_lib.agent import constants as agent_consts
 from neutron_lib.api import converters
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import context
+from neutron_lib.exceptions import availability_zone as az_exc
 from neutron_lib.plugins import directory
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -136,7 +137,7 @@ class AgentAvailabilityZoneMixin(az_ext.AvailabilityZonePluginBase):
         azs = [item[0] for item in query]
         diff = set(availability_zones) - set(azs)
         if diff:
-            raise az_ext.AvailabilityZoneNotFound(availability_zone=diff.pop())
+            raise az_exc.AvailabilityZoneNotFound(availability_zone=diff.pop())
 
 
 class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
@@ -167,16 +168,6 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
             LOG.warning('%(agent_type)s agent %(agent_id)s is not active',
                         {'agent_type': agent_type, 'agent_id': agent.id})
         return agent
-
-    @debtcollector.removals.remove(
-        message="This will be removed in the future. "
-                "Please use 'neutron.agent.common.utils.is_agent_down' "
-                "instead.",
-        version='ocata'
-    )
-    @staticmethod
-    def is_agent_down(heart_beat_time):
-        return utils.is_agent_down(heart_beat_time)
 
     @staticmethod
     def is_agent_considered_for_versions(agent_dict):
@@ -332,7 +323,7 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
         Status is from server point of view: alive, new or revived.
         It could be used by agent to do some sync with the server if needed.
         """
-        status = n_const.AGENT_ALIVE
+        status = agent_consts.AGENT_ALIVE
         with context.session.begin(subtransactions=True):
             res_keys = ['agent_type', 'binary', 'host', 'topic']
             res = dict((k, agent_state[k]) for k in res_keys)
@@ -350,7 +341,7 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
                 agent_db = self._get_agent_by_type_and_host(
                     context, agent_state['agent_type'], agent_state['host'])
                 if not agent_db.is_active:
-                    status = n_const.AGENT_REVIVED
+                    status = agent_consts.AGENT_REVIVED
                     if 'resource_versions' not in agent_state:
                         # updating agent_state with resource_versions taken
                         # from db so that
@@ -380,7 +371,7 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
                 context.session.add(agent_db)
                 event_type = events.AFTER_CREATE
                 self._log_heartbeat(agent_state, agent_db, configurations_dict)
-                status = n_const.AGENT_NEW
+                status = agent_consts.AGENT_NEW
             greenthread.sleep(0)
 
         #触发agent after update 或者 after create事件
@@ -409,9 +400,6 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
             resource_versions = agent.get('resource_versions', {})
             consumer = version_manager.AgentConsumer(
                 agent_type=agent['agent_type'], host=agent['host'])
-            LOG.debug("Update consumer %(consumer)s versions to: "
-                      "%(versions)s", {'consumer': consumer,
-                                       'versions': resource_versions})
             tracker.set_versions(consumer, resource_versions)
 
 
@@ -420,7 +408,8 @@ class AgentExtRpcCallback(object):
 
     This class implements the server side of an rpc interface.  The client side
     can be found in neutron.agent.rpc.PluginReportStateAPI.  For more
-    information on changing rpc interfaces, see doc/source/devref/rpc_api.rst.
+    information on changing rpc interfaces, see
+    doc/source/contributor/internals/rpc_api.rst.
 
     API version history:
         1.0 - Initial version.

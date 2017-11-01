@@ -15,6 +15,7 @@
 import collections
 
 import mock
+from neutron_lib import constants
 from neutron_lib import exceptions
 from oslo_serialization import jsonutils
 from oslo_utils import uuidutils
@@ -24,7 +25,6 @@ import testtools
 from neutron.agent.common import ovs_lib
 from neutron.agent.common import utils
 from neutron.conf.agent import common as config
-from neutron.plugins.common import constants
 from neutron.plugins.ml2.drivers.openvswitch.agent.common \
     import constants as p_const
 from neutron.tests import base
@@ -239,7 +239,7 @@ class OVS_Lib_Test(base.BaseTestCase):
         self.execute.assert_has_calls(expected_calls)
 
     def _ofctl_args(self, cmd, *args):
-        cmd = ['ovs-ofctl', cmd]
+        cmd = ['ovs-ofctl', cmd, '-O', self.br._highest_protocol_needed]
         cmd += args
         return cmd
 
@@ -443,6 +443,37 @@ class OVS_Lib_Test(base.BaseTestCase):
         self.assertRaises(exceptions.InvalidInput,
                           self.br.mod_flow,
                           **params)
+
+    def test_ofctl_of_version_use_highest(self):
+        self.br.add_flow(in_port=1, actions="drop")
+        self.execute.assert_has_calls([
+            mock.call(['ovs-ofctl', 'add-flows', '-O', p_const.OPENFLOW10,
+                       mock.ANY, '-'], process_input=mock.ANY,
+                      run_as_root=mock.ANY)
+        ])
+        self.br.use_at_least_protocol(p_const.OPENFLOW12)
+        self.execute.reset_mock()
+        self.br.add_flow(in_port=1, actions="drop")
+        self.execute.assert_has_calls([
+            mock.call(['ovs-ofctl', 'add-flows', '-O', p_const.OPENFLOW12,
+                       mock.ANY, '-'], process_input=mock.ANY,
+                      run_as_root=mock.ANY),
+        ])
+
+    def test_ofctl_of_version_keep_highest(self):
+        self.br.use_at_least_protocol(p_const.OPENFLOW13)
+        self.br.use_at_least_protocol(p_const.OPENFLOW12)
+        self.execute.reset_mock()
+        self.br.add_flow(in_port=1, actions="drop")
+        self.execute.assert_has_calls([
+            mock.call(['ovs-ofctl', 'add-flows', '-O', p_const.OPENFLOW13,
+                       mock.ANY, '-'], process_input=mock.ANY,
+                      run_as_root=mock.ANY),
+        ])
+
+    def test_ofctl_of_version_use_unknown(self):
+        with testtools.ExpectedException(Exception):
+            self.br.use_at_least_protocol("OpenFlow42")
 
     def test_run_ofctl_retry_on_socket_error(self):
         err = RuntimeError('failed to connect to socket')
@@ -761,6 +792,46 @@ class OVS_Lib_Test(base.BaseTestCase):
                         return_value=mock.Mock(address=None)):
             with testtools.ExpectedException(Exception):
                 self.br.get_local_port_mac()
+
+    def test_delete_egress_bw_limit_for_port(self):
+        with mock.patch.object(
+            self.br, "_set_egress_bw_limit_for_port"
+        ) as set_egress_mock, mock.patch.object(
+            self.br, "port_exists", return_value=True
+        ) as port_exists_mock:
+            self.br.delete_egress_bw_limit_for_port("test_port")
+            port_exists_mock.assert_called_once_with("test_port")
+            set_egress_mock.assert_called_once_with("test_port", 0, 0)
+
+    def test_delete_egress_bw_limit_for_port_port_not_exists(self):
+        with mock.patch.object(
+            self.br, "_set_egress_bw_limit_for_port"
+        ) as set_egress_mock, mock.patch.object(
+            self.br, "port_exists", return_value=False
+        ) as port_exists_mock:
+            self.br.delete_egress_bw_limit_for_port("test_port")
+            port_exists_mock.assert_called_once_with("test_port")
+            set_egress_mock.assert_not_called()
+
+    def test_delete_ingress_bw_limit_for_port(self):
+        with mock.patch.object(
+            self.br, "_delete_ingress_bw_limit_for_port"
+        ) as delete_ingress_mock, mock.patch.object(
+            self.br, "port_exists", return_value=True
+        ) as port_exists_mock:
+            self.br.delete_ingress_bw_limit_for_port("test_port")
+            port_exists_mock.assert_called_once_with("test_port")
+            delete_ingress_mock.assert_called_once_with("test_port")
+
+    def test_delete_ingress_bw_limit_for_port_port_not_exists(self):
+        with mock.patch.object(
+            self.br, "_delete_ingress_bw_limit_for_port"
+        ) as delete_ingress_mock, mock.patch.object(
+            self.br, "port_exists", return_value=False
+        ) as port_exists_mock:
+            self.br.delete_ingress_bw_limit_for_port("test_port")
+            port_exists_mock.assert_called_once_with("test_port")
+            delete_ingress_mock.assert_not_called()
 
     def test_get_vifs_by_ids(self):
         db_list_res = [

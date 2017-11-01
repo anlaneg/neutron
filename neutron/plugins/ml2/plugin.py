@@ -15,6 +15,7 @@
 #    under the License.
 
 from eventlet import greenthread
+from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import network as net_def
 from neutron_lib.api.definitions import port as port_def
@@ -22,6 +23,7 @@ from neutron_lib.api.definitions import port_security as psec
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import subnet as subnet_def
 from neutron_lib.api import validators
+from neutron_lib.api.validators import availability_zone as az_validator
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import exceptions
 from neutron_lib.callbacks import registry
@@ -32,6 +34,7 @@ from neutron_lib.exceptions import port_security as psec_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api
+from neutron_lib.services.qos import constants as qos_consts
 from oslo_config import cfg
 from oslo_db import exception as os_db_exception
 from oslo_log import helpers as log_helpers
@@ -76,13 +79,11 @@ from neutron.db import segments_db
 from neutron.db import subnet_service_type_db_models as service_type_db
 from neutron.db import vlantransparent_db
 from neutron.extensions import allowedaddresspairs as addr_pair
-from neutron.extensions import availability_zone as az_ext
 from neutron.extensions import netmtu_writable as mtu_ext
 from neutron.extensions import providernet as provider
 from neutron.extensions import vlantransparent
 from neutron.plugins.common import utils as p_utils
 from neutron.plugins.ml2.common import exceptions as ml2_exc
-from neutron.plugins.ml2 import config  # noqa
 from neutron.plugins.ml2 import db
 from neutron.plugins.ml2 import driver_context
 from neutron.plugins.ml2.extensions import qos as qos_ext
@@ -91,7 +92,6 @@ from neutron.plugins.ml2 import models
 from neutron.plugins.ml2 import ovo_rpc
 from neutron.plugins.ml2 import rpc
 from neutron.quota import resource_registry
-from neutron.services.qos import qos_consts
 from neutron.services.segments import plugin as segments_plugin
 
 LOG = log.getLogger(__name__)
@@ -486,6 +486,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         # It would be addressed during EventPayload conversion.
         registry.notify(resources.PORT, events.BEFORE_UPDATE, self,
                         context=plugin_context, port=orig_context.current,
+                        original_port=orig_context.current,
                         orig_binding=orig_binding, new_binding=new_binding)
 
         # After we've attempted to bind the port, we begin a
@@ -837,13 +838,13 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 net_db['vlan_transparent'] = vlt
                 result['vlan_transparent'] = vlt
 
-            if az_ext.AZ_HINTS in net_data:
+            if az_def.AZ_HINTS in net_data:
                 self.validate_availability_zones(context, 'network',
-                                                 net_data[az_ext.AZ_HINTS])
-                az_hints = az_ext.convert_az_list_to_string(
-                                                net_data[az_ext.AZ_HINTS])
-                net_db[az_ext.AZ_HINTS] = az_hints
-                result[az_ext.AZ_HINTS] = az_hints
+                                                 net_data[az_def.AZ_HINTS])
+                az_hints = az_validator.convert_az_list_to_string(
+                                                net_data[az_def.AZ_HINTS])
+                net_db[az_def.AZ_HINTS] = az_hints
+                result[az_def.AZ_HINTS] = az_hints
             #触发网络创建提交前事件
             registry.notify(resources.NETWORK, events.PRECOMMIT_CREATE, self,
                             context=context, request=net_data, network=result)
@@ -1334,8 +1335,10 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         attrs = port[port_def.RESOURCE_NAME]
         need_port_update_notify = False
         bound_mech_contexts = []
+        original_port = self.get_port(context, id)
         registry.notify(resources.PORT, events.BEFORE_UPDATE, self,
-                        context=context, port=attrs)
+                        context=context, port=attrs,
+                        original_port=original_port)
         with db_api.context_manager.writer.using(context):
             port_db = self._get_port(context, id)
             binding = port_db.port_binding
@@ -1421,8 +1424,11 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                     bound_mech_contexts.append(dist_mech_context)
             else:
                 self.mechanism_manager.update_port_precommit(mech_context)
-                self._setup_dhcp_agent_provisioning_component(
-                    context, updated_port)
+                if any(updated_port[k] != original_port[k]
+                       for k in ('fixed_ips', 'mac_address')):
+                    # only add block if fixed_ips or mac_address changed
+                    self._setup_dhcp_agent_provisioning_component(
+                        context, updated_port)
                 bound_mech_contexts.append(mech_context)
 
         # Notifications must be sent after the above transaction is complete
@@ -1453,6 +1459,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             context, original_port, updated_port)
 
         if original_port['admin_state_up'] != updated_port['admin_state_up']:
+            need_port_update_notify = True
+        if original_port['status'] != updated_port['status']:
             need_port_update_notify = True
         # NOTE: In the case of DVR ports, the port-binding is done after
         # router scheduling when sync_routers is called and so this call
@@ -1773,6 +1781,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 'status': status
             }
             registry.notify(resources.PORT, events.BEFORE_UPDATE, self,
+                            original_port=port,
                             context=context, port=attr)
         with db_api.context_manager.writer.using(context):
             context.session.add(port)  # bring port into writer session
@@ -1796,8 +1805,9 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                     context, port['id'], host)
                 if not binding:
                     return
-                binding.status = status
-                updated = True
+                if binding.status != status:
+                    binding.status = status
+                    updated = True
 
         if (updated and
             port['device_owner'] == const.DEVICE_OWNER_DVR_INTERFACE):

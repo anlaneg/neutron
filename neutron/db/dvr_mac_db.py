@@ -21,7 +21,9 @@ from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import exceptions as n_exc
+from neutron_lib.objects import exceptions
 from neutron_lib.plugins import directory
+from neutron_lib.utils import net
 from oslo_config import cfg
 from oslo_log import helpers as log_helpers
 from oslo_log import log as logging
@@ -32,7 +34,6 @@ from neutron.common import utils
 from neutron.db import api as db_api
 from neutron.db import models_v2
 from neutron.extensions import dvr as ext_dvr
-from neutron.objects import exceptions
 from neutron.objects import router
 
 
@@ -100,7 +101,7 @@ class DVRDbMixin(ext_dvr.DVRMacAddressPluginBase):
     @db_api.retry_if_session_inactive()
     def _create_dvr_mac_address_retry(self, context, host, base_mac):
         with db_api.context_manager.writer.using(context):
-            mac_address = utils.get_random_mac(base_mac)
+            mac_address = net.get_random_mac(base_mac)
             dvr_mac_binding = router.DVRMacAddress(
                 context, host=host, mac_address=netaddr.EUI(mac_address))
             dvr_mac_binding.create()

@@ -126,7 +126,8 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             # of the SG.  It would add SG object to the session.
             # Expunge it to ensure the following get_object doesn't
             # use the instance.
-            context.session.expunge_all()
+            context.session.expunge(model_query.get_by_id(
+                context, sg_models.SecurityGroup, sg.id))
             sg = sg_obj.SecurityGroup.get_object(context, id=sg.id)
             secgroup_dict = self._make_security_group_dict(sg)
             kwargs['security_group'] = secgroup_dict
@@ -453,7 +454,11 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         if not rule['protocol']:
             raise ext_sg.SecurityGroupProtocolRequiredWithPorts()
         ip_proto = self._get_ip_proto_number(rule['protocol'])
-        if ip_proto in [constants.PROTO_NUM_TCP, constants.PROTO_NUM_UDP]:
+        # Not all firewall_driver support all these protocols,
+        # but being strict here doesn't hurt.
+        if ip_proto in [constants.PROTO_NUM_DCCP, constants.PROTO_NUM_SCTP,
+                        constants.PROTO_NUM_TCP, constants.PROTO_NUM_UDP,
+                        constants.PROTO_NUM_UDPLITE]:
             if rule['port_range_min'] == 0 or rule['port_range_max'] == 0:
                 raise ext_sg.SecurityGroupInvalidPortValue(port=0)
             elif (rule['port_range_min'] is not None and
@@ -746,11 +751,15 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         if default_group:
             return default_group.security_group_id
 
-    @registry.receives(resources.PORT, [events.BEFORE_CREATE])
+    @registry.receives(resources.PORT, [events.BEFORE_CREATE,
+                                        events.BEFORE_UPDATE])
     @registry.receives(resources.NETWORK, [events.BEFORE_CREATE])
     def _ensure_default_security_group_handler(self, resource, event, trigger,
                                                context, **kwargs):
-        tenant_id = kwargs[resource]['tenant_id']
+        if event == events.BEFORE_UPDATE:
+            tenant_id = kwargs['original_' + resource]['tenant_id']
+        else:
+            tenant_id = kwargs[resource]['tenant_id']
         self._ensure_default_security_group(context, tenant_id)
 
     def _ensure_default_security_group(self, context, tenant_id):

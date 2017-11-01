@@ -13,14 +13,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
+from neutron_lib.services.qos import constants as qos_consts
 
 from neutron.common import exceptions as n_exc
 from neutron.core_extensions import base
 from neutron.db import api as db_api
 from neutron.objects.qos import policy as policy_object
-from neutron.plugins.common import constants as plugin_constants
-from neutron.services.qos import qos_consts
 
 
 class QosCoreResourceExtension(base.CoreResourceExtension):
@@ -66,8 +66,10 @@ class QosCoreResourceExtension(base.CoreResourceExtension):
     def _create_network_policy(self, context, network, network_changes):
         qos_policy_id = network_changes.get(qos_consts.QOS_POLICY_ID)
         if not qos_policy_id:
-            qos_policy_id = policy_object.QosPolicyDefault.get_object(
+            policy_obj = policy_object.QosPolicyDefault.get_object(
                 context, project_id=network['project_id'])
+            if policy_obj is not None:
+                qos_policy_id = policy_obj.qos_policy_id
 
         if qos_policy_id is not None:
             policy = self._get_policy_obj(context, qos_policy_id)

@@ -25,6 +25,7 @@ import os
 import re
 import sys
 
+from neutron_lib.utils import runtime
 from oslo_concurrency import lockutils
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -35,7 +36,6 @@ from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_comments as ic
 from neutron.agent.linux import utils as linux_utils
 from neutron.common import exceptions as n_exc
-from neutron.common import utils
 from neutron.conf.agent import common as config
 
 LOG = logging.getLogger(__name__)
@@ -61,6 +61,9 @@ MAX_CHAIN_LEN_NOWRAP = 28
 # Number of iptables rules to print before and after a rule that causes a
 # a failure during iptables-restore
 IPTABLES_ERROR_LINES_OF_CONTEXT = 5
+
+# RESOURCE_PROBLEM in include/xtables.h
+XTABLES_RESOURCE_PROBLEM_CODE = 4
 
 
 def comment_rule(rule, comment):
@@ -310,6 +313,10 @@ class IptablesManager(object):
 
     """
 
+    # Flag to denote we've already tried and used -w successfully, so don't
+    # run iptables-restore without it.
+    use_table_lock = False
+
     def __init__(self, _execute=None, state_less=False, use_ipv6=False,
                  namespace=None, binary_name=binary_name):
         if _execute:
@@ -466,9 +473,13 @@ class IptablesManager(object):
         if self.namespace:
             lock_name += '-' + self.namespace
 
+        # NOTE(ihrachys) we may get rid of the lock once all supported
+        # platforms get iptables with 999eaa241212d3952ddff39a99d0d55a74e3639e
+        # ("iptables-restore: support acquiring the lock.")
         #对此namespace中的iptables下发加锁
-        with lockutils.lock(lock_name, utils.SYNCHRONIZED_PREFIX, True):
-            first = self._apply_synchronized() #第一次生成
+        with lockutils.lock(lock_name, runtime.SYNCHRONIZED_PREFIX, True):
+            first = self._apply_synchronized()#第一次生成
+
             if not cfg.CONF.AGENT.debug_iptables_rules:
                 return first
             second = self._apply_synchronized() #第二次生成，应为空
@@ -486,6 +497,62 @@ class IptablesManager(object):
         if self.namespace:
             args = ['ip', 'netns', 'exec', self.namespace] + args
         return self.execute(args, run_as_root=True).split('\n')
+
+    @property
+    def xlock_wait_time(self):
+        # give agent some time to report back to server
+        return str(int(cfg.CONF.AGENT.report_interval / 3.0))
+
+    def _do_run_restore(self, args, commands, lock=False):
+        args = args[:]
+        if lock:
+            args += ['-w', self.xlock_wait_time]
+        try:
+            kwargs = {} if lock else {'log_fail_as_error': False}
+            self.execute(args, process_input='\n'.join(commands),
+                         run_as_root=True, **kwargs)
+        except RuntimeError as error:
+            return error
+
+    def _run_restore(self, args, commands):
+        # If we've already tried and used -w successfully, don't
+        # run iptables-restore without it.
+        if self.use_table_lock:
+            return self._do_run_restore(args, commands, lock=True)
+
+        err = self._do_run_restore(args, commands)
+        if (isinstance(err, linux_utils.ProcessExecutionError) and
+            err.returncode == XTABLES_RESOURCE_PROBLEM_CODE):
+            # maybe we run on a platform that includes iptables commit
+            # 999eaa241212d3952ddff39a99d0d55a74e3639e (for example, latest
+            # RHEL) and failed because of xlock acquired by another
+            # iptables process running in parallel. Try to use -w to
+            # acquire xlock.
+            err = self._do_run_restore(args, commands, lock=True)
+            if not err:
+                self.__class__.use_table_lock = True
+        return err
+
+    def _log_restore_err(self, err, commands):
+        try:
+            line_no = int(re.search(
+                'iptables-restore: line ([0-9]+?) failed',
+                str(err)).group(1))
+            context = IPTABLES_ERROR_LINES_OF_CONTEXT
+            log_start = max(0, line_no - context)
+            log_end = line_no + context
+        except AttributeError:
+            # line error wasn't found, print all lines instead
+            log_start = 0
+            log_end = len(commands)
+        log_lines = ('%7d. %s' % (idx, l)
+                     for idx, l in enumerate(
+                         commands[log_start:log_end],
+                         log_start + 1)
+                     )
+        LOG.error("IPTablesManager.apply failed to apply the "
+                  "following set of iptables rules:\n%s",
+                  '\n'.join(log_lines))
 
     #为iptables应用规则 
     def _apply_synchronized(self):
@@ -515,7 +582,7 @@ class IptablesManager(object):
                 # exist.
                 with excutils.save_and_reraise_exception() as ctx:
                     if (self.namespace and not
-                            ip_lib.IPWrapper().netns.exists(self.namespace)):
+                            ip_lib.network_namespace_exists(self.namespace)):
                         ctx.reraise = False
                         LOG.error("Namespace %s was deleted during IPTables "
                                   "operations.", self.namespace)
@@ -544,36 +611,19 @@ class IptablesManager(object):
             if not commands:
                 continue
             all_commands += commands
+
+            # always end with a new line
+            commands.append('')
+
             args = ['%s-restore' % (cmd,), '-n']
             if self.namespace:
                 args = ['ip', 'netns', 'exec', self.namespace] + args
-            try:
-                # always end with a new line
-                # 执行 iptable-restore -n,并提供输入
-                commands.append('')
-                self.execute(args, process_input='\n'.join(commands),
-                             run_as_root=True)
-            except RuntimeError as r_error:
-                with excutils.save_and_reraise_exception():
-                    try:
-                        line_no = int(re.search(
-                            'iptables-restore: line ([0-9]+?) failed',
-                            str(r_error)).group(1))
-                        context = IPTABLES_ERROR_LINES_OF_CONTEXT
-                        log_start = max(0, line_no - context)
-                        log_end = line_no + context
-                    except AttributeError:
-                        # line error wasn't found, print all lines instead
-                        log_start = 0
-                        log_end = len(commands)
-                    log_lines = ('%7d. %s' % (idx, l)
-                                 for idx, l in enumerate(
-                                     commands[log_start:log_end],
-                                     log_start + 1)
-                                 )
-                    LOG.error("IPTablesManager.apply failed to apply the "
-                              "following set of iptables rules:\n%s",
-                              '\n'.join(log_lines))
+            # 执行 iptable-restore -n,并提供输入
+            err = self._run_restore(args, commands)
+            if err:
+                self._log_restore_err(err, commands)
+                raise err
+
         LOG.debug("IPTablesManager.apply completed with success. %d iptables "
                   "commands were issued", len(all_commands))
         return all_commands
@@ -731,7 +781,8 @@ class IptablesManager(object):
         acc = {'pkts': 0, 'bytes': 0}
 
         for cmd, table in cmd_tables:
-            args = [cmd, '-t', table, '-L', name, '-n', '-v', '-x']
+            args = [cmd, '-t', table, '-L', name, '-n', '-v', '-x',
+                    '-w', self.xlock_wait_time]
             if zero:
                 args.append('-Z')
             if self.namespace:

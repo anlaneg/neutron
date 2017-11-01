@@ -143,6 +143,7 @@ class SecurityGroupRpcTestPlugin(test_sg.SecurityGroupTestPlugin,
         self.devices[id] = updated_port
         self.update_security_group_on_port(
             context, id, port, original_port, updated_port)
+        return updated_port
 
     def delete_port(self, context, id):
         port = self.get_port(context, id)
@@ -190,60 +191,6 @@ class SGServerRpcCallBackTestCase(test_sg.SecurityGroupDBTestCase):
                     res = self.deserialize(self.fmt,
                                            req.get_response(self.api))
                 self._delete('ports', port_id)
-
-    def test_notify_security_group_ipv6_gateway_port_added(self):
-        self._test_security_group_port(
-            const.DEVICE_OWNER_ROUTER_INTF,
-            '2001:0db8::1',
-            '2001:0db8::/64',
-            6,
-            '2001:0db8::1')
-        self.assertTrue(self.notifier.security_groups_provider_updated.called)
-
-    def test_notify_security_group_dvr_ipv6_gateway_port_added(self):
-        self._test_security_group_port(
-            const.DEVICE_OWNER_DVR_INTERFACE,
-            '2001:0db8::1',
-            '2001:0db8::/64',
-            6,
-            '2001:0db8::2')
-        self.assertTrue(self.notifier.security_groups_provider_updated.called)
-
-    def test_notify_security_group_ipv6_normal_port_added(self):
-        self._test_security_group_port(
-            None,
-            '2001:0db8::1',
-            '2001:0db8::/64',
-            6,
-            '2001:0db8::3')
-        self.assertFalse(self.notifier.security_groups_provider_updated.called)
-
-    def test_notify_security_group_ipv4_dhcp_port_added(self):
-        self._test_security_group_port(
-            const.DEVICE_OWNER_DHCP,
-            '192.168.1.1',
-            '192.168.1.0/24',
-            4,
-            '192.168.1.2')
-        self.assertTrue(self.notifier.security_groups_provider_updated.called)
-
-    def test_notify_security_group_ipv4_gateway_port_added(self):
-        self._test_security_group_port(
-            const.DEVICE_OWNER_ROUTER_INTF,
-            '192.168.1.1',
-            '192.168.1.0/24',
-            4,
-            '192.168.1.1')
-        self.assertFalse(self.notifier.security_groups_provider_updated.called)
-
-    def test_notify_security_group_ipv4_normal_port_added(self):
-        self._test_security_group_port(
-            None,
-            '192.168.1.1',
-            '192.168.1.0/24',
-            4,
-            '192.168.1.3')
-        self.assertFalse(self.notifier.security_groups_provider_updated.called)
 
     def _test_sg_rules_for_devices_ipv4_ingress_port_range(
             self, min_port, max_port):
@@ -956,12 +903,6 @@ class SecurityGroupAgentRpcTestCase(BaseSecurityGroupAgentRpcTestCase):
         self.assertFalse(self.agent.refresh_firewall.called)
         self.assertFalse(self.firewall.security_group_updated.called)
 
-    def test_security_groups_provider_updated(self):
-        self.agent.refresh_firewall = mock.Mock()
-        self.agent.security_groups_provider_updated(None)
-        self.agent.refresh_firewall.assert_has_calls(
-            [mock.call.refresh_firewall()])
-
     def test_refresh_firewall(self):
         self.agent.prepare_devices_filter(['fake_port_id'])
         self.agent.refresh_firewall()
@@ -1084,12 +1025,6 @@ class SecurityGroupAgentEnhancedRpcTestCase(
             ['fake_sgid3', 'fake_sgid4'])
         self.assertFalse(self.agent.refresh_firewall.called)
         self.assertFalse(self.firewall.security_group_updated.called)
-
-    def test_security_groups_provider_updated_enhanced_rpc(self):
-        self.agent.refresh_firewall = mock.Mock()
-        self.agent.security_groups_provider_updated(None)
-        self.agent.refresh_firewall.assert_has_calls(
-            [mock.call.refresh_firewall()])
 
     def test_refresh_firewall_enhanced_rpc(self):
         self.agent.prepare_devices_filter(['fake_port_id'])
@@ -1232,24 +1167,6 @@ class SecurityGroupAgentRpcWithDeferredRefreshTestCase(
             self.assertIn('fake_device', self.agent.devices_to_refilter)
             self.assertIn('fake_device_2', self.agent.devices_to_refilter)
             self.assertFalse(self.firewall.security_group_updated.called)
-
-    def test_security_groups_provider_updated(self):
-        self.agent.security_groups_provider_updated(None)
-        self.assertTrue(self.agent.global_refresh_firewall)
-
-    def test_security_groups_provider_updated_devices_specified(self):
-        self.agent.firewall.ports = {
-            'fake_device_1': {
-                'id': 'fake_port_id_1',
-                'device': 'fake_device_1'},
-            'fake_device_2': {
-                'id': 'fake_port_id_2',
-                'device': 'fake_device_2'}}
-        self.agent.security_groups_provider_updated(
-            ['fake_port_id_1', 'fake_port_id_2'])
-        self.assertFalse(self.agent.global_refresh_firewall)
-        self.assertIn('fake_device_1', self.agent.devices_to_refilter)
-        self.assertIn('fake_device_2', self.agent.devices_to_refilter)
 
     def test_setup_port_filters_new_ports_only(self):
         self.agent.prepare_devices_filter = mock.Mock()
@@ -1409,12 +1326,6 @@ class SecurityGroupAgentRpcApiTestCase(base.BaseTestCase):
                 return_value=self.notifier.client).start()
         self.mock_cast = mock.patch.object(self.notifier.client,
                 'cast').start()
-
-    def test_security_groups_provider_updated(self):
-        self.notifier.security_groups_provider_updated(None)
-        self.mock_cast.assert_has_calls(
-            [mock.call(None, 'security_groups_provider_updated',
-                       devices_to_update=None)])
 
     def test_security_groups_rule_updated(self):
         self.notifier.security_groups_rule_updated(
@@ -2241,12 +2152,11 @@ IPTABLES_FILTER_V6_1 = """# Generated by iptables_manager
 -I %(bn)s-INPUT 1 %(physdev_mod)s --physdev-EGRESS tap_port1 \
 %(physdev_is_bridged)s -j %(bn)s-o_port1
 -I %(bn)s-i_port1 1 -p ipv6-icmp -m icmp6 --icmpv6-type 130 -j RETURN
--I %(bn)s-i_port1 2 -p ipv6-icmp -m icmp6 --icmpv6-type 134 -j RETURN
--I %(bn)s-i_port1 3 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
--I %(bn)s-i_port1 4 -p ipv6-icmp -m icmp6 --icmpv6-type 136 -j RETURN
--I %(bn)s-i_port1 5 -m state --state RELATED,ESTABLISHED -j RETURN
--I %(bn)s-i_port1 6 -m state --state INVALID -j DROP
--I %(bn)s-i_port1 7 -j %(bn)s-sg-fallback
+-I %(bn)s-i_port1 2 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
+-I %(bn)s-i_port1 3 -p ipv6-icmp -m icmp6 --icmpv6-type 136 -j RETURN
+-I %(bn)s-i_port1 4 -m state --state RELATED,ESTABLISHED -j RETURN
+-I %(bn)s-i_port1 5 -m state --state INVALID -j DROP
+-I %(bn)s-i_port1 6 -j %(bn)s-sg-fallback
 -I %(bn)s-o_port1 1 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 \
 --icmpv6-type 131 -j RETURN
 -I %(bn)s-o_port1 2 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 \
@@ -2308,19 +2218,17 @@ IPTABLES_FILTER_V6_2 = """# Generated by iptables_manager
 -I %(bn)s-INPUT 2 %(physdev_mod)s --physdev-EGRESS tap_%(port2)s \
 %(physdev_is_bridged)s -j %(bn)s-o_%(port2)s
 -I %(bn)s-i_%(port1)s 1 -p ipv6-icmp -m icmp6 --icmpv6-type 130 -j RETURN
--I %(bn)s-i_%(port1)s 2 -p ipv6-icmp -m icmp6 --icmpv6-type 134 -j RETURN
--I %(bn)s-i_%(port1)s 3 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
--I %(bn)s-i_%(port1)s 4 -p ipv6-icmp -m icmp6 --icmpv6-type 136 -j RETURN
--I %(bn)s-i_%(port1)s 5 -m state --state RELATED,ESTABLISHED -j RETURN
--I %(bn)s-i_%(port1)s 6 -m state --state INVALID -j DROP
--I %(bn)s-i_%(port1)s 7 -j %(bn)s-sg-fallback
+-I %(bn)s-i_%(port1)s 2 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
+-I %(bn)s-i_%(port1)s 3 -p ipv6-icmp -m icmp6 --icmpv6-type 136 -j RETURN
+-I %(bn)s-i_%(port1)s 4 -m state --state RELATED,ESTABLISHED -j RETURN
+-I %(bn)s-i_%(port1)s 5 -m state --state INVALID -j DROP
+-I %(bn)s-i_%(port1)s 6 -j %(bn)s-sg-fallback
 -I %(bn)s-i_%(port2)s 1 -p ipv6-icmp -m icmp6 --icmpv6-type 130 -j RETURN
--I %(bn)s-i_%(port2)s 2 -p ipv6-icmp -m icmp6 --icmpv6-type 134 -j RETURN
--I %(bn)s-i_%(port2)s 3 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
--I %(bn)s-i_%(port2)s 4 -p ipv6-icmp -m icmp6 --icmpv6-type 136 -j RETURN
--I %(bn)s-i_%(port2)s 5 -m state --state RELATED,ESTABLISHED -j RETURN
--I %(bn)s-i_%(port2)s 6 -m state --state INVALID -j DROP
--I %(bn)s-i_%(port2)s 7 -j %(bn)s-sg-fallback
+-I %(bn)s-i_%(port2)s 2 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
+-I %(bn)s-i_%(port2)s 3 -p ipv6-icmp -m icmp6 --icmpv6-type 136 -j RETURN
+-I %(bn)s-i_%(port2)s 4 -m state --state RELATED,ESTABLISHED -j RETURN
+-I %(bn)s-i_%(port2)s 5 -m state --state INVALID -j DROP
+-I %(bn)s-i_%(port2)s 6 -j %(bn)s-sg-fallback
 -I %(bn)s-o_%(port1)s 1 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 \
 --icmpv6-type 131 -j RETURN
 -I %(bn)s-o_%(port1)s 2 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 \
@@ -2556,6 +2464,7 @@ class TestSecurityGroupAgentWithIptables(base.BaseTestCase):
             ['iptables-restore', '-n'],
             process_input=self._regex(v4_filter + raw),
             run_as_root=True,
+            log_fail_as_error=False,
             return_value='')
         self._register_mock_call(
             ['ip6tables-save'],
@@ -2565,6 +2474,7 @@ class TestSecurityGroupAgentWithIptables(base.BaseTestCase):
             ['ip6tables-restore', '-n'],
             process_input=self._regex(v6_filter + raw),
             run_as_root=True,
+            log_fail_as_error=False,
             return_value='')
 
     def test_prepare_remove_port(self):

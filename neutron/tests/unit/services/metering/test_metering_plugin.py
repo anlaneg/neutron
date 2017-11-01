@@ -14,18 +14,17 @@
 
 import mock
 from neutron_lib import context
+from neutron_lib.plugins import constants
 from neutron_lib.plugins import directory
 from oslo_utils import uuidutils
 
 from neutron.api.rpc.agentnotifiers import metering_rpc_agent_api
-from neutron.api.v2 import attributes as attr
 from neutron.common import utils
 from neutron.db import api as db_api
 from neutron.db.metering import metering_rpc
 from neutron.db.models import agent as agent_model
 from neutron.extensions import l3 as ext_l3
 from neutron.extensions import metering as ext_metering
-from neutron.plugins.common import constants
 from neutron.tests.common import helpers
 from neutron.tests import tools
 from neutron.tests.unit.db.metering import test_metering_db
@@ -44,9 +43,6 @@ METERING_SERVICE_PLUGIN_KLASS = (
 class MeteringTestExtensionManager(object):
 
     def get_resources(self):
-        attr.RESOURCE_ATTRIBUTE_MAP.update(ext_metering.RESOURCE_ATTRIBUTE_MAP)
-        attr.RESOURCE_ATTRIBUTE_MAP.update(ext_l3.RESOURCE_ATTRIBUTE_MAP)
-
         l3_res = ext_l3.L3.get_resources()
         metering_res = ext_metering.Metering.get_resources()
 

@@ -17,8 +17,10 @@ import random
 
 import mock
 import netaddr
+from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib import exceptions as n_exc
+from neutron_lib.objects import exceptions as o_exc
 from neutron_lib.utils import helpers
 from oslo_db import exception as obj_exc
 from oslo_db.sqlalchemy import utils as db_utils
@@ -29,7 +31,6 @@ from oslo_versionedobjects import fields as obj_fields
 from oslo_versionedobjects import fixture
 import testtools
 
-from neutron.common import constants
 from neutron.db import _model_query as model_query
 from neutron.db.models import l3 as l3_model
 from neutron.db import standard_attr
@@ -38,7 +39,6 @@ from neutron.objects import agent
 from neutron.objects import base
 from neutron.objects import common_types
 from neutron.objects.db import api as obj_db_api
-from neutron.objects import exceptions as o_exc
 from neutron.objects import flavor
 from neutron.objects.logapi import event_types
 from neutron.objects import network as net_obj
@@ -452,6 +452,7 @@ FIELD_TYPE_VALUE_GENERATOR_MAP = {
     common_types.EtherTypeEnumField: tools.get_random_ether_type,
     common_types.FloatingIPStatusEnumField: tools.get_random_floatingip_status,
     common_types.FlowDirectionEnumField: tools.get_random_flow_direction,
+    common_types.HARouterEnumField: tools.get_random_ha_states,
     common_types.IpamAllocationStatusEnumField: tools.get_random_ipam_status,
     common_types.IPNetworkField: tools.get_random_ip_network,
     common_types.IPNetworkPrefixLenField: tools.get_random_prefixlen,
@@ -600,6 +601,8 @@ class _BaseObjectTestCase(object):
         Note: if a value is a dict itself, the method will recursively update
         corresponding embedded objects.
         '''
+        # TODO(ihrachys) make the method update db_objs to keep generated test
+        # objects unique despite new locked fields
         for k, v in values_dict.items():
             for db_obj, fields, obj in zip(
                     db_objs or self.db_objs,
@@ -1715,7 +1718,17 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
             # check that the stored database model does not have non-empty
             # relationships
             dbattr = obj.fields_need_translation.get(field, field)
-            self.assertFalse(getattr(obj.db_obj, dbattr, None))
+            # Skipping empty relationships for the following reasons:
+            # 1) db_obj have the related object loaded - In this case we do not
+            #    have to create the related objects and the loop can continue.
+            # 2) when the related objects are not loaded - In this
+            #    case they need to be created because of the foreign key
+            #    relationships.  But we still need to check whether the
+            #    relationships are loaded or not. That is achieved by the
+            #    assertTrue statement after retrieving the dbattr in
+            #    this method.
+            if getattr(obj.db_obj, dbattr, None):
+                continue
 
             if isinstance(cls_.fields[field], obj_fields.ObjectField):
                 objclass_fields = self._get_non_synth_fields(objclass,

@@ -49,7 +49,7 @@ class DhcpRpcCallback(object):
     This class implements the server side of an rpc interface.  The client
     side of this interface can be found in
     neutron.agent.dhcp.agent.DhcpPluginApi.  For more information about
-    changing rpc interfaces, see doc/source/devref/rpc_api.rst.
+    changing rpc interfaces, see doc/source/contributor/internals/rpc_api.rst.
     """
 
     # API version history:
@@ -284,7 +284,7 @@ class DhcpRpcCallback(object):
         plugin = directory.get_plugin()
         try:
             old_port = plugin.get_port(context, port['id'])
-            if (old_port['device_id'] != n_const.DEVICE_ID_RESERVED_DHCP_PORT
+            if (old_port['device_id'] != constants.DEVICE_ID_RESERVED_DHCP_PORT
                 and old_port['device_id'] !=
                 utils.get_dhcp_agent_device_id(port['port']['network_id'],
                                                host)):

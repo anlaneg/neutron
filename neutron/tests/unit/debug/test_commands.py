@@ -35,7 +35,7 @@ class MyApp(object):
 class TestDebugCommands(base.BaseTestCase):
     def setUp(self):
         super(TestDebugCommands, self).setUp()
-        cfg.CONF.register_opts(interface.OPTS)
+        config.register_interface_opts()
         cfg.CONF.register_opts(config.EXT_NET_BRIDGE_OPTS)
         common_config.init([])
         config.register_interface_driver_opts_helper(cfg.CONF)
@@ -43,9 +43,12 @@ class TestDebugCommands(base.BaseTestCase):
         device_exists_p = mock.patch(
             'neutron.agent.linux.ip_lib.device_exists', return_value=False)
         device_exists_p.start()
-        namespace_p = mock.patch(
-            'neutron.agent.linux.ip_lib.IpNetnsCommand')
-        namespace_p.start()
+        namespace_e_p = mock.patch(
+            'neutron.agent.linux.ip_lib.network_namespace_exists')
+        namespace_e_p.start()
+        namespace_d_p = mock.patch(
+            'neutron.agent.linux.ip_lib.delete_network_namespace')
+        namespace_d_p.start()
         ensure_namespace_p = mock.patch(
             'neutron.agent.linux.ip_lib.IPWrapper.ensure_namespace')
         ensure_namespace_p.start()

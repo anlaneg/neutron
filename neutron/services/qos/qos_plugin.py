@@ -17,6 +17,7 @@ from neutron_lib.callbacks import events as callbacks_events
 from neutron_lib.callbacks import registry as callbacks_registry
 from neutron_lib.callbacks import resources as callbacks_resources
 from neutron_lib import exceptions as lib_exc
+from neutron_lib.services.qos import constants as qos_consts
 
 from neutron.common import exceptions as n_exc
 from neutron.db import api as db_api
@@ -29,7 +30,6 @@ from neutron.objects.qos import policy as policy_object
 from neutron.objects.qos import qos_policy_validator as checker
 from neutron.objects.qos import rule_type as rule_type_object
 from neutron.services.qos.drivers import manager
-from neutron.services.qos import qos_consts
 
 
 class QoSPlugin(qos.QoSPluginBase):
@@ -262,6 +262,7 @@ class QoSPlugin(qos.QoSPluginBase):
 
         :returns: QosPolicy objects meeting the search criteria
         """
+        filters = filters or dict()
         pager = base_obj.Pager(sorts, limit, page_reverse, marker)
         return policy_object.QosPolicy.get_objects(context, _pager=pager,
                                                    **filters)

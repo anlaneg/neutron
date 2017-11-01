@@ -73,9 +73,11 @@ updated:
 Configuration
 ~~~~~~~~~~~~~
 
-To enable the service, follow the steps below:
+To enable the service on a cloud with the architecture described in
+`Networking architecture <https://docs.openstack.org/security-guide/networking/architecture.html#openstack-networking-service-placement-on-physical-servers>`_,
+follow the steps below:
 
-On network nodes:
+On the controller nodes:
 
 #. Add the QoS service to the ``service_plugins`` setting in
    ``/etc/neutron/neutron.conf``. For example:
@@ -99,19 +101,26 @@ On network nodes:
       [ml2]
       extension_drivers = port_security, qos
 
-#. If the Open vSwitch agent is being used, set ``extensions`` to
-   ``qos`` in the ``[agent]`` section of
-   ``/etc/neutron/plugins/ml2/openvswitch_agent.ini``. For example:
+#. Edit the configuration file for the agent you are using and set the
+   ``extensions`` to include ``qos`` in the ``[agent]`` section of the
+   configuration file. The agent configuration file will reside in
+   ``/etc/neutron/plugins/ml2/<agent_name>_agent.ini`` where ``agent_name``
+   is the name of the agent being used (for example ``openvswitch``).
+   For example:
 
    .. code-block:: ini
 
       [agent]
       extensions = qos
 
-On compute nodes:
+On the network and compute nodes:
 
-#. In ``/etc/neutron/plugins/ml2/openvswitch_agent.ini``, add ``qos`` to the
-   ``extensions`` setting in the ``[agent]`` section. For example:
+#. Edit the configuration file for the agent you are using and set the
+   ``extensions`` to include ``qos`` in the ``[agent]`` section of the
+   configuration file. The agent configuration file will reside in
+   ``/etc/neutron/plugins/ml2/<agent_name>_agent.ini`` where ``agent_name``
+   is the name of the agent being used (for example ``openvswitch``).
+   For example:
 
    .. code-block:: ini
 
@@ -121,7 +130,7 @@ On compute nodes:
 .. note::
 
    QoS currently works with ml2 only (SR-IOV, Open vSwitch, and linuxbridge
-   are drivers that are enabled for QoS in Mitaka release).
+   are drivers enabled for QoS).
 
 Trusted projects policy.json configuration
 ------------------------------------------
@@ -183,17 +192,19 @@ First, create a QoS policy and its bandwidth limit rule:
    $ openstack network qos policy create bw-limiter
 
    Created a new policy:
-   +-------------+--------------------------------------+
-   | Field       | Value                                |
-   +-------------+--------------------------------------+
-   | description |                                      |
-   | id          | 5df855e9-a833-49a3-9c82-c0839a5f103f |
-   | is_default  | False                                |
-   | name        | qos1                                 |
-   | project_id  | 4db7c1ed114a4a7fb0f077148155c500     |
-   | rules       | []                                   |
-   | shared      | False                                |
-   +-------------+--------------------------------------+
+   +-------------------+--------------------------------------+
+   | Field             | Value                                |
+   +-------------------+--------------------------------------+
+   | description       |                                      |
+   | id                | 5df855e9-a833-49a3-9c82-c0839a5f103f |
+   | is_default        | False                                |
+   | name              | qos1                                 |
+   | project_id        | 4db7c1ed114a4a7fb0f077148155c500     |
+   | revision_number   | 1                                    |
+   | rules             | []                                   |
+   | shared            | False                                |
+   | tags              | []                                   |
+   +-------------------+--------------------------------------+
 
    $ openstack network qos rule create --type bandwidth-limit --max-kbps 3000 \
        --max-burst-kbits 300 --egress bw-limiter
@@ -234,15 +245,13 @@ the already created policy. In the next example, we will assign the
 
    $ openstack port set --qos-policy bw-limiter \
        88101e57-76fa-4d12-b0e0-4fc7634b874a
-   Updated port: 88101e57-76fa-4d12-b0e0-4fc7634b874a
 
 In order to detach a port from the QoS policy, simply update again the
 port configuration.
 
 .. code-block:: console
 
-   $ openstack port unset --no-qos-policy 88101e57-76fa-4d12-b0e0-4fc7634b874a
-   Updated port: 88101e57-76fa-4d12-b0e0-4fc7634b874a
+   $ openstack port unset --qos-policy 88101e57-76fa-4d12-b0e0-4fc7634b874a
 
 
 Ports can be created with a policy attached to them too.
@@ -284,6 +293,7 @@ Ports can be created with a policy attached to them too.
    | security_group_ids    | 0531cc1a-19d1-4cc7-ada5-49f8b08245be             |
    | status                | DOWN                                             |
    | subnet_id             | None                                             |
+   | tags                  | []                                               |
    | updated_at            | 2017-05-15T08:43:00Z                             |
    +-----------------------+--------------------------------------------------+
 
@@ -300,7 +310,6 @@ network, or initially create the network attached to the policy.
 .. code-block:: console
 
     $ openstack network set --qos-policy bw-limiter private
-    Updated network: private
 
 .. note::
 
@@ -331,32 +340,37 @@ be used.
     $ openstack network qos policy create --default bw-limiter
 
     Created a new policy:
-    +-------------+--------------------------------------+
-    | Field       | Value                                |
-    +-------------+--------------------------------------+
-    | description |                                      |
-    | id          | 5df855e9-a833-49a3-9c82-c0839a5f103f |
-    | is_default  | True                                 |
-    | name        | qos1                                 |
-    | project_id  | 4db7c1ed114a4a7fb0f077148155c500     |
-    | rules       | []                                   |
-    | shared      | False                                |
-    +-------------+--------------------------------------+
+    +-------------------+--------------------------------------+
+    | Field             | Value                                |
+    +-------------------+--------------------------------------+
+    | description       |                                      |
+    | id                | 5df855e9-a833-49a3-9c82-c0839a5f103f |
+    | is_default        | True                                 |
+    | name              | qos1                                 |
+    | project_id        | 4db7c1ed114a4a7fb0f077148155c500     |
+    | revision_number   | 1                                    |
+    | rules             | []                                   |
+    | shared            | False                                |
+    | tags              | []                                   |
+    +-------------------+--------------------------------------+
 
     $ openstack network qos policy set --no-default bw-limiter
 
     Created a new policy:
-    +-------------+--------------------------------------+
-    | Field       | Value                                |
-    +-------------+--------------------------------------+
-    | description |                                      |
-    | id          | 5df855e9-a833-49a3-9c82-c0839a5f103f |
-    | is_default  | False                                |
-    | name        | qos1                                 |
-    | project_id  | 4db7c1ed114a4a7fb0f077148155c500     |
-    | rules       | []                                   |
-    | shared      | False                                |
-    +-------------+--------------------------------------+
+    +-------------------+--------------------------------------+
+    | Field             | Value                                |
+    +-------------------+--------------------------------------+
+    | description       |                                      |
+    | id                | 5df855e9-a833-49a3-9c82-c0839a5f103f |
+    | is_default        | False                                |
+    | name              | qos1                                 |
+    | project_id        | 4db7c1ed114a4a7fb0f077148155c500     |
+    | revision_number   | 1                                    |
+    | rules             | []                                   |
+    | shared            | False                                |
+    | tags              | []                                   |
+    +-------------------+--------------------------------------+
+
 
 
 Administrator enforcement
@@ -379,7 +393,6 @@ attached port.
 
     $ openstack network qos rule set --max-kbps 2000 --max-burst-kbps 200 \
         --ingress bw-limiter 92ceb52f-170f-49d0-9528-976e2fee2d6f
-    Updated bandwidth_limit_rule: 92ceb52f-170f-49d0-9528-976e2fee2d6f
 
     $ openstack network qos rule show \
         bw-limiter 92ceb52f-170f-49d0-9528-976e2fee2d6f
@@ -399,17 +412,19 @@ Just like with bandwidth limiting, create a policy for DSCP marking rule:
 
     $ openstack network qos policy create dscp-marking
 
-    +-------------+--------------------------------------+
-    | Field       | Value                                |
-    +-------------+--------------------------------------+
-    | description |                                      |
-    | id          | d1f90c76-fbe8-4d6f-bb87-a9aea997ed1e |
-    | is_default  | False                                |
-    | name        | dscp-marking                         |
-    | project_id  | 4db7c1ed114a4a7fb0f077148155c500     |
-    | rules       | []                                   |
-    | shared      | False                                |
-    +-------------+--------------------------------------+
+    +-------------------+--------------------------------------+
+    | Field             | Value                                |
+    +-------------------+--------------------------------------+
+    | description       |                                      |
+    | id                | d1f90c76-fbe8-4d6f-bb87-a9aea997ed1e |
+    | is_default        | False                                |
+    | name              | dscp-marking                         |
+    | project_id        | 4db7c1ed114a4a7fb0f077148155c500     |
+    | revision_number   | 1                                    |
+    | rules             | []                                   |
+    | shared            | False                                |
+    | tags              | []                                   |
+    +-------------------+--------------------------------------+
 
 You can create, update, list, delete, and show DSCP markings
 with the neutron client:
@@ -431,7 +446,6 @@ with the neutron client:
 
     $ openstack network qos rule set --dscp-mark 22 \
         dscp-marking 115e4f70-8034-4176-8fe9-2c47f8878a7d
-    Updated dscp_rule: 115e4f70-8034-4176-8fe9-2c47f8878a7d
 
     $ openstack network qos rule list dscp-marking
 
@@ -453,24 +467,25 @@ with the neutron client:
 
     $ openstack network qos rule delete \
         dscp-marking 115e4f70-8034-4176-8fe9-2c47f8878a7d
-      Deleted dscp_rule: 115e4f70-8034-4176-8fe9-2c47f8878a7d
 
 You can also include minimum bandwidth rules in your policy:
 
 .. code-block:: console
 
     $ openstack network qos policy create bandwidth-control
-    +-------------+--------------------------------------+
-    | Field       | Value                                |
-    +-------------+--------------------------------------+
-    | description |                                      |
-    | id          | 8491547e-add1-4c6c-a50e-42121237256c |
-    | is_default  | False                                |
-    | name        | bandwidth-control                    |
-    | project_id  | 7cc5a84e415d48e69d2b06aa67b317d8     |
-    | rules       | []                                   |
-    | shared      | False                                |
-    +-------------+--------------------------------------+
+    +-------------------+--------------------------------------+
+    | Field             | Value                                |
+    +-------------------+--------------------------------------+
+    | description       |                                      |
+    | id                | 8491547e-add1-4c6c-a50e-42121237256c |
+    | is_default        | False                                |
+    | name              | bandwidth-control                    |
+    | project_id        | 7cc5a84e415d48e69d2b06aa67b317d8     |
+    | revision_number   | 1                                    |
+    | rules             | []                                   |
+    | shared            | False                                |
+    | tags              | []                                   |
+    +-------------------+--------------------------------------+
 
     $ openstack network qos rule create \
       --type minimum-bandwidth --min-kbps 1000 --egress bandwidth-control
@@ -506,21 +521,23 @@ It is also possible to combine several rules in one policy:
     +----------------+--------------------------------------+
 
     $ openstack network qos policy show bandwidth-control
-    +-------------+-------------------------------------------------------------------+
-    | Field       | Value                                                             |
-    +-------------+-------------------------------------------------------------------+
-    | description |                                                                   |
-    | id          | 8491547e-add1-4c6c-a50e-42121237256c                              |
-    | is_default  | False                                                             |
-    | name        | bandwidth-control                                                 |
-    | project_id  | 7cc5a84e415d48e69d2b06aa67b317d8                                  |
-    | rules       | [{u'max_kbps': 50000, u'type': u'bandwidth_limit',                |
-    |             |   u'id': u'0db48906-a762-4d32-8694-3f65214c34a6',                 |
-    |             |   u'max_burst_kbps': 50000,                                       |
-    |             |   u'qos_policy_id': u'8491547e-add1-4c6c-a50e-42121237256c'},     |
-    |             |  {u'direction':                                                   |
-    |             |   u'egress', u'min_kbps': 1000, u'type': u'minimum_bandwidth',    |
-    |             |   u'id': u'da858b32-44bc-43c9-b92b-cf6e2fa836ab',                 |
-    |             |   u'qos_policy_id': u'8491547e-add1-4c6c-a50e-42121237256c'}]     |
-    | shared      | False                                                             |
-    +-------------+-------------------------------------------------------------------+
+    +-------------------+-------------------------------------------------------------------+
+    | Field             | Value                                                             |
+    +-------------------+-------------------------------------------------------------------+
+    | description       |                                                                   |
+    | id                | 8491547e-add1-4c6c-a50e-42121237256c                              |
+    | is_default        | False                                                             |
+    | name              | bandwidth-control                                                 |
+    | project_id        | 7cc5a84e415d48e69d2b06aa67b317d8                                  |
+    | revision_number   | 4                                                                 |
+    | rules             | [{u'max_kbps': 50000, u'type': u'bandwidth_limit',                |
+    |                   |   u'id': u'0db48906-a762-4d32-8694-3f65214c34a6',                 |
+    |                   |   u'max_burst_kbps': 50000,                                       |
+    |                   |   u'qos_policy_id': u'8491547e-add1-4c6c-a50e-42121237256c'},     |
+    |                   |  {u'direction':                                                   |
+    |                   |   u'egress', u'min_kbps': 1000, u'type': u'minimum_bandwidth',    |
+    |                   |   u'id': u'da858b32-44bc-43c9-b92b-cf6e2fa836ab',                 |
+    |                   |   u'qos_policy_id': u'8491547e-add1-4c6c-a50e-42121237256c'}]     |
+    | shared            | False                                                             |
+    | tags              | []                                                                |
+    +-------------------+-------------------------------------------------------------------+

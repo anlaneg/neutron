@@ -76,9 +76,6 @@ LOG = logging.getLogger(__name__)
 # IP allocations being cleaned up by cascade.
 AUTO_DELETE_PORT_OWNERS = [constants.DEVICE_OWNER_DHCP]
 
-DNS_DOMAIN_DEFAULT = 'openstacklocal.'
-FQDN_MAX_LEN = 255
-
 
 def _check_subnet_not_used(context, subnet_id):
     try:
@@ -647,7 +644,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         if l3plugin:
             gw_ports = self._get_router_gw_ports_by_network(context,
                     network['id'])
-            router_ids = [p['device_id'] for p in gw_ports]
+            router_ids = [p.device_id for p in gw_ports]
             for id in router_ids:
                 try:
                     self._update_router_gw_port(context, id, network, subnet)

@@ -92,21 +92,20 @@ def create_protocol_flows(direction, flow_template, port, rule):
                                          flow_template.copy(),
                                          port)
     protocol = rule.get('protocol')
-    if protocol:
-        if (rule.get('ethertype') == n_consts.IPv6 and
-                protocol == n_consts.PROTO_NAME_ICMP):
-            flow_template['nw_proto'] = n_consts.PROTO_NUM_IPV6_ICMP
-        else:
-            flow_template['nw_proto'] = n_consts.IP_PROTOCOL_MAP.get(
-                protocol, protocol)
+    if protocol is not None:
+        flow_template['nw_proto'] = protocol
 
-    flows = create_port_range_flows(flow_template, rule)
+    if protocol in [n_consts.PROTO_NUM_ICMP, n_consts.PROTO_NUM_IPV6_ICMP]:
+        flows = create_icmp_flows(flow_template, rule)
+    else:
+        flows = create_port_range_flows(flow_template, rule)
     return flows or [flow_template]
 
 
 def create_port_range_flows(flow_template, rule):
-    protocol = rule.get('protocol')
-    if protocol not in ovsfw_consts.PROTOCOLS_WITH_PORTS:
+    protocol = ovsfw_consts.REVERSE_IP_PROTOCOL_MAP_WITH_PORTS.get(
+        rule.get('protocol'))
+    if protocol is None:
         return []
     flows = []
     src_port_match = '{:s}_src'.format(protocol)
@@ -140,6 +139,19 @@ def create_port_range_flows(flow_template, rule):
             flows.append(flow)
 
     return flows
+
+
+def create_icmp_flows(flow_template, rule):
+    icmp_type = rule.get('port_range_min')
+    if icmp_type is None:
+        return
+    flow = flow_template.copy()
+    flow['icmp_type'] = icmp_type
+
+    icmp_code = rule.get('port_range_max')
+    if icmp_code is not None:
+        flow['icmp_code'] = icmp_code
+    return [flow]
 
 
 def create_flows_for_ip_address(ip_address, direction, ethertype,

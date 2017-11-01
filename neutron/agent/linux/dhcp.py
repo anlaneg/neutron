@@ -251,12 +251,11 @@ class DhcpLocalProcess(DhcpBase):
                         self.interface_name)
 
         #移除对应的namespace
-        ns_ip = ip_lib.IPWrapper(namespace=self.network.namespace)
-        if not ns_ip.netns.exists(self.network.namespace):
+        if not ip_lib.network_namespace_exists(self.network.namespace):
             LOG.debug("Namespace already deleted: %s", self.network.namespace)
             return
         try:
-            ns_ip.netns.delete(self.network.namespace)
+            ip_lib.delete_network_namespace(self.network.namespace)
         except RuntimeError:
             LOG.warning('Failed trying to delete namespace: %s',
                         self.network.namespace)
@@ -417,6 +416,14 @@ class Dnsmasq(DhcpLocalProcess):
         # this possible lease cap.
         cmd.append('--dhcp-lease-max=%d' %
                    min(possible_leases, self.conf.dnsmasq_lease_max))
+
+        if self.conf.dhcp_renewal_time > 0:
+            cmd.append('--dhcp-option-force=option:T1,%ds' %
+                       self.conf.dhcp_renewal_time)
+
+        if self.conf.dhcp_rebinding_time > 0:
+            cmd.append('--dhcp-option-force=option:T2,%ds' %
+                       self.conf.dhcp_rebinding_time)
 
         cmd.append('--conf-file=%s' % self.conf.dnsmasq_config_file)
         for server in self.conf.dnsmasq_dns_servers:
@@ -898,12 +905,22 @@ class Dnsmasq(DhcpLocalProcess):
                  addr_mode == constants.IPV6_SLAAC)):
                 continue
             if subnet.dns_nameservers:
-                options.append(
-                    self._format_option(
-                        subnet.ip_version, i, 'dns-server',
-                        ','.join(
-                            Dnsmasq._convert_to_literal_addrs(
-                                subnet.ip_version, subnet.dns_nameservers))))
+                if ((subnet.ip_version == 4 and
+                     subnet.dns_nameservers == ['0.0.0.0']) or
+                    (subnet.ip_version == 6 and
+                     subnet.dns_nameservers == ['::'])):
+                    # Special case: Do not announce DNS servers
+                    options.append(
+                        self._format_option(
+                            subnet.ip_version, i, 'dns-server'))
+                else:
+                    options.append(
+                        self._format_option(
+                            subnet.ip_version, i, 'dns-server',
+                            ','.join(
+                                Dnsmasq._convert_to_literal_addrs(
+                                    subnet.ip_version,
+                                    subnet.dns_nameservers))))
             else:
                 # use the dnsmasq ip as nameservers only if there is no
                 # dns-server submitted by the server
@@ -1082,6 +1099,15 @@ class Dnsmasq(DhcpLocalProcess):
 
         return isolated_subnets
 
+    @staticmethod
+    def has_metadata_subnet(subnets):
+        """Check if the subnets has a metadata subnet."""
+        meta_cidr = netaddr.IPNetwork(METADATA_DEFAULT_CIDR)
+        if any(netaddr.IPNetwork(s.cidr) in meta_cidr
+               for s in subnets):
+            return True
+        return False
+
     @classmethod
     def should_enable_metadata(cls, conf, network):
         """Determine whether the metadata proxy is needed for a network
@@ -1110,12 +1136,9 @@ class Dnsmasq(DhcpLocalProcess):
         if not conf.enable_isolated_metadata:
             return False
 
-        if conf.enable_metadata_network:
-            # check if the network has a metadata subnet
-            meta_cidr = netaddr.IPNetwork(METADATA_DEFAULT_CIDR)
-            if any(netaddr.IPNetwork(s.cidr) in meta_cidr
-                   for s in all_subnets):
-                return True
+        if (conf.enable_metadata_network and
+            cls.has_metadata_subnet(all_subnets)):
+            return True
 
         isolated_subnets = cls.get_isolated_subnets(network)
         return any(isolated_subnets[s.id] for s in v4_dhcp_subnets)
@@ -1283,7 +1306,7 @@ class DeviceManager(object):
                   {'device_id': device_id, 'network_id': network.id})
         for port in network.ports:
             port_device_id = getattr(port, 'device_id', None)
-            if port_device_id == n_const.DEVICE_ID_RESERVED_DHCP_PORT:
+            if port_device_id == constants.DEVICE_ID_RESERVED_DHCP_PORT:
                 try:
                     #尝试着绑定此dhcp port到本device
                     port = self.plugin.update_dhcp_port(
@@ -1460,6 +1483,8 @@ class DeviceManager(object):
                     LOG.exception('Unable to plug DHCP port for '
                                   'network %s. Releasing port.',
                                   network.id)
+                    # We should unplug the interface in bridge side.
+                    self.unplug(interface_name, network)
                     self.plugin.release_dhcp_port(network.id, port.device_id)
 
             self.fill_dhcp_udp_checksums(namespace=network.namespace)

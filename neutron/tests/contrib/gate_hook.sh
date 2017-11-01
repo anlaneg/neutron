@@ -44,7 +44,12 @@ function load_conf_hook {
 # Tweak gate configuration for our rally scenarios
 function load_rc_for_rally {
     for file in $(ls $RALLY_EXTRA_DIR/*.setup); do
-        $DSCONF merge_lc $LOCAL_CONF $file
+        tmpfile=$(tempfile)
+        config=$(cat $file)
+        echo "[[local|localrc]]" > $tmpfile
+        $DSCONF setlc_raw $tmpfile "$config"
+        $DSCONF merge_lc $LOCAL_CONF $tmpfile
+        rm -f $tmpfile
     done
 }
 
@@ -95,7 +100,6 @@ case $VENV in
     load_rc_hook segments
     load_rc_hook trunk
     load_conf_hook vlan_provider
-    load_conf_hook type_drivers
     load_conf_hook osprofiler
     if [[ "$VENV" =~ "dsvm-scenario" ]]; then
         load_rc_hook ubuntu_image
@@ -108,6 +112,15 @@ case $VENV in
     fi
     if [[ "$VENV" =~ "ovs" ]]; then
         load_conf_hook ovsfw
+    fi
+    if [[ "$VENV" != "dsvm-scenario-linuxbridge" ]]; then
+        load_conf_hook tunnel_types
+    fi
+    if [[ "$VENV" =~ "dsvm-scenario-linuxbridge" ]]; then
+        # linuxbridge doesn't support gre
+        load_conf_hook linuxbridge_type_drivers
+    else
+        load_conf_hook openvswitch_type_drivers
     fi
     if [[ "$FLAVOR" = "dvrskip" ]]; then
         load_conf_hook disable_dvr

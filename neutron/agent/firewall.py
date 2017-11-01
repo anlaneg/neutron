@@ -20,13 +20,11 @@ import six
 
 from neutron_lib.api.definitions import port_security as psec
 from neutron_lib import constants as n_const
-
-import neutron.common.constants as const
-from neutron.common import utils
+from neutron_lib.utils import runtime
 
 
-INGRESS_DIRECTION = const.INGRESS_DIRECTION
-EGRESS_DIRECTION = const.EGRESS_DIRECTION
+INGRESS_DIRECTION = n_const.INGRESS_DIRECTION
+EGRESS_DIRECTION = n_const.EGRESS_DIRECTION
 
 DIRECTION_IP_PREFIX = {INGRESS_DIRECTION: 'source_ip_prefix',
                        EGRESS_DIRECTION: 'dest_ip_prefix'}
@@ -35,7 +33,6 @@ DIRECTION_IP_PREFIX = {INGRESS_DIRECTION: 'source_ip_prefix',
 # depends on iptables conntrack behavior of recognizing ICMP errors (types 1-4)
 # as related traffic.
 ICMPV6_ALLOWED_INGRESS_TYPES = (n_const.ICMPV6_TYPE_MLD_QUERY,
-                                n_const.ICMPV6_TYPE_RA,
                                 n_const.ICMPV6_TYPE_NS,
                                 n_const.ICMPV6_TYPE_NA)
 
@@ -51,7 +48,7 @@ def port_sec_enabled(port):
 
 
 def load_firewall_driver_class(driver):
-    return utils.load_class_by_alias_or_classname(
+    return runtime.load_class_by_alias_or_classname(
         'neutron.agent.firewall_drivers', driver)
 
 

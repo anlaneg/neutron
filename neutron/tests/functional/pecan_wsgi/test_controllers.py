@@ -32,6 +32,8 @@ from neutron import policy
 from neutron.tests.common import helpers
 from neutron.tests.functional.pecan_wsgi import test_functional
 from neutron.tests.functional.pecan_wsgi import utils as pecan_utils
+from neutron.tests.unit import dummy_plugin
+
 
 _SERVICE_PLUGIN_RESOURCE = 'serviceplugin'
 _SERVICE_PLUGIN_COLLECTION = _SERVICE_PLUGIN_RESOURCE + 's'
@@ -359,6 +361,17 @@ class TestResourceController(TestRootController):
     def test_get_collection_without_fields_selector(self):
         self._test_get_collection_with_fields_selector(fields=[])
 
+    def test_project_id_in_mandatory_fields(self):
+        # ports only specifies that tenant_id is mandatory, but project_id
+        # should still be passed to the plugin.
+        mock_get = mock.patch.object(self.plugin, 'get_ports',
+                                     return_value=[]).start()
+        self.app.get(
+            '/v2.0/ports.json?fields=id',
+            headers={'X-Project-Id': 'tenid'}
+        )
+        self.assertIn('project_id', mock_get.mock_calls[-1][2]['fields'])
+
     def test_get_item_with_fields_selector(self):
         item_resp = self.app.get(
             '/v2.0/ports/%s.json?fields=id&fields=name' % self.port['id'],
@@ -374,6 +387,17 @@ class TestResourceController(TestRootController):
         self.assertEqual(200, item_resp.status_int)
         self._check_item(['id', 'tenant_id'],
                          jsonutils.loads(item_resp.body)['port'])
+
+    def test_duped_and_empty_fields_stripped(self):
+        mock_get = mock.patch.object(self.plugin, 'get_ports',
+                                     return_value=[]).start()
+        self.app.get(
+            '/v2.0/ports.json?fields=id&fields=name&fields=&fields=name',
+            headers={'X-Project-Id': 'tenid'}
+        )
+        received = mock_get.mock_calls[-1][2]['fields']
+        self.assertNotIn('', received)
+        self.assertEqual(len(received), len(set(received)))
 
     def test_post(self):
         response = self.app.post_json(
@@ -421,6 +445,14 @@ class TestResourceController(TestRootController):
         self.assertEqual(response.status_int, 204)
         self.assertFalse(response.body)
 
+    def test_delete_disallows_body(self):
+        response = self.app.delete_json(
+            '/v2.0/ports/%s.json' % self.port['id'],
+            params={'port': {'name': 'test'}},
+            headers={'X-Project-Id': 'tenid'},
+            expect_errors=True)
+        self.assertEqual(response.status_int, 400)
+
     def test_plugin_initialized(self):
         self.assertIsNotNone(manager.NeutronManager._instance)
 
@@ -431,6 +463,22 @@ class TestResourceController(TestRootController):
         self._test_method_returns_code('delete', 405)
         self._test_method_returns_code('head', 405)
         self._test_method_returns_code('delete', 405)
+
+    def test_post_with_empty_body(self):
+        response = self.app.post_json(
+            '/v2.0/ports.json',
+            headers={'X-Project-Id': 'tenid'},
+            params={},
+            expect_errors=True)
+        self.assertEqual(response.status_int, 400)
+
+    def test_post_with_unsupported_json_type(self):
+        response = self.app.post_json(
+            '/v2.0/ports.json',
+            headers={'X-Project-Id': 'tenid'},
+            params=[1, 2, 3],
+            expect_errors=True)
+        self.assertEqual(response.status_int, 400)
 
     def test_bulk_create(self):
         response = self.app.post_json(
@@ -447,6 +495,47 @@ class TestResourceController(TestRootController):
         json_body = jsonutils.loads(response.body)
         self.assertIn('ports', json_body)
         self.assertEqual(2, len(json_body['ports']))
+
+    def test_emulated_bulk_create(self):
+        self.plugin._FORCE_EMULATED_BULK = True
+        response = self.app.post_json(
+            '/v2.0/ports.json',
+            params={'ports': [{'network_id': self.port['network_id'],
+                             'admin_state_up': True,
+                             'tenant_id': 'tenid'},
+                             {'network_id': self.port['network_id'],
+                              'admin_state_up': True,
+                              'tenant_id': 'tenid'}]
+                    },
+            headers={'X-Project-Id': 'tenid'})
+        self.assertEqual(response.status_int, 201)
+        json_body = jsonutils.loads(response.body)
+        self.assertIn('ports', json_body)
+        self.assertEqual(2, len(json_body['ports']))
+
+    def test_emulated_bulk_create_rollback(self):
+        self.plugin._FORCE_EMULATED_BULK = True
+        response = self.app.post_json(
+            '/v2.0/ports.json',
+            params={'ports': [{'network_id': self.port['network_id'],
+                             'admin_state_up': True,
+                             'tenant_id': 'tenid'},
+                             {'network_id': self.port['network_id'],
+                              'admin_state_up': True,
+                              'tenant_id': 'tenid'},
+                             {'network_id': 'bad_net_id',
+                              'admin_state_up': True,
+                              'tenant_id': 'tenid'}]
+                    },
+            headers={'X-Project-Id': 'tenid'},
+            expect_errors=True)
+        self.assertEqual(response.status_int, 400)
+        response = self.app.get(
+            '/v2.0/ports.json',
+            headers={'X-Project-Id': 'tenid'})
+        # all ports should be rolled back from above so we are just left
+        # with the one created in setup
+        self.assertEqual(1, len(jsonutils.loads(response.body)['ports']))
 
     def test_bulk_create_one_item(self):
         response = self.app.post_json(
@@ -524,8 +613,9 @@ class TestPaginationAndSorting(test_functional.PecanFunctionalTest):
         if limit and marker:
             links_key = '%s_links' % collection
             self.assertIn(links_key, list_resp)
-        list_resp_ids = [item['id'] for item in list_resp[collection]]
-        self.assertEqual(expected_list, list_resp_ids)
+        if not fields or 'id' in fields:
+            list_resp_ids = [item['id'] for item in list_resp[collection]]
+            self.assertEqual(expected_list, list_resp_ids)
         if fields:
             for item in list_resp[collection]:
                 for field in fields:
@@ -534,6 +624,10 @@ class TestPaginationAndSorting(test_functional.PecanFunctionalTest):
     def test_get_collection_with_pagination_limit(self):
         self._test_get_collection_with_pagination([self.networks[0]['id']],
                                                   limit=1)
+
+    def test_get_collection_with_pagination_fields_no_pk(self):
+        self._test_get_collection_with_pagination([self.networks[0]['id']],
+                                                  limit=1, fields=['name'])
 
     def test_get_collection_with_pagination_limit_over_count(self):
         expected_ids = [network['id'] for network in self.networks]
@@ -695,7 +789,7 @@ class TestRequestProcessing(TestRootController):
 
     def test_service_plugin_uri(self):
         nm = manager.NeutronManager.get_instance()
-        nm.path_prefix_resource_mappings['dummy'] = [
+        nm.path_prefix_resource_mappings[dummy_plugin.RESOURCE_NAME] = [
             _SERVICE_PLUGIN_COLLECTION]
         response = self.do_request('/v2.0/dummy/serviceplugins.json')
         self.assertEqual(200, response.status_int)

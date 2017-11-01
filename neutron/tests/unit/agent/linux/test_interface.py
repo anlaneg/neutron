@@ -58,7 +58,7 @@ class TestBase(base.BaseTestCase):
     def setUp(self):
         super(TestBase, self).setUp()
         self.conf = config.setup_conf()
-        self.conf.register_opts(interface.OPTS)
+        config.register_interface_opts(self.conf)
         self.ip_dev_p = mock.patch.object(ip_lib, 'IPDevice')
         self.ip_dev = self.ip_dev_p.start()
         self.ip_p = mock.patch.object(ip_lib, 'IPWrapper')
@@ -594,9 +594,6 @@ class TestBridgeInterfaceDriver(TestBase):
 
 
 class TestIVSInterfaceDriver(TestBase):
-
-    def setUp(self):
-        super(TestIVSInterfaceDriver, self).setUp()
 
     def test_get_device_name(self):
         br = interface.IVSInterfaceDriver(self.conf)

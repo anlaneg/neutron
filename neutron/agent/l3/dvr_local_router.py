@@ -50,6 +50,16 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         #缓存未下发的arp表项
         self._pending_arp_set = set()
 
+    def get_centralized_router_cidrs(self):
+        return self.centralized_floatingips_set
+
+    def migrate_centralized_floating_ip(self, fip, interface_name, device):
+        # Remove the centralized fip first and then add fip to the host
+        ip_cidr = common_utils.ip_to_cidr(fip['floating_ip_address'])
+        self.floating_ip_removed_dist(ip_cidr)
+        # Now add the floating_ip to the current host
+        self.floating_ip_added_dist(fip, ip_cidr)
+
     def floating_forward_rules(self, fip):
         """Override this function defined in router_info for dvr routers."""
         if not self.fip_ns:
@@ -104,6 +114,16 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
             if floating_ip_status == lib_constants.FLOATINGIP_STATUS_ACTIVE:
                 self.centralized_floatingips_set.add(fip_cidr)
             return floating_ip_status
+        if not self._check_if_floatingip_bound_to_host(fip):
+            # TODO(Swami): Need to figure out what status
+            # should be returned when the floating IP is
+            # not destined for this agent and if the floating
+            # IP is configured in a different compute host.
+            # This should not happen once we fix the server
+            # side code, but still a check to make sure if
+            # the floating IP is intended for this host should
+            # be done.
+            return
         floating_ip = fip['floating_ip_address']
         fixed_ip = fip['fixed_ip_address']
         self._add_floating_ip_rule(floating_ip, fixed_ip)
@@ -477,9 +497,6 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
 
     #通过fpr接口，获得rfp接口{只有fpr在fip路由器上存在时，才返回}
     def get_external_device_interface_name(self, ex_gw_port):
-        floating_ips = self.get_floating_ips()
-        if not self._get_floatingips_bound_to_host(floating_ips):
-            return self.get_snat_external_device_interface_name(ex_gw_port)
         fip_int = self.fip_ns.get_int_device_name(self.router_id)
         #如果fip路由器上有fpr接口，则返回，rfp接口
         if ip_lib.device_exists(fip_int, namespace=self.fip_ns.get_name()):
@@ -587,11 +604,9 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
             ext_scope_mark)
         return ports_scopemark
 
-    def _get_floatingips_bound_to_host(self, floating_ips):
-        """Filter Floating IPs to be hosted on this agent."""
-        return [i for i in floating_ips
-                if (i['host'] == self.host or
-                    i.get('dest_host') == self.host)]
+    def _check_if_floatingip_bound_to_host(self, fip):
+        """Check if the floating IP is bound to this host."""
+        return self.host in (fip.get('host'), fip.get('dest_host'))
 
     def process_external(self):
         if self.agent_conf.agent_mode != (
@@ -635,8 +650,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
     def _delete_interface_route_in_fip_ns(self, router_port):
         rtr_2_fip_ip, fip_2_rtr_name = self.get_rtr_fip_ip_and_interface_name()
         fip_ns_name = self.fip_ns.get_name()
-        ip_wrapper = ip_lib.IPWrapper(namespace=fip_ns_name)
-        if ip_wrapper.netns.exists(fip_ns_name):
+        if ip_lib.network_namespace_exists(fip_ns_name):
             device = ip_lib.IPDevice(fip_2_rtr_name, namespace=fip_ns_name)
             if not device.exists():
                 return
@@ -647,8 +661,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
     def _add_interface_route_to_fip_ns(self, router_port):
         rtr_2_fip_ip, fip_2_rtr_name = self.get_rtr_fip_ip_and_interface_name()
         fip_ns_name = self.fip_ns.get_name()
-        ip_wrapper = ip_lib.IPWrapper(namespace=fip_ns_name)
-        if ip_wrapper.netns.exists(fip_ns_name):
+        if ip_lib.network_namespace_exists(fip_ns_name):
             device = ip_lib.IPDevice(fip_2_rtr_name, namespace=fip_ns_name)
             if not device.exists():
                 return

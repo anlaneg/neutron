@@ -14,7 +14,10 @@
 #    under the License.
 
 import mock
+from neutron_lib import constants as common_constants
 from neutron_lib import context
+from neutron_lib.db import constants as db_consts
+from neutron_lib.services.qos import constants as qos_consts
 from oslo_utils import uuidutils
 
 from neutron.agent.l2.extensions import qos
@@ -23,7 +26,7 @@ from neutron.api.rpc.callbacks.consumer import registry
 from neutron.api.rpc.callbacks import events
 from neutron.api.rpc.callbacks import resources
 from neutron.api.rpc.handlers import resources_rpc
-from neutron.common import constants as common_constants
+from neutron import manager
 from neutron.objects.qos import policy
 from neutron.objects.qos import rule
 from neutron.plugins.ml2.drivers.openvswitch.agent import (
@@ -31,7 +34,6 @@ from neutron.plugins.ml2.drivers.openvswitch.agent import (
 from neutron.plugins.ml2.drivers.openvswitch.agent.common import constants
 from neutron.plugins.ml2.drivers.openvswitch.agent.openflow.ovs_ofctl import (
     ovs_bridge)
-from neutron.services.qos import qos_consts
 from neutron.tests import base
 
 BASE_TEST_POLICY = {'context': None,
@@ -62,9 +64,9 @@ class FakeDriver(qos_linux.QosLinuxAgentDriver):
     SUPPORTED_RULES = {
         qos_consts.RULE_TYPE_BANDWIDTH_LIMIT: {
             qos_consts.MAX_KBPS: {
-                'type:range': [0, common_constants.DB_INTEGER_MAX_VALUE]},
+                'type:range': [0, db_consts.DB_INTEGER_MAX_VALUE]},
             qos_consts.MAX_BURST: {
-                'type:range': [0, common_constants.DB_INTEGER_MAX_VALUE]},
+                'type:range': [0, db_consts.DB_INTEGER_MAX_VALUE]},
             qos_consts.DIRECTION: {
                 'type:values': [common_constants.EGRESS_DIRECTION,
                                 common_constants.INGRESS_DIRECTION]}
@@ -228,10 +230,10 @@ class QosExtensionBaseTestCase(base.BaseTestCase):
         self.qos_ext.consume_api(self.agent_api)
 
         # Don't rely on used driver
-        mock.patch(
-            'neutron.manager.NeutronManager.load_class_for_provider',
-            return_value=lambda: mock.Mock(spec=qos_linux.QosLinuxAgentDriver)
-        ).start()
+        mock.patch.object(
+            manager.NeutronManager, 'load_class_for_provider',
+            return_value=lambda: mock.Mock(
+                spec=qos_linux.QosLinuxAgentDriver)).start()
 
 
 class QosExtensionRpcTestCase(QosExtensionBaseTestCase):

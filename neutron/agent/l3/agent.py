@@ -13,10 +13,9 @@
 #    under the License.
 #
 
-import itertools
-
 import eventlet
 import netaddr
+from neutron_lib.agent import constants as agent_consts
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
@@ -38,7 +37,7 @@ from neutron.agent.common import utils as common_utils
 from neutron.agent.l3 import dvr
 from neutron.agent.l3 import dvr_edge_ha_router
 from neutron.agent.l3 import dvr_edge_router as dvr_router
-from neutron.agent.l3 import dvr_local_router as dvr_local_router
+from neutron.agent.l3 import dvr_local_router
 from neutron.agent.l3 import ha
 from neutron.agent.l3 import ha_router
 from neutron.agent.l3 import l3_agent_extension_api as l3_ext_api
@@ -222,15 +221,6 @@ class L3NATAgent(ha.AgentMixin,
             try:
                 self.neutron_service_plugins = (
                     self.plugin_rpc.get_service_plugin_list(self.context))
-            except oslo_messaging.RemoteError as e:
-                LOG.warning('l3-agent cannot check service plugins '
-                            'enabled at the neutron server when '
-                            'startup due to RPC error. It happens '
-                            'when the server does not support this '
-                            'RPC API. If the error is '
-                            'UnsupportedVersion you can ignore this '
-                            'warning. Detail message: %s', e)
-                self.neutron_service_plugins = None
             except oslo_messaging.MessagingTimeout as e:
                 LOG.warning('l3-agent cannot contact neutron server '
                             'to retrieve service plugins enabled. '
@@ -464,7 +454,9 @@ class L3NATAgent(ha.AgentMixin,
     def network_update(self, context, **kwargs):
         network_id = kwargs['network']['id']
         for ri in self.router_info.values():
-            ports = itertools.chain(ri.internal_ports, [ri.ex_gw_port])
+            ports = list(ri.internal_ports)
+            if ri.ex_gw_port:
+                ports.append(ri.ex_gw_port)
             port_belongs = lambda p: p['network_id'] == network_id
             if any(port_belongs(p) for p in ports):
                 update = queue.RouterUpdate(
@@ -783,7 +775,7 @@ class L3NATAgentWithStateReport(L3NATAgent):
             agent_status = self.state_rpc.report_state(self.context,
                                                        self.agent_state,
                                                        True)
-            if agent_status == l3_constants.AGENT_REVIVED:
+            if agent_status == agent_consts.AGENT_REVIVED:
                 LOG.info('Agent has just been revived. '
                          'Doing a full sync.')
                 self.fullsync = True

@@ -18,7 +18,6 @@ from neutron_lib import constants
 from neutron_lib.plugins.ml2 import api
 from oslo_log import log
 
-from neutron.plugins.common import constants as p_const
 from neutron.plugins.ml2.drivers import mech_agent
 from neutron.plugins.ml2.drivers.mech_sriov.mech_driver \
     import exceptions as exc
@@ -69,7 +68,7 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
 
     def get_allowed_network_types(self, agent):
         #仅容许flag,vlan两种网络类型
-        return (p_const.TYPE_FLAT, p_const.TYPE_VLAN)
+        return (constants.TYPE_FLAT, constants.TYPE_VLAN)
 
     def get_mappings(self, agent):
         #获取给定agent的设备mappings
@@ -81,8 +80,17 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                   {'port': context.current['id'],
                    'network': context.network.current['id']})
         #获取vinic类型
+        profile = context.current.get(portbindings.PROFILE)
         vnic_type = context.current.get(portbindings.VNIC_TYPE,
                                         portbindings.VNIC_NORMAL)
+        capabilities = []
+        if profile:
+            capabilities = profile.get('capabilities', [])
+        if (vnic_type == portbindings.VNIC_DIRECT and
+            'switchdev' in capabilities):
+            LOG.debug("Refusing to bind due to unsupported vnic_type: %s "
+                      "with switchdev capability", portbindings.VNIC_DIRECT)
+            return
         if vnic_type not in self.supported_vnic_types:
             #如果本扩展不支持此vnic_types，则放弃
             LOG.debug("Refusing to bind due to unsupported vnic_type: %s",
@@ -160,9 +168,9 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
 
     def _get_vif_details(self, segment):
         network_type = segment[api.NETWORK_TYPE]
-        if network_type == p_const.TYPE_FLAT:
+        if network_type == constants.TYPE_FLAT:
             vlan_id = FLAT_VLAN
-        elif network_type == p_const.TYPE_VLAN:
+        elif network_type == constants.TYPE_VLAN:
             vlan_id = segment[api.SEGMENTATION_ID]
         else:
             #不支持其它网络类型

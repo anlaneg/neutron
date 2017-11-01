@@ -18,31 +18,17 @@ import time
 
 import netaddr
 from neutron_lib import constants
-from oslo_config import cfg
 from oslo_log import log as logging
+from oslo_log import versionutils
 import six
 
-from neutron._i18n import _
 from neutron.agent.common import ovs_lib
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import utils
 from neutron.common import constants as n_const
 from neutron.common import exceptions
 
-
 LOG = logging.getLogger(__name__)
-
-OPTS = [
-    cfg.StrOpt('ovs_integration_bridge',
-               default='br-int',
-               help=_('Name of Open vSwitch bridge to use')),
-    cfg.BoolOpt('ovs_use_veth',
-                default=False,
-                help=_('Uses veth for an OVS interface or not. '
-                       'Support kernels with limited namespace support '
-                       '(e.g. RHEL 6.5) so long as ovs_use_veth is set to '
-                       'True.')),
-]
 
 
 def _get_veth(name1, name2, namespace2):
@@ -436,6 +422,9 @@ class IVSInterfaceDriver(LinuxInterfaceDriver):
 
     def __init__(self, conf):
         super(IVSInterfaceDriver, self).__init__(conf)
+        versionutils.report_deprecated_feature(
+            LOG, "IVS interface driver is deprecated in Queens and will be "
+                 "removed in Rocky.")
         self.DEV_NAME_PREFIX = 'ns-'
 
     def _get_tap_name(self, dev_name, prefix=None):
