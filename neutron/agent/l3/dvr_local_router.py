@@ -76,7 +76,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         dnat_from_floatingip_to_fixedip = (
             'PREROUTING', '-d %s/32 -i %s -j DNAT --to-destination %s' % (
                 floating_ip, rtr_2_fip_name, fixed_ip))
-        #对于所有源ip为fixed_ip的（私网ip)，对其做dnat，将其转换为公网地址
+        #对于所有源ip为fixed_ip的（私网ip)，对其做snat，将其转换为公网地址
         snat_from_fixedip_to_floatingip = (
             'float-snat', '-s %s/32 -j SNAT --to-source %s' % (
                 fixed_ip, floating_ip))
