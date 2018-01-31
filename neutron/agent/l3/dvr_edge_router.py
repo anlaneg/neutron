@@ -261,6 +261,7 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
                     namespace=self.snat_namespace.name,
                     prefix=router.EXTERNAL_DEV_PREFIX)
 
+    #返回snat口的前缀名称
     def get_snat_external_device_interface_name(self, ex_gw_port):
         long_name = router.EXTERNAL_DEV_PREFIX + ex_gw_port['id']
         return long_name[:self.driver.DEV_NAME_LEN]

@@ -59,6 +59,7 @@ class DvrEdgeHaRouter(dvr_edge_router.DvrEdgeRouter,
 
     def add_centralized_floatingip(self, fip, fip_cidr):
         if self.is_router_master():
+            #将浮动ip添加在qg口上
             interface_name = self.get_snat_external_device_interface_name(
                 self.get_ex_gw_port())
             self._add_vip(fip_cidr, interface_name)
@@ -67,6 +68,7 @@ class DvrEdgeHaRouter(dvr_edge_router.DvrEdgeRouter,
 
     def remove_centralized_floatingip(self, fip_cidr):
         if self.is_router_master():
+            #移除虚ip
             self._remove_vip(fip_cidr)
             super(DvrEdgeHaRouter, self).remove_centralized_floatingip(
                 fip_cidr)
@@ -77,6 +79,7 @@ class DvrEdgeHaRouter(dvr_edge_router.DvrEdgeRouter,
         for port in self.get_snat_interfaces():
             snat_interface_name = self._get_snat_int_device_name(port['id'])
             self._disable_ipv6_addressing_on_interface(snat_interface_name)
+            #向接口上添加虚ip
             self._add_vips(
                 self.get_snat_port_for_internal_port(port),
                 snat_interface_name)

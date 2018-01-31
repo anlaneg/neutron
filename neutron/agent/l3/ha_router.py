@@ -100,6 +100,7 @@ class HaRouter(router.RouterInfo):
     def ha_namespace(self):
         return self.ns_name
 
+    #检查此路由器是否为master
     def is_router_master(self):
         """this method is normally called before the ha_router object is fully
         initialized
