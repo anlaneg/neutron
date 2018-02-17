@@ -24,7 +24,6 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 from sqlalchemy import and_
 
-from neutron.common import constants as n_const
 from neutron.common import ipv6_utils
 from neutron.db import api as db_api
 from neutron.db import ipam_backend_mixin
@@ -264,7 +263,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
 
             is_auto_addr_subnet = ipv6_utils.is_auto_address_subnet(subnet)
             if ('ip_address' in fixed and
-                    subnet['cidr'] != n_const.PROVISIONAL_IPV6_PD_PREFIX):
+                    subnet['cidr'] != constants.PROVISIONAL_IPV6_PD_PREFIX):
                 if (is_auto_addr_subnet and device_owner not in
                         constants.ROUTER_INTERFACE_OWNERS):
                     raise ipam_exc.AllocationOnAutoAddressSubnet(
@@ -476,9 +475,10 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                     # Do the insertion of each IP allocation entry within
                     # the context of a nested transaction, so that the entry
                     # is rolled back independently of other entries whenever
-                    # the corresponding port has been deleted.
-                    with db_api.context_manager.writer.using(context):
-                        allocated.create()
+                    # the corresponding port has been deleted; since OVO
+                    # already opens a nested transaction, we don't need to do
+                    # it explicitly here.
+                    allocated.create()
                     updated_ports.append(port['id'])
                 except db_exc.DBReferenceError:
                     LOG.debug("Port %s was deleted while updating it with an "

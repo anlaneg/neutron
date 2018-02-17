@@ -20,14 +20,12 @@ from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 import oslo_messaging
-from sqlalchemy import or_
 
-from neutron._i18n import _
 from neutron.agent.common import utils as agent_utils
 from neutron.common import constants as l_consts
 from neutron.common import utils as n_utils
+from neutron.conf.db import l3_agentschedulers_db
 from neutron.db import agentschedulers_db
-from neutron.db.models import agent as agent_model
 from neutron.db.models import l3agent as rb_model
 from neutron.extensions import l3agentscheduler
 from neutron.extensions import router_availability_zone as router_az
@@ -40,20 +38,7 @@ from neutron.objects import router as l3_objs
 LOG = logging.getLogger(__name__)
 
 
-L3_AGENTS_SCHEDULER_OPTS = [
-    cfg.StrOpt('router_scheduler_driver',
-               default='neutron.scheduler.l3_agent_scheduler.'
-                       'LeastRoutersScheduler',
-               help=_('Driver to use for scheduling '
-                      'router to a default L3 agent')),
-    cfg.BoolOpt('router_auto_schedule', default=True,
-                help=_('Allow auto scheduling of routers to L3 agent.')),
-    cfg.BoolOpt('allow_automatic_l3agent_failover', default=False,
-                help=_('Automatically reschedule routers from offline L3 '
-                       'agents to online L3 agents.')),
-]
-
-cfg.CONF.register_opts(L3_AGENTS_SCHEDULER_OPTS)
+l3_agentschedulers_db.register_db_l3agentschedulers_opts()
 
 
 class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
@@ -387,30 +372,31 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
                 for router_model, agent_count in l3_model_list]
 
     def get_l3_agents(self, context, active=None, filters=None):
-        query = context.session.query(agent_model.Agent)
-        query = query.filter(
-            agent_model.Agent.agent_type == constants.AGENT_TYPE_L3)
+        agent_filters = {'agent_type': constants.AGENT_TYPE_L3}
         if active is not None:
-            query = (query.filter(agent_model.Agent.admin_state_up == active))
+            agent_filters['admin_state_up'] = active
+        config_filters = []
         if filters:
             for key, value in filters.items():
-                column = getattr(agent_model.Agent, key, None)
+                column = ag_obj.Agent.fields.get(key, None)
                 if column:
                     if not value:
                         return []
-                    query = query.filter(column.in_(value))
 
-            agent_modes = filters.get('agent_modes', [])
+            agent_modes = filters.pop('agent_modes', [])
             if agent_modes:
-                agent_mode_key = '\"agent_mode\": \"'
-                configuration_filter = (
-                    [agent_model.Agent.configurations.contains('%s%s\"' %
-                     (agent_mode_key, agent_mode))
-                     for agent_mode in agent_modes])
-                query = query.filter(or_(*configuration_filter))
-
+                config_filters = set('\"agent_mode\": \"%s\"' % agent_mode
+                                     for agent_mode in agent_modes)
+            agent_filters.update(filters)
+        agent_objs = []
+        if config_filters:
+            for conf_filter in config_filters:
+                agent_objs.extend(ag_obj.Agent.get_objects_by_agent_mode(
+                    context, conf_filter, **agent_filters))
+        else:
+            agent_objs = ag_obj.Agent.get_objects(context, **agent_filters)
         return [l3_agent
-                for l3_agent in query
+                for l3_agent in agent_objs
                 if agentschedulers_db.AgentSchedulerDbMixin.is_eligible_agent(
                     active, l3_agent)]
 
@@ -458,10 +444,9 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
             candidates.append(l3_agent)
         return candidates
 
-    def auto_schedule_routers(self, context, host, router_ids=None):
+    def auto_schedule_routers(self, context, host):
         if self.router_scheduler:
-            self.router_scheduler.auto_schedule_routers(
-                self, context, host, router_ids)
+            self.router_scheduler.auto_schedule_routers(self, context, host)
 
     def schedule_router(self, context, router, candidates=None):
         if self.router_scheduler:

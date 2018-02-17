@@ -14,6 +14,8 @@
 
 import mock
 
+from neutron_lib.api.definitions import external_net as extnet_apidef
+from neutron_lib.api.definitions import port as port_def
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as providernet
 from neutron_lib.callbacks import events
@@ -23,6 +25,8 @@ from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib import exceptions as n_exc
+from neutron_lib.exceptions import l3 as l3_exc
+from neutron_lib.exceptions import l3_ext_ha_mode as l3ha_exc
 from neutron_lib.objects import exceptions
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
@@ -41,9 +45,6 @@ from neutron.db import common_db_mixin
 from neutron.db import l3_agentschedulers_db
 from neutron.db import l3_hamode_db
 from neutron.db.models import l3ha as l3ha_model
-from neutron.extensions import external_net
-from neutron.extensions import l3
-from neutron.extensions import l3_ext_ha_mode
 from neutron.objects import l3_hamode
 from neutron.scheduler import l3_agent_scheduler
 from neutron.services.revisions import revision_plugin
@@ -126,19 +127,19 @@ class L3HATestCase(L3HATestFramework):
     def test_verify_configuration_l3_ha_net_cidr_is_not_a_cidr(self):
         cfg.CONF.set_override('l3_ha_net_cidr', 'not a cidr')
         self.assertRaises(
-            l3_ext_ha_mode.HANetworkCIDRNotValid,
+            l3ha_exc.HANetworkCIDRNotValid,
             self.plugin._verify_configuration)
 
     def test_verify_configuration_l3_ha_net_cidr_is_not_a_subnet(self):
         cfg.CONF.set_override('l3_ha_net_cidr', '10.0.0.1/8')
         self.assertRaises(
-            l3_ext_ha_mode.HANetworkCIDRNotValid,
+            l3ha_exc.HANetworkCIDRNotValid,
             self.plugin._verify_configuration)
 
     def test_verify_configuration_max_l3_agents_below_0(self):
         cfg.CONF.set_override('max_l3_agents_per_router', -5)
         self.assertRaises(
-            l3_ext_ha_mode.HAMaximumAgentsNumberNotValid,
+            l3ha_exc.HAMaximumAgentsNumberNotValid,
             self.plugin._check_num_agents_per_router)
 
     def test_verify_configuration_max_l3_agents_unlimited(self):
@@ -279,7 +280,7 @@ class L3HATestCase(L3HATestFramework):
     def test_ha_router_delete_with_distributed(self):
         router = self._create_router(ha=True, distributed=True)
         self.plugin.delete_router(self.admin_ctx, router['id'])
-        self.assertRaises(l3.RouterNotFound, self.plugin._get_router,
+        self.assertRaises(l3_exc.RouterNotFound, self.plugin._get_router,
                           self.admin_ctx, router['id'])
 
     def test_migration_from_ha(self):
@@ -418,6 +419,19 @@ class L3HATestCase(L3HATestFramework):
         subnets = interface['subnets']
         self.assertEqual(1, len(subnets))
         self.assertEqual(cfg.CONF.l3_ha_net_cidr, subnets[0]['cidr'])
+
+    def test_l3_agent_routers_query_interface_includes_dvrsnat(self):
+        router = self._create_router(distributed=True)
+        routers = self.plugin.get_ha_sync_data_for_host(self.admin_ctx,
+                                                        'a-dvr_snat-host',
+                                                        self.agent2)
+        self.assertEqual(1, len(routers))
+        router = routers[0]
+
+        self.assertTrue(router.get('ha'))
+
+        interface = router.get(constants.HA_INTERFACE_KEY)
+        self.assertIsNone(interface)
 
     def test_unique_ha_network_per_tenant(self):
         tenant1 = _uuid()
@@ -778,8 +792,7 @@ class L3HATestCase(L3HATestFramework):
         orig_func = self.plugin._process_sync_ha_data
 
         def process_sync_ha_data(context, routers, host, agent_mode):
-            return orig_func(context, routers, host,
-                             agent_mode=constants.L3_AGENT_MODE_DVR)
+            return orig_func(context, routers, host, is_any_dvr_agent=True)
 
         with mock.patch.object(self.plugin, '_process_sync_ha_data',
                                side_effect=process_sync_ha_data):
@@ -962,7 +975,7 @@ class L3HAModeDbTestCase(L3HATestFramework):
                                'shared': False,
                                'admin_state_up': True,
                                'tenant_id': tenant_id,
-                               external_net.EXTERNAL: external}}
+                               extnet_apidef.EXTERNAL: external}}
         return plugin.create_network(ctx, network)['id']
 
     def _create_subnet(self, plugin, ctx, network_id, cidr='10.0.0.0/8',
@@ -1052,7 +1065,7 @@ class L3HAModeDbTestCase(L3HATestFramework):
         self.plugin.add_router_interface(self.admin_ctx,
                                          router['id'],
                                          interface_info)
-        self.assertRaises(l3.RouterInUse, self.plugin.delete_router,
+        self.assertRaises(l3_exc.RouterInUse, self.plugin.delete_router,
                           self.admin_ctx, router['id'])
         bindings = self.plugin.get_ha_router_port_bindings(
             self.admin_ctx, [router['id']])
@@ -1105,6 +1118,32 @@ class L3HAModeDbTestCase(L3HATestFramework):
 
         for port in self._get_router_port_bindings(router['id']):
             self.assertEqual(self.agent2['host'], port[portbindings.HOST_ID])
+
+    def test_update_router_port_bindings_updates_host_only(self):
+        ext_net = self._create_network(self.core_plugin, self.admin_ctx,
+                                       external=True)
+        network_id = self._create_network(self.core_plugin, self.admin_ctx)
+        subnet = self._create_subnet(self.core_plugin, self.admin_ctx,
+                                     network_id)
+        interface_info = {'subnet_id': subnet['id']}
+
+        router = self._create_router()
+        self.plugin._update_router_gw_info(self.admin_ctx, router['id'],
+                                           {'network_id': ext_net})
+        iface = self.plugin.add_router_interface(self.admin_ctx,
+                                                 router['id'],
+                                                 interface_info)
+        with mock.patch.object(
+                self.plugin._core_plugin, 'update_port') as update_port_mock:
+            self.plugin._update_router_port_bindings(
+                self.admin_ctx, {router['id']: 'active'}, self.agent1['host'])
+            port_payload = {
+                port_def.RESOURCE_NAME: {
+                    portbindings.HOST_ID: self.agent1['host']
+                }
+            }
+            update_port_mock.assert_called_with(
+                mock.ANY, iface['port_id'], port_payload)
 
     def test_update_all_ha_network_port_statuses(self):
         router = self._create_router(ha=True)

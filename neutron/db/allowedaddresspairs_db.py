@@ -13,15 +13,16 @@
 #    under the License.
 #
 
+from neutron_lib.api.definitions import allowedaddresspairs as addr_apidef
 from neutron_lib.api.definitions import port as port_def
 from neutron_lib.api import validators
+from neutron_lib.exceptions import allowedaddresspairs as addr_exc
 from neutron_lib.objects import exceptions
 
 from neutron.common import utils
 from neutron.db import _resource_extend as resource_extend
 from neutron.db import _utils as db_utils
 from neutron.db import api as db_api
-from neutron.extensions import allowedaddresspairs as addr_pair
 from neutron.objects.port.extensions import (allowedaddresspairs
     as obj_addr_pair)
 
@@ -55,7 +56,7 @@ class AllowedAddressPairsMixin(object):
                         ip_address=ip_address)
                     pair_obj.create()
         except exceptions.NeutronDbObjectDuplicateEntry:
-            raise addr_pair.DuplicateAddressPairInRequest(
+            raise addr_exc.DuplicateAddressPairInRequest(
                 mac_address=address_pair['mac_address'],
                 ip_address=address_pair['ip_address'])
 
@@ -77,7 +78,7 @@ class AllowedAddressPairsMixin(object):
             AllowedAddressPairsMixin._make_allowed_address_pairs_dict(
                 address_pair) for
             address_pair in port_db.allowed_address_pairs]
-        port_res[addr_pair.ADDRESS_PAIRS] = allowed_address_pairs
+        port_res[addr_apidef.ADDRESS_PAIRS] = allowed_address_pairs
         return port_res
 
     def _delete_allowed_address_pairs(self, context, id):
@@ -93,8 +94,8 @@ class AllowedAddressPairsMixin(object):
 
     def _has_address_pairs(self, port):
         #检查port是否配置了address_pairs
-        return (validators.is_attr_set(port['port'][addr_pair.ADDRESS_PAIRS])
-                and port['port'][addr_pair.ADDRESS_PAIRS] != [])
+        return (validators.is_attr_set(port['port'][addr_apidef.ADDRESS_PAIRS])
+                and port['port'][addr_apidef.ADDRESS_PAIRS] != [])
 
     def _check_update_has_allowed_address_pairs(self, port):
         """Determine if request has an allowed address pair.
@@ -103,7 +104,7 @@ class AllowedAddressPairsMixin(object):
         'allowed_address_pairs' attribute. Otherwise returns False.
         """
         #检查用户是否提交了address_pairs的更新请求
-        return (addr_pair.ADDRESS_PAIRS in port['port'] and
+        return (addr_apidef.ADDRESS_PAIRS in port['port'] and
                 self._has_address_pairs(port))
 
     def _check_update_deletes_allowed_address_pairs(self, port):
@@ -112,7 +113,7 @@ class AllowedAddressPairsMixin(object):
         Return True if port has an allowed address pair and its value
         is either [] or not is_attr_set, otherwise return False
         """
-        return (addr_pair.ADDRESS_PAIRS in port['port'] and
+        return (addr_apidef.ADDRESS_PAIRS in port['port'] and
                 not self._has_address_pairs(port))
 
     def is_address_pairs_attribute_updated(self, port, update_attrs):
@@ -123,10 +124,10 @@ class AllowedAddressPairsMixin(object):
         party controllers.
         """
 
-        new_pairs = update_attrs.get(addr_pair.ADDRESS_PAIRS)
+        new_pairs = update_attrs.get(addr_apidef.ADDRESS_PAIRS)
         if new_pairs is None:
             return False
-        old_pairs = port.get(addr_pair.ADDRESS_PAIRS)
+        old_pairs = port.get(addr_apidef.ADDRESS_PAIRS)
 
         # Missing or unchanged address pairs in attributes mean no update
         return new_pairs != old_pairs
@@ -140,11 +141,11 @@ class AllowedAddressPairsMixin(object):
         notification. This method is expected to be called within
         a transaction.
         """
-        new_pairs = port['port'].get(addr_pair.ADDRESS_PAIRS)
+        new_pairs = port['port'].get(addr_apidef.ADDRESS_PAIRS)
 
         if self.is_address_pairs_attribute_updated(original_port,
                                                    port['port']):
-            updated_port[addr_pair.ADDRESS_PAIRS] = new_pairs
+            updated_port[addr_apidef.ADDRESS_PAIRS] = new_pairs
             self._delete_allowed_address_pairs(context, port_id)
             self._process_create_allowed_address_pairs(
                 context, updated_port, new_pairs)

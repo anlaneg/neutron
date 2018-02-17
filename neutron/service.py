@@ -92,7 +92,7 @@ def serve_wsgi(cls):
                           'for details.')
 
     #触发进程的before_spawn事件
-    registry.notify(resources.PROCESS, events.BEFORE_SPAWN, service)
+    registry.publish(resources.PROCESS, events.BEFORE_SPAWN, service)
     return service
 
 
@@ -268,7 +268,7 @@ def start_all_workers():
     workers = _get_rpc_workers() + _get_plugins_workers()
     launcher = _start_workers(workers)
     #通知进程启动完成
-    registry.notify(resources.PROCESS, events.AFTER_SPAWN, None)
+    registry.publish(resources.PROCESS, events.AFTER_SPAWN, None)
     return launcher
 
 

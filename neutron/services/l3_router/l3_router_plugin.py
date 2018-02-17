@@ -14,6 +14,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.api.definitions import l3 as l3_apidef
 from neutron_lib import constants as n_const
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.services import base as service_base
@@ -32,11 +33,11 @@ from neutron.db import dns_db
 from neutron.db import extraroute_db
 from neutron.db import l3_dvr_ha_scheduler_db
 from neutron.db import l3_dvrscheduler_db
+from neutron.db import l3_fip_qos
 from neutron.db import l3_gwmode_db
 from neutron.db import l3_hamode_db
 from neutron.db import l3_hascheduler_db
 from neutron.db.models import l3 as l3_models
-from neutron.extensions import l3
 from neutron.quota import resource_registry
 from neutron import service
 from neutron.services.l3_router.service_providers import driver_controller
@@ -52,6 +53,13 @@ def disable_dvr_extension_by_config(aliases):
             aliases.remove('dvr')
 
 
+def disable_qos_fip_extension_by_plugins(aliases):
+    qos_class = 'neutron.services.qos.qos_plugin.QoSPlugin'
+    if all(p not in cfg.CONF.service_plugins for p in ['qos', qos_class]):
+        if 'qos-fip' in aliases:
+            aliases.remove('qos-fip')
+
+
 @resource_extend.has_resource_extenders
 class L3RouterPlugin(service_base.ServicePluginBase,
                      common_db_mixin.CommonDbMixin,
@@ -59,7 +67,8 @@ class L3RouterPlugin(service_base.ServicePluginBase,
                      l3_hamode_db.L3_HA_NAT_db_mixin,
                      l3_gwmode_db.L3_NAT_db_mixin,
                      l3_dvr_ha_scheduler_db.L3_DVR_HA_scheduler_db_mixin,
-                     dns_db.DNSDbMixin):
+                     dns_db.DNSDbMixin,
+                     l3_fip_qos.FloatingQoSDbMixin):
 
     """Implementation of the Neutron L3 Router Service Plugin.
 
@@ -73,7 +82,7 @@ class L3RouterPlugin(service_base.ServicePluginBase,
     _supported_extension_aliases = ["dvr", "router", "ext-gw-mode",
                                     "extraroute", "l3_agent_scheduler",
                                     "l3-ha", "router_availability_zone",
-                                    "l3-flavors"]
+                                    "l3-flavors", "qos-fip"]
 
     __native_pagination_support = True
     __native_sorting_support = True
@@ -102,6 +111,7 @@ class L3RouterPlugin(service_base.ServicePluginBase,
         if not hasattr(self, '_aliases'):
             aliases = self._supported_extension_aliases[:]
             disable_dvr_extension_by_config(aliases)
+            disable_qos_fip_extension_by_plugins(aliases)
             self._aliases = aliases
         return self._aliases
 
@@ -144,6 +154,6 @@ class L3RouterPlugin(service_base.ServicePluginBase,
             initial_status=n_const.FLOATINGIP_STATUS_DOWN)
 
     @staticmethod
-    @resource_extend.extends([l3.ROUTERS])
+    @resource_extend.extends([l3_apidef.ROUTERS])
     def add_flavor_id(router_res, router_db):
         router_res['flavor_id'] = router_db['flavor_id']

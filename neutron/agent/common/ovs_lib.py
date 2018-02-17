@@ -20,7 +20,6 @@ import random
 import time
 import uuid
 
-from debtcollector import removals
 from neutron_lib import constants as p_const
 from neutron_lib import exceptions
 from oslo_config import cfg
@@ -32,6 +31,8 @@ from neutron._i18n import _
 from neutron.agent.common import ip_lib
 from neutron.agent.common import utils
 from neutron.agent.ovsdb import api as ovsdb_api
+from neutron.common import constants as common_constants
+from neutron.common import utils as common_utils
 from neutron.conf.agent import ovs_conf
 from neutron.plugins.ml2.drivers.openvswitch.agent.common \
     import constants
@@ -65,6 +66,9 @@ OVS_DEFAULT_CAPS = {
 QOS_DEFAULT_QUEUE = 0
 
 _SENTINEL = object()
+
+CTRL_RATE_LIMIT_MIN = 100
+CTRL_BURST_LIMIT_MIN = 25
 
 
 def _ovsdb_result_pending(result):
@@ -111,7 +115,7 @@ class VifPort(object):
 class BaseOVS(object):
 
     def __init__(self):
-        self.vsctl_timeout = cfg.CONF.ovs_vsctl_timeout
+        self.vsctl_timeout = cfg.CONF.OVS.ovsdb_timeout
         self.ovsdb = ovsdb_api.from_config(self)
 
     def add_manager(self, connection_uri, timeout=_SENTINEL):
@@ -119,10 +123,10 @@ class BaseOVS(object):
 
         :param connection_uri: Manager target string
         :param timeout: The Manager probe_interval timeout value
-                        (defaults to ovs_vsctl_timeout)
+                        (defaults to ovsdb_timeout)
         """
         if timeout is _SENTINEL:
-            timeout = cfg.CONF.ovs_vsctl_timeout
+            timeout = cfg.CONF.OVS.ovsdb_timeout
         with self.ovsdb.transaction() as txn:
             txn.add(self.ovsdb.add_manager(connection_uri))
             if timeout:
@@ -250,16 +254,6 @@ class OVSBridge(BaseOVS):
 
     def set_standalone_mode(self):
         self._set_bridge_fail_mode(FAILMODE_STANDALONE)
-
-    @removals.remove(
-        message=("Consider using add_protocols instead, or if replacing "
-                 "the whole set of supported protocols is the desired "
-                 "behavior, using set_db_attribute"),
-        version="Ocata",
-        removal_version="Queens")
-    def set_protocols(self, protocols):
-        self.set_db_attribute('Bridge', self.br_name, 'protocols', protocols,
-                              check_error=True)
 
     def add_protocols(self, *protocols):
         self.ovsdb.db_add('Bridge', self.br_name,
@@ -485,7 +479,8 @@ class OVSBridge(BaseOVS):
                         tunnel_type=p_const.TYPE_GRE,
                         vxlan_udp_port=p_const.VXLAN_UDP_PORT,
                         dont_fragment=True,
-                        tunnel_csum=False):
+                        tunnel_csum=False,
+                        tos=None):
         attrs = [('type', tunnel_type)]
         # TODO(twilson) This is an OrderedDict solely to make a test happy
         options = collections.OrderedDict()
@@ -495,8 +490,7 @@ class OVSBridge(BaseOVS):
             vxlan_udp_port != p_const.VXLAN_UDP_PORT
         )
         if vxlan_uses_custom_udp_port:
-            options['dst_port'] = vxlan_udp_port
-            
+            options['dst_port'] = str(vxlan_udp_port)
         options['df_default'] = str(dont_fragment).lower()
         options['remote_ip'] = remote_ip
         options['local_ip'] = local_ip
@@ -504,6 +498,8 @@ class OVSBridge(BaseOVS):
         options['out_key'] = 'flow'
         if tunnel_csum:
             options['csum'] = str(tunnel_csum).lower()
+        if tos:
+            options['tos'] = str(tos)
         attrs.append(('options', options))
 
         #创建port，并设置属性
@@ -684,14 +680,7 @@ class OVSBridge(BaseOVS):
 
         :param connection_mode: "out-of-band" or "in-band"
         """
-        attr = [('connection_mode', connection_mode)]
-        controllers = self.db_get_val('Bridge', self.br_name, 'controller')
-        controllers = [controllers] if isinstance(
-            controllers, uuid.UUID) else controllers
-        with self.ovsdb.transaction(check_error=True) as txn:
-            for controller_uuid in controllers:
-                txn.add(self.ovsdb.db_set('Controller',
-                                          controller_uuid, *attr))
+        self.set_controller_field('connection_mode', connection_mode)
 
     def _set_egress_bw_limit_for_port(self, port_name, max_kbps,
                                       max_burst_kbps):
@@ -725,7 +714,7 @@ class OVSBridge(BaseOVS):
         self._set_egress_bw_limit_for_port(
             port_name, 0, 0)
 
-    def _find_qos(self, port_name):
+    def find_qos(self, port_name):
         qos = self.ovsdb.db_find(
             'QoS',
             ('external_ids', '=', {'id': port_name}),
@@ -733,7 +722,7 @@ class OVSBridge(BaseOVS):
         if qos:
             return qos[0]
 
-    def _find_queue(self, port_name, queue_type):
+    def find_queue(self, port_name, queue_type):
         queues = self.ovsdb.db_find(
             'Queue',
             ('external_ids', '=', {'id': port_name,
@@ -758,29 +747,47 @@ class OVSBridge(BaseOVS):
         return queue_uuid
 
     def _update_bw_limit_profile(self, txn, port_name, qos_uuid,
-                                 queue_uuid, queue_type):
+                                 queue_uuid, queue_type, qos_other_config):
         queues = {queue_type: queue_uuid}
         if qos_uuid:
             txn.add(self.ovsdb.db_set(
                 'QoS', qos_uuid, ('queues', queues)))
+            txn.add(self.ovsdb.db_set(
+                'QoS', qos_uuid, ('other_config', qos_other_config)))
         else:
             external_ids = {'id': port_name}
             qos_uuid = txn.add(
                 self.ovsdb.db_create(
-                    'QoS', external_ids=external_ids, type='linux-htb',
-                    queues=queues))
+                    'QoS', external_ids=external_ids,
+                    type='linux-htb',
+                    queues=queues,
+                    other_config=qos_other_config))
         return qos_uuid
 
-    def update_ingress_bw_limit_for_port(self, port_name, max_kbps,
-                                         max_burst_kbps):
-        max_bw_in_bits = str(max_kbps * 1000)
-        max_burst_in_bits = str(max_burst_kbps * 1000)
-        queue_other_config = {
-            'max-rate': max_bw_in_bits,
-            'burst': max_burst_in_bits,
+    def _update_bw_limit_profile_dpdk(self, txn, port_name, qos_uuid,
+                                      other_config):
+        if qos_uuid:
+            txn.add(self.ovsdb.db_set(
+                'QoS', qos_uuid, ('other_config', other_config)))
+        else:
+            external_ids = {'id': port_name}
+            qos_uuid = txn.add(
+                self.ovsdb.db_create(
+                    'QoS', external_ids=external_ids, type='egress-policer',
+                    other_config=other_config))
+        return qos_uuid
+
+    def _update_ingress_bw_limit_for_port(
+            self, port_name, max_bw_in_bits, max_burst_in_bits):
+        qos_other_config = {
+            'max-rate': str(max_bw_in_bits)
         }
-        qos = self._find_qos(port_name)
-        queue = self._find_queue(port_name, QOS_DEFAULT_QUEUE)
+        queue_other_config = {
+            'max-rate': str(max_bw_in_bits),
+            'burst': str(max_burst_in_bits),
+        }
+        qos = self.find_qos(port_name)
+        queue = self.find_queue(port_name, QOS_DEFAULT_QUEUE)
         qos_uuid = qos['_uuid'] if qos else None
         queue_uuid = queue['_uuid'] if queue else None
         with self.ovsdb.transaction(check_error=True) as txn:
@@ -790,40 +797,134 @@ class OVSBridge(BaseOVS):
             )
 
             qos_uuid = self._update_bw_limit_profile(
-                txn, port_name, qos_uuid, queue_uuid, QOS_DEFAULT_QUEUE
+                txn, port_name, qos_uuid, queue_uuid, QOS_DEFAULT_QUEUE,
+                qos_other_config
             )
 
             txn.add(self.ovsdb.db_set(
                 'Port', port_name, ('qos', qos_uuid)))
 
+    def _update_ingress_bw_limit_for_dpdk_port(
+            self, port_name, max_bw_in_bits, max_burst_in_bits):
+        # cir and cbs should be set in bytes instead of bits
+        qos_other_config = {
+            'cir': str(max_bw_in_bits / 8),
+            'cbs': str(max_burst_in_bits / 8)
+        }
+        qos = self.find_qos(port_name)
+        qos_uuid = qos['_uuid'] if qos else None
+        with self.ovsdb.transaction(check_error=True) as txn:
+            qos_uuid = self._update_bw_limit_profile_dpdk(
+                txn, port_name, qos_uuid, qos_other_config)
+            txn.add(self.ovsdb.db_set(
+                'Port', port_name, ('qos', qos_uuid)))
+
+    def update_ingress_bw_limit_for_port(self, port_name, max_kbps,
+                                         max_burst_kbps):
+        max_bw_in_bits = max_kbps * common_constants.SI_BASE
+        max_burst_in_bits = max_burst_kbps * common_constants.SI_BASE
+        port_type = self._get_port_val(port_name, "type")
+        if port_type in constants.OVS_DPDK_PORT_TYPES:
+            self._update_ingress_bw_limit_for_dpdk_port(
+                port_name, max_bw_in_bits, max_burst_in_bits)
+        else:
+            self._update_ingress_bw_limit_for_port(
+                port_name, max_bw_in_bits, max_burst_in_bits)
+
     def get_ingress_bw_limit_for_port(self, port_name):
         max_kbps = None
+        qos_max_kbps = None
+        queue_max_kbps = None
         max_burst_kbit = None
-        res = self._find_queue(port_name, QOS_DEFAULT_QUEUE)
-        if res:
-            other_config = res['other_config']
+
+        qos_res = self.find_qos(port_name)
+        if qos_res:
+            other_config = qos_res['other_config']
             max_bw_in_bits = other_config.get('max-rate')
             if max_bw_in_bits is not None:
-                max_kbps = int(max_bw_in_bits) / 1000
+                qos_max_kbps = int(max_bw_in_bits) / common_constants.SI_BASE
+
+        queue_res = self.find_queue(port_name, QOS_DEFAULT_QUEUE)
+        if queue_res:
+            other_config = queue_res['other_config']
+            max_bw_in_bits = other_config.get('max-rate')
+            if max_bw_in_bits is not None:
+                queue_max_kbps = int(max_bw_in_bits) / common_constants.SI_BASE
             max_burst_in_bits = other_config.get('burst')
             if max_burst_in_bits is not None:
-                max_burst_kbit = int(max_burst_in_bits) / 1000
+                max_burst_kbit = (
+                    int(max_burst_in_bits) / common_constants.SI_BASE)
+
+        if qos_max_kbps == queue_max_kbps:
+            max_kbps = qos_max_kbps
+        else:
+            LOG.warning("qos max-rate %(qos_max_kbps)s is not equal to "
+                        "queue max-rate %(queue_max_kbps)s",
+                        {'qos_max_kbps': qos_max_kbps,
+                         'queue_max_kbps': queue_max_kbps})
+        return max_kbps, max_burst_kbit
+
+    def get_ingress_bw_limit_for_dpdk_port(self, port_name):
+        max_kbps = None
+        max_burst_kbit = None
+        res = self.find_qos(port_name)
+        if res:
+            other_config = res['other_config']
+            max_bw_in_bytes = other_config.get("cir")
+            if max_bw_in_bytes is not None:
+                max_kbps = common_utils.bits_to_kilobits(
+                    common_utils.bytes_to_bits(int(max_bw_in_bytes)),
+                    common_constants.SI_BASE)
+            max_burst_in_bytes = other_config.get("cbs")
+            if max_burst_in_bytes is not None:
+                max_burst_kbit = common_utils.bits_to_kilobits(
+                    common_utils.bytes_to_bits(int(max_burst_in_bytes)),
+                    common_constants.SI_BASE)
         return max_kbps, max_burst_kbit
 
     def delete_ingress_bw_limit_for_port(self, port_name):
-        if not self.port_exists(port_name):
-            return
-        self._delete_ingress_bw_limit_for_port(port_name)
-
-    def _delete_ingress_bw_limit_for_port(self, port_name):
-        qos = self._find_qos(port_name)
-        queue = self._find_queue(port_name, QOS_DEFAULT_QUEUE)
+        qos = self.find_qos(port_name)
+        queue = self.find_queue(port_name, QOS_DEFAULT_QUEUE)
+        does_port_exist = self.port_exists(port_name)
         with self.ovsdb.transaction(check_error=True) as txn:
-            txn.add(self.ovsdb.db_clear("Port", port_name, 'qos'))
+            if does_port_exist:
+                txn.add(self.ovsdb.db_clear("Port", port_name, 'qos'))
             if qos:
                 txn.add(self.ovsdb.db_destroy('QoS', qos['_uuid']))
             if queue:
                 txn.add(self.ovsdb.db_destroy('Queue', queue['_uuid']))
+
+    def set_controller_field(self, field, value):
+        attr = [(field, value)]
+        controllers = self.db_get_val('Bridge', self.br_name, 'controller')
+        controllers = [controllers] if isinstance(
+            controllers, uuid.UUID) else controllers
+        with self.ovsdb.transaction(check_error=True) as txn:
+            for controller_uuid in controllers:
+                txn.add(self.ovsdb.db_set(
+                    'Controller', controller_uuid, *attr))
+
+    def set_controller_rate_limit(self, controller_rate_limit):
+        """Set bridge controller_rate_limit
+
+        :param controller_rate_limit: at least 100
+        """
+        if controller_rate_limit < CTRL_RATE_LIMIT_MIN:
+            LOG.info("rate limit's value must be at least 100")
+            controller_rate_limit = CTRL_RATE_LIMIT_MIN
+        self.set_controller_field(
+            'controller_rate_limit', controller_rate_limit)
+
+    def set_controller_burst_limit(self, controller_burst_limit):
+        """Set bridge controller_burst_limit
+
+        :param controller_burst_limit: at least 25
+        """
+        if controller_burst_limit < CTRL_BURST_LIMIT_MIN:
+            LOG.info("burst limit's value must be at least 25")
+            controller_burst_limit = CTRL_BURST_LIMIT_MIN
+        self.set_controller_field(
+            'controller_burst_limit', controller_burst_limit)
 
     def __enter__(self):
         self.create()

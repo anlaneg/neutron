@@ -12,19 +12,18 @@
 
 import netaddr
 
-from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import fields as obj_fields
 
 from neutron.common import utils
 from neutron.db.models import subnet_service_type
 from neutron.db import models_v2
-from neutron.db import rbac_db_models
 from neutron.objects import base
 from neutron.objects import common_types
+from neutron.objects import network
 from neutron.objects import rbac_db
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class DNSNameServer(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -56,7 +55,7 @@ class DNSNameServer(base.NeutronDbObject):
                                                      **kwargs)
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class Route(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -95,7 +94,7 @@ class Route(base.NeutronDbObject):
         return result
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class IPAllocationPool(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -139,7 +138,7 @@ class IPAllocationPool(base.NeutronDbObject):
         return result
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class SubnetServiceType(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -163,7 +162,7 @@ class SubnetServiceType(base.NeutronDbObject):
 #   - added 'shared' to synthetic_fields
 #   - registered extra_filter_name for 'shared' attribute
 #   - added loading shared attribute based on network 'rbac_entries'
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class Subnet(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -176,7 +175,9 @@ class Subnet(base.NeutronDbObject):
         'name': obj_fields.StringField(nullable=True),
         'network_id': common_types.UUIDField(),
         'segment_id': common_types.UUIDField(nullable=True),
-        'subnetpool_id': common_types.UUIDField(nullable=True),
+        # NOTE: subnetpool_id can be 'prefix_delegation' string
+        # when the IPv6 Prefix Delegation is enabled
+        'subnetpool_id': obj_fields.StringField(nullable=True),
         'ip_version': common_types.IPVersionEnumField(),
         'cidr': common_types.IPNetworkField(),
         'gateway_ip': obj_fields.IPAddressField(nullable=True),
@@ -227,7 +228,7 @@ class Subnet(base.NeutronDbObject):
             # create), it should be rare case to load 'shared' by that method
             shared = (rbac_db.RbacNeutronDbObjectMixin.
                       get_shared_with_tenant(self.obj_context.elevated(),
-                                             rbac_db_models.NetworkRBAC,
+                                             network.NetworkRBAC,
                                              self.network_id,
                                              self.project_id))
         setattr(self, 'shared', shared)

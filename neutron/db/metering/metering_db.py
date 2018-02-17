@@ -13,21 +13,21 @@
 # under the License.
 
 import netaddr
+from neutron_lib.exceptions import metering as metering_exc
 from oslo_db import exception as db_exc
 from oslo_utils import uuidutils
 
 from neutron.api.rpc.agentnotifiers import metering_rpc_agent_api
 from neutron.common import constants
-from neutron.db import _model_query as model_query
 from neutron.db import _utils as db_utils
 from neutron.db import api as db_api
 from neutron.db import common_db_mixin as base_db
 from neutron.db import l3_dvr_db
-from neutron.db.models import l3 as l3_models
 from neutron.db.models import metering as metering_models
 from neutron.extensions import metering
 from neutron.objects import base as base_obj
 from neutron.objects import metering as metering_objs
+from neutron.objects import router as l3_obj
 
 
 class MeteringDbMixin(metering.MeteringPluginBase,
@@ -59,14 +59,14 @@ class MeteringDbMixin(metering.MeteringPluginBase,
         metering_label = metering_objs.MeteringLabel.get_object(context,
                                                                 id=label_id)
         if not metering_label:
-            raise metering.MeteringLabelNotFound(label_id=label_id)
+            raise metering_exc.MeteringLabelNotFound(label_id=label_id)
         return metering_label
 
     def delete_metering_label(self, context, label_id):
         deleted = metering_objs.MeteringLabel.delete_objects(
             context, id=label_id)
         if not deleted:
-            raise metering.MeteringLabelNotFound(label_id=label_id)
+            raise metering_exc.MeteringLabelNotFound(label_id=label_id)
 
     def get_metering_label(self, context, label_id, fields=None):
         return self._make_metering_label_dict(
@@ -105,7 +105,7 @@ class MeteringDbMixin(metering.MeteringPluginBase,
         metering_label_rule = metering_objs.MeteringLabelRule.get_object(
             context, id=rule_id)
         if not metering_label_rule:
-            raise metering.MeteringLabelRuleNotFound(rule_id=rule_id)
+            raise metering_exc.MeteringLabelRuleNotFound(rule_id=rule_id)
         return metering_label_rule
 
     def get_metering_label_rule(self, context, rule_id, fields=None):
@@ -126,7 +126,7 @@ class MeteringDbMixin(metering.MeteringPluginBase,
         cidrs = [r['remote_ip_prefix'] for r in r_ips]
         new_cidr_ipset = netaddr.IPSet([remote_ip_prefix])
         if (netaddr.IPSet(cidrs) & new_cidr_ipset):
-            raise metering.MeteringLabelRuleOverlaps(
+            raise metering_exc.MeteringLabelRuleOverlaps(
                 remote_ip_prefix=remote_ip_prefix)
 
     def create_metering_label_rule(self, context, metering_label_rule):
@@ -147,7 +147,7 @@ class MeteringDbMixin(metering.MeteringPluginBase,
                     remote_ip_prefix=netaddr.IPNetwork(ip_prefix))
                 rule.create()
         except db_exc.DBReferenceError:
-            raise metering.MeteringLabelNotFound(label_id=label_id)
+            raise metering_exc.MeteringLabelNotFound(label_id=label_id)
 
         return self._make_metering_label_rule_dict(rule)
 
@@ -180,15 +180,13 @@ class MeteringDbMixin(metering.MeteringPluginBase,
         return res
 
     def _process_sync_metering_data(self, context, labels):
-        all_routers = None
+        routers = None
 
         routers_dict = {}
         for label in labels:
             if label.shared:
-                if not all_routers:
-                    all_routers = model_query.get_collection_query(
-                        context, l3_models.Router)
-                routers = all_routers
+                if not routers:
+                    routers = l3_obj.Router.get_objects(context)
             else:
                 routers = label.routers
 
@@ -213,10 +211,8 @@ class MeteringDbMixin(metering.MeteringPluginBase,
             metering_models.MeteringLabel).get(
                 rule['metering_label_id'])
 
-        # TODO(electrocucaracha) This depends on the Router OVO implementation
         if label.shared:
-            routers = model_query.get_collection_query(
-                context, l3_models.Router)
+            routers = l3_obj.Router.get_objects(context)
         else:
             routers = label.routers
 

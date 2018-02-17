@@ -20,8 +20,10 @@ from neutronclient.common import exceptions
 from oslo_utils import uuidutils
 import testscenarios
 
+from neutron.agent.common import ovs_lib
 from neutron.agent.linux import tc_lib
 from neutron.common import utils
+from neutron.tests import base as tests_base
 from neutron.tests.common.agents import l2_extensions
 from neutron.tests.fullstack import base
 from neutron.tests.fullstack.resources import environment
@@ -45,7 +47,6 @@ DSCP_MARK = 16
 
 class BaseQoSRuleTestCase(object):
     of_interface = None
-    ovsdb_interface = None
     number_of_hosts = 1
 
     @property
@@ -60,7 +61,6 @@ class BaseQoSRuleTestCase(object):
             environment.HostDescription(
                 l3_agent=False,
                 of_interface=self.of_interface,
-                ovsdb_interface=self.ovsdb_interface,
                 l2_agent_type=self.l2_agent_type
             ) for _ in range(self.number_of_hosts)]
         env_desc = environment.EnvironmentDescription(
@@ -219,6 +219,26 @@ class TestBwLimitQoSOvs(_TestBwLimitQoS, base.BaseFullStackTestCase):
                 lambda: vm.bridge.get_ingress_bw_limit_for_port(
                     vm.port.name) == (limit, burst))
 
+    def test_bw_limit_qos_port_removed(self):
+        """Test if rate limit config is properly removed when whole port is
+        removed.
+        """
+
+        # Create port with qos policy attached
+        vm, qos_policy = self._prepare_vm_with_qos_policy(
+            [functools.partial(
+                self._add_bw_limit_rule,
+                BANDWIDTH_LIMIT, BANDWIDTH_BURST, self.direction)])
+        self._wait_for_bw_rule_applied(
+            vm, BANDWIDTH_LIMIT, BANDWIDTH_BURST, self.direction)
+
+        # Delete port with qos policy attached
+        vm.destroy()
+        self._wait_for_bw_rule_removed(vm, self.direction)
+        self.assertIsNone(vm.bridge.find_qos(vm.port.name))
+        self.assertIsNone(vm.bridge.find_queue(vm.port.name,
+                                               ovs_lib.QOS_DEFAULT_QUEUE))
+
 
 class TestBwLimitQoSLinuxbridge(_TestBwLimitQoS, base.BaseFullStackTestCase):
     l2_agent_type = constants.AGENT_TYPE_LINUXBRIDGE
@@ -313,6 +333,7 @@ class _TestDscpMarkingQoS(BaseQoSRuleTestCase):
             body={'port': {'qos_policy_id': None}})
         self._wait_for_dscp_marking_rule_removed(vm)
 
+    @tests_base.unstable_test("bug 1733649")
     def test_dscp_marking_packets(self):
         # Create port (vm) which will be used to received and test packets
         receiver_port = self.safe_client.create_port(
@@ -337,6 +358,21 @@ class _TestDscpMarkingQoS(BaseQoSRuleTestCase):
         self._wait_for_dscp_marking_rule_applied(sender, DSCP_MARK)
         l2_extensions.wait_for_dscp_marked_packet(
             sender, receiver, DSCP_MARK)
+
+    def test_dscp_marking_clean_port_removed(self):
+        """Test if DSCP marking OpenFlow/iptables rules are removed when
+        whole port is removed.
+        """
+
+        # Create port with qos policy attached
+        vm, qos_policy = self._prepare_vm_with_qos_policy(
+            [functools.partial(self._add_dscp_rule, DSCP_MARK)])
+
+        self._wait_for_dscp_marking_rule_applied(vm, DSCP_MARK)
+
+        # Delete port with qos policy attached
+        vm.destroy()
+        self._wait_for_dscp_marking_rule_removed(vm)
 
 
 class TestDscpMarkingQoSOvs(_TestDscpMarkingQoS, base.BaseFullStackTestCase):

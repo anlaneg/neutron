@@ -14,10 +14,8 @@
 
 from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib.api.validators import availability_zone as az_validator
-from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import fields as obj_fields
 
-from neutron.db import api as db_api
 from neutron.db.models import dns as dns_models
 from neutron.db.models import external_net as ext_net_model
 from neutron.db.models import segment as segment_model
@@ -33,7 +31,21 @@ from neutron.objects.qos import binding
 from neutron.objects import rbac_db
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
+class NetworkRBAC(base.NeutronDbObject):
+    # Version 1.0: Initial version
+    VERSION = '1.0'
+
+    db_model = rbac_db_models.NetworkRBAC
+
+    fields = {
+        'object_id': obj_fields.StringField(),
+        'target_tenant': obj_fields.StringField(),
+        'action': obj_fields.StringField(),
+    }
+
+
+@base.NeutronObjectRegistry.register
 class NetworkDhcpAgentBinding(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -57,7 +69,7 @@ class NetworkDhcpAgentBinding(base.NeutronDbObject):
         return cls.get_objects(context, dhcp_agent_id=dhcp_agent_ids)
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class NetworkSegment(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -87,7 +99,7 @@ class NetworkSegment(base.NeutronDbObject):
 
     def create(self):
         fields = self.obj_get_changes()
-        with db_api.autonested_transaction(self.obj_context.session):
+        with self.db_context_writer(self.obj_context):
             hosts = self.hosts
             if hosts is None:
                 hosts = []
@@ -97,7 +109,7 @@ class NetworkSegment(base.NeutronDbObject):
 
     def update(self):
         fields = self.obj_get_changes()
-        with db_api.autonested_transaction(self.obj_context.session):
+        with self.db_context_writer(self.obj_context):
             super(NetworkSegment, self).update()
             if 'hosts' in fields:
                 self._attach_hosts(fields['hosts'])
@@ -145,7 +157,7 @@ class NetworkSegment(base.NeutronDbObject):
                                                       **kwargs)
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class NetworkPortSecurity(base_ps._PortSecurity):
     # Version 1.0: Initial version
     VERSION = "1.0"
@@ -155,7 +167,7 @@ class NetworkPortSecurity(base_ps._PortSecurity):
     fields_need_translation = {'id': 'network_id'}
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class ExternalNetwork(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -172,12 +184,12 @@ class ExternalNetwork(base.NeutronDbObject):
     }
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class Network(rbac_db.NeutronRbacObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
 
-    rbac_db_model = rbac_db_models.NetworkRBAC
+    rbac_db_cls = NetworkRBAC
     db_model = models_v2.Network
 
     fields = {
@@ -224,7 +236,7 @@ class Network(rbac_db.NeutronRbacObject):
 
     def create(self):
         fields = self.obj_get_changes()
-        with db_api.autonested_transaction(self.obj_context.session):
+        with self.db_context_writer(self.obj_context):
             dns_domain = self.dns_domain
             qos_policy_id = self.qos_policy_id
             super(Network, self).create()
@@ -235,7 +247,7 @@ class Network(rbac_db.NeutronRbacObject):
 
     def update(self):
         fields = self.obj_get_changes()
-        with db_api.autonested_transaction(self.obj_context.session):
+        with self.db_context_writer(self.obj_context):
             super(Network, self).update()
             if 'dns_domain' in fields:
                 self._set_dns_domain(fields['dns_domain'])
@@ -306,7 +318,7 @@ class Network(rbac_db.NeutronRbacObject):
         return set()
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class SegmentHostMapping(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -321,7 +333,7 @@ class SegmentHostMapping(base.NeutronDbObject):
     primary_keys = ['segment_id', 'host']
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class NetworkDNSDomain(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'

@@ -20,12 +20,10 @@ from neutron_lib import constants
 from neutron_lib.services.qos import constants as qos_consts
 from neutron_lib.utils import helpers
 from oslo_utils import versionutils
-from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import exception
 from oslo_versionedobjects import fields as obj_fields
 import six
 
-from neutron.db import api as db_api
 from neutron.db.qos import models as qos_db_model
 from neutron.objects import base
 from neutron.objects import common_types
@@ -33,9 +31,9 @@ from neutron.objects import common_types
 DSCP_MARK = 'dscp_mark'
 
 
-def get_rules(context, qos_policy_id):
+def get_rules(obj_cls, context, qos_policy_id):
     all_rules = []
-    with db_api.autonested_transaction(context.session):
+    with obj_cls.db_context_reader(context):
         for rule_type in qos_consts.VALID_RULE_TYPES:
             rule_cls_name = 'Qos%sRule' % helpers.camelize(rule_type)
             rule_cls = getattr(sys.modules[__name__], rule_cls_name)
@@ -100,7 +98,7 @@ class QosRule(base.NeutronDbObject):
                                    and is_network_policy_only))
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class QosBandwidthLimitRule(QosRule):
 
     db_model = qos_db_model.QosBandwidthLimitRule
@@ -124,7 +122,7 @@ class QosBandwidthLimitRule(QosRule):
                     objtype="QosBandwidthLimitRule")
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class QosDscpMarkingRule(QosRule):
 
     db_model = qos_db_model.QosDscpMarkingRule
@@ -143,7 +141,7 @@ class QosDscpMarkingRule(QosRule):
                                  objname="QosDscpMarkingRule")
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class QosMinimumBandwidthRule(QosRule):
 
     db_model = qos_db_model.QosMinimumBandwidthRule

@@ -20,6 +20,7 @@ from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import excutils
 from oslo_utils import uuidutils
+from ovsdbapp import api as ovsdb_api
 import six
 
 from neutron.agent.common import utils
@@ -28,7 +29,11 @@ from neutron.agent.ovsdb import api as ovsdb
 LOG = logging.getLogger(__name__)
 
 
-class Transaction(ovsdb.Transaction):
+def api_factory(context):
+    return OvsdbVsctl(context)
+
+
+class Transaction(ovsdb_api.Transaction):
     def __init__(self, context, check_error=False, log_errors=True, opts=None):
         self.context = context
         self.check_error = check_error
@@ -79,7 +84,7 @@ class Transaction(ovsdb.Transaction):
                     ctxt.reraise = False
 
 
-class BaseCommand(ovsdb.Command):
+class BaseCommand(ovsdb_api.Command):
     def __init__(self, context, cmd, opts=None, args=None):
         self.context = context
         self.cmd = cmd
@@ -185,7 +190,7 @@ class BrExistsCommand(DbCommand):
 
 
 #ovsdb控制
-class OvsdbVsctl(ovsdb.API):
+class OvsdbVsctl(ovsdb_api.API):
     def __init__(self, context):
         super(OvsdbVsctl, self).__init__()
         self.context = context

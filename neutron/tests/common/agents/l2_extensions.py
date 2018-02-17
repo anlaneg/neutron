@@ -14,13 +14,15 @@
 #    under the License.
 
 import re
+import signal
+
+from oslo_log import log as logging
 
 from neutron.agent.linux import async_process
 from neutron.agent.linux import iptables_manager
 from neutron.common import utils as common_utils
 
-
-IPv4_ADDR_REGEX = r"(\d{1,3}\.){3}\d{1,3}"
+LOG = logging.getLogger(__name__)
 
 
 class TcpdumpException(Exception):
@@ -99,27 +101,37 @@ def wait_until_dscp_marking_rule_applied_linuxbridge(
 
 
 def wait_for_dscp_marked_packet(sender_vm, receiver_vm, dscp_mark):
-    cmd = ["tcpdump", "-i", receiver_vm.port.name, "-nlt"]
+    cmd = [
+        "tcpdump", "-i", receiver_vm.port.name, "-nlt",
+        "src", sender_vm.ip, 'and', 'dst', receiver_vm.ip]
     if dscp_mark:
-        cmd += ["(ip[1] & 0xfc == %s)" % (dscp_mark << 2)]
+        cmd += ["and", "(ip[1] & 0xfc == %s)" % (dscp_mark << 2)]
     tcpdump_async = async_process.AsyncProcess(cmd, run_as_root=True,
                                                namespace=receiver_vm.namespace)
     tcpdump_async.start()
     sender_vm.block_until_ping(receiver_vm.ip)
     try:
-        tcpdump_async.stop()
+        tcpdump_async.stop(kill_signal=signal.SIGINT)
     except async_process.AsyncProcessException:
         # If it was already stopped than we don't care about it
         pass
 
-    pattern = (r"IP (?P<src_ip>%(ip_addr_regex)s) > "
-               "(?P<dst_ip>%(ip_addr_regex)s): ICMP .*$" % {
-                   'ip_addr_regex': IPv4_ADDR_REGEX})
-    for line in tcpdump_async.iter_stdout():
+    pattern = r"(?P<packets_count>^\d+) packets received by filter"
+    for line in tcpdump_async.iter_stderr():
+        # TODO(slaweq): Debug logging added to help troubleshooting bug
+        # https://bugs.launchpad.net/neutron/+bug/1733649
+        # once it will be closed this log can be removed
+        LOG.debug("Tcpdump error output line: %s", line)
         m = re.match(pattern, line)
-        if m and (m.group("src_ip") == sender_vm.ip and
-            m.group("dst_ip") == receiver_vm.ip):
+        if m and int(m.group("packets_count")) != 0:
             return
+
+    # TODO(slaweq): Debug logging added to help troubleshooting bug
+    # https://bugs.launchpad.net/neutron/+bug/1733649
+    # once it will be closed this log can be removed
+    for line in tcpdump_async.iter_stdout():
+        LOG.debug("Tcpdump output line: %s", line)
+
     raise TcpdumpException(
         "No packets marked with DSCP = %(dscp_mark)s received from %(src)s "
         "to %(dst)s" % {'dscp_mark': dscp_mark,

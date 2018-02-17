@@ -65,6 +65,9 @@ IPTABLES_ERROR_LINES_OF_CONTEXT = 5
 # RESOURCE_PROBLEM in include/xtables.h
 XTABLES_RESOURCE_PROBLEM_CODE = 4
 
+# xlock wait interval, in microseconds
+XLOCK_WAIT_INTERVAL = 200000
+
 
 def comment_rule(rule, comment):
     if not cfg.CONF.AGENT.comment_iptables_rules or not comment:
@@ -352,32 +355,66 @@ class IptablesManager(object):
             tables['filter'].add_rule('neutron-filter-top', '-j $local',
                                       wrap=False)
 
+        self.ipv4.update({'raw': IptablesTable(binary_name=self.wrap_name)})
+        self.ipv6.update({'raw': IptablesTable(binary_name=self.wrap_name)})
+
         # Wrap the built-in chains
         builtin_chains = {4: {'filter': ['INPUT', 'OUTPUT', 'FORWARD']},
                           6: {'filter': ['INPUT', 'OUTPUT', 'FORWARD']}}
+        builtin_chains[4].update({'raw': ['PREROUTING', 'OUTPUT']})
+        builtin_chains[6].update({'raw': ['PREROUTING', 'OUTPUT']})
+        self._configure_builtin_chains(builtin_chains)
 
         if not state_less:
-            self.ipv4.update(
-                {'mangle': IptablesTable(binary_name=self.wrap_name)}) #加入ipv4 mangle表
-            builtin_chains[4].update(
-                {'mangle': ['PREROUTING', 'INPUT', 'FORWARD', 'OUTPUT',
-                            'POSTROUTING']}) #为mangle表，添加内置的链
-            self.ipv6.update(
-                {'mangle': IptablesTable(binary_name=self.wrap_name)}) #加入ipv6 mangle表
-            builtin_chains[6].update(
-                {'mangle': ['PREROUTING', 'INPUT', 'FORWARD', 'OUTPUT',
-                            'POSTROUTING']}) #为mangle表，添加内置的链
-            self.ipv4.update(
-                {'nat': IptablesTable(binary_name=self.wrap_name)}) #加入ipv4 nat表
-            builtin_chains[4].update({'nat': ['PREROUTING',
-                                      'OUTPUT', 'POSTROUTING']}) #加入内置链
+            self.initialize_mangle_table()
+            self.initialize_nat_table()
 
-        self.ipv4.update({'raw': IptablesTable(binary_name=self.wrap_name)}) #加入ipv4 raw表
-        builtin_chains[4].update({'raw': ['PREROUTING', 'OUTPUT']}) #加入raw表内置链
-        self.ipv6.update({'raw': IptablesTable(binary_name=self.wrap_name)}) #加入ipv6 raw表
-        builtin_chains[6].update({'raw': ['PREROUTING', 'OUTPUT']}) #加入raw表内置链
+    def initialize_mangle_table(self):
+        self.ipv4.update(
+            {'mangle': IptablesTable(binary_name=self.wrap_name)})
+        self.ipv6.update(
+            {'mangle': IptablesTable(binary_name=self.wrap_name)})
 
-        #将刚才构造的内置链，应用到对应表中。
+        builtin_chains = {
+            4: {'mangle': ['PREROUTING', 'INPUT', 'FORWARD', 'OUTPUT',
+                           'POSTROUTING']},
+            6: {'mangle': ['PREROUTING', 'INPUT', 'FORWARD', 'OUTPUT',
+                           'POSTROUTING']}}
+        self._configure_builtin_chains(builtin_chains)
+
+        # Add a mark chain to mangle PREROUTING chain. It is used to
+        # identify ingress packets from a certain interface.
+        self.ipv4['mangle'].add_chain('mark')
+        self.ipv4['mangle'].add_rule('PREROUTING', '-j $mark')
+
+    def initialize_nat_table(self):
+        self.ipv4.update(
+            {'nat': IptablesTable(binary_name=self.wrap_name)})
+
+        builtin_chains = {
+            4: {'nat': ['PREROUTING', 'OUTPUT', 'POSTROUTING']}}
+        self._configure_builtin_chains(builtin_chains)
+
+        # Add a neutron-postrouting-bottom chain. It's intended to be
+        # shared among the various neutron components. We set it as the
+        # last chain of POSTROUTING chain.
+        self.ipv4['nat'].add_chain('neutron-postrouting-bottom', wrap=False)
+        self.ipv4['nat'].add_rule(
+            'POSTROUTING', '-j neutron-postrouting-bottom', wrap=False)
+
+        # We add a snat chain to the shared neutron-postrouting-bottom
+        # chain so that it's applied last.
+        self.ipv4['nat'].add_chain('snat')
+        self.ipv4['nat'].add_rule('neutron-postrouting-bottom',
+                                  '-j $snat', wrap=False,
+                                  comment=ic.SNAT_OUT)
+
+        # And then we add a float-snat chain and jump to first thing in
+        # the snat chain.
+        self.ipv4['nat'].add_chain('float-snat')
+        self.ipv4['nat'].add_rule('snat', '-j $float-snat')
+
+    def _configure_builtin_chains(self, builtin_chains):
         for ip_version in builtin_chains:
             if ip_version == 4:
                 tables = self.ipv4
@@ -390,35 +427,6 @@ class IptablesManager(object):
                     tables[table].add_rule(chain, '-j $%s' %
                                            (chain), wrap=False) #为linux中原生的同名链，加入 '-j $%s'实现跳转
 
-        if not state_less:
-            # Add a neutron-postrouting-bottom chain. It's intended to be
-            # shared among the various neutron components. We set it as the
-            # last chain of POSTROUTING chain.
-            self.ipv4['nat'].add_chain('neutron-postrouting-bottom',
-                                       wrap=False) #添加neutron-postrouting-bottom
-            self.ipv4['nat'].add_rule('POSTROUTING',
-                                      '-j neutron-postrouting-bottom',
-                                      wrap=False) #在postrouting中跳转 neutron-postrouting-bottom
-
-            # We add a snat chain to the shared neutron-postrouting-bottom
-            # chain so that it's applied last.
-            self.ipv4['nat'].add_chain('snat')
-            self.ipv4['nat'].add_rule('neutron-postrouting-bottom',
-                                      '-j $snat', wrap=False,
-                                      comment=ic.SNAT_OUT) #使其跳'snat'
-
-            # And then we add a float-snat chain and jump to first thing in
-            # the snat chain.
-            self.ipv4['nat'].add_chain('float-snat')
-            self.ipv4['nat'].add_rule('snat', '-j $float-snat') #在snat链上，使其跳‘float-snat'
-
-            # Add a mark chain to mangle PREROUTING chain. It is used to
-            # identify ingress packets from a certain interface.
-            #添加 mark 链，并使 报文一进来，跳到'-j $mark'
-            self.ipv4['mangle'].add_chain('mark')
-            self.ipv4['mangle'].add_rule('PREROUTING', '-j $mark')
-
-    #按版本返回不同的表集合
     def get_tables(self, ip_version):
         return {4: self.ipv4, 6: self.ipv6}[ip_version]
 
@@ -506,7 +514,7 @@ class IptablesManager(object):
     def _do_run_restore(self, args, commands, lock=False):
         args = args[:]
         if lock:
-            args += ['-w', self.xlock_wait_time]
+            args += ['-w', self.xlock_wait_time, '-W', XLOCK_WAIT_INTERVAL]
         try:
             kwargs = {} if lock else {'log_fail_as_error': False}
             self.execute(args, process_input='\n'.join(commands),

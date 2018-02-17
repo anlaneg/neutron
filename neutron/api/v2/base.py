@@ -40,9 +40,6 @@ from neutron.quota import resource_registry
 
 LOG = logging.getLogger(__name__)
 
-# TODO(boden): remove shim once consumers are using lib's FAULT_MAP
-FAULT_MAP = faults.FAULT_MAP
-
 
 class Controller(object):
     LIST = 'list'
@@ -490,11 +487,12 @@ class Controller(object):
             self._notifier.info(request.context,
                                 notifier_method,
                                 create_result)
-            registry.notify(self._resource, events.BEFORE_RESPONSE, self,
-                            context=request.context, data=create_result,
-                            method_name=notifier_method,
-                            collection=self._collection,
-                            action=action, original={})
+            registry.publish(self._resource, events.BEFORE_RESPONSE, self,
+                             payload=events.APIEventPayload(
+                                 request.context, notifier_method, action,
+                                 request_body=body,
+                                 states=({}, create_result,),
+                                 collection_name=self._collection))
             return create_result
 
         def do_create(body, bulk=False, emulated=False):
@@ -590,10 +588,12 @@ class Controller(object):
         self._notifier.info(request.context,
                             notifier_method,
                             notifier_payload)
-        registry.notify(self._resource, events.BEFORE_RESPONSE, self,
-                        context=request.context, data=result,
-                        method_name=notifier_method, action=action,
-                        original={})
+
+        registry.publish(self._resource, events.BEFORE_RESPONSE, self,
+                         payload=events.APIEventPayload(
+                             request.context, notifier_method, action,
+                             states=({}, obj, result,),
+                             collection_name=self._collection))
 
     def update(self, request, id, body=None, **kwargs):
         """Updates the specified entity's attributes."""
@@ -664,10 +664,12 @@ class Controller(object):
         result = {self._resource: self._view(request.context, obj)}
         notifier_method = self._resource + '.update.end'
         self._notifier.info(request.context, notifier_method, result)
-        registry.notify(self._resource, events.BEFORE_RESPONSE, self,
-                        context=request.context, data=result,
-                        method_name=notifier_method, action=action,
-                        original=orig_object_copy)
+        registry.publish(self._resource, events.BEFORE_RESPONSE, self,
+                         payload=events.APIEventPayload(
+                             request.context, notifier_method, action,
+                             request_body=body,
+                             states=(orig_object_copy, result,),
+                             collection_name=self._collection))
         return result
 
     @staticmethod
@@ -756,4 +758,4 @@ def create_resource(collection, resource, plugin, params, allow_bulk=False,
                             allow_pagination=allow_pagination,
                             allow_sorting=allow_sorting)
 
-    return wsgi_resource.Resource(controller, FAULT_MAP)
+    return wsgi_resource.Resource(controller, faults.FAULT_MAP)

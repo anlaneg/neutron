@@ -10,12 +10,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import itertools
+
 import netaddr
 
 from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib.api.validators import availability_zone as az_validator
-from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import fields as obj_fields
+import six
 from sqlalchemy import func
 
 from neutron.common import constants as n_const
@@ -29,7 +31,7 @@ from neutron.objects import base
 from neutron.objects import common_types
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class RouterRoute(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -65,7 +67,7 @@ class RouterRoute(base.NeutronDbObject):
         return result
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class RouterExtraAttributes(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -124,7 +126,7 @@ class RouterExtraAttributes(base.NeutronDbObject):
         return [(router, agent_count) for router, agent_count in query]
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class RouterPort(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -155,7 +157,7 @@ class RouterPort(base.NeutronDbObject):
         return [r[0] for r in query]
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class DVRMacAddress(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -186,7 +188,30 @@ class DVRMacAddress(base.NeutronDbObject):
         return result
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
+class Router(base.NeutronDbObject):
+    # Version 1.0: Initial version
+    VERSION = '1.0'
+
+    db_model = l3.Router
+
+    fields = {
+        'id': common_types.UUIDField(),
+        'project_id': obj_fields.StringField(nullable=True),
+        'name': obj_fields.StringField(nullable=True),
+        'status': common_types.RouterStatusEnumField(nullable=True),
+        'admin_state_up': obj_fields.BooleanField(nullable=True),
+        'gw_port_id': common_types.UUIDField(nullable=True),
+        'enable_snat': obj_fields.BooleanField(default=True),
+        'flavor_id': common_types.UUIDField(nullable=True),
+        'extra_attributes': obj_fields.ObjectField(
+            'RouterExtraAttributes', nullable=True),
+    }
+
+    synthetic_fields = ['extra_attributes']
+
+
+@base.NeutronObjectRegistry.register
 class FloatingIP(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -204,9 +229,11 @@ class FloatingIP(base.NeutronDbObject):
         'router_id': common_types.UUIDField(nullable=True),
         'last_known_router_id': common_types.UUIDField(nullable=True),
         'status': common_types.FloatingIPStatusEnumField(nullable=True),
+        'dns': obj_fields.ObjectField('FloatingIPDNS', nullable=True),
     }
     fields_no_update = ['project_id', 'floating_ip_address',
                         'floating_network_id', 'floating_port_id']
+    synthetic_fields = ['dns']
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
@@ -223,9 +250,40 @@ class FloatingIP(base.NeutronDbObject):
     def modify_fields_to_db(cls, fields):
         result = super(FloatingIP, cls).modify_fields_to_db(fields)
         if 'fixed_ip_address' in result:
-            result['fixed_ip_address'] = cls.filter_to_str(
-                result['fixed_ip_address'])
+            if result['fixed_ip_address'] is not None:
+                result['fixed_ip_address'] = cls.filter_to_str(
+                    result['fixed_ip_address'])
         if 'floating_ip_address' in result:
             result['floating_ip_address'] = cls.filter_to_str(
                 result['floating_ip_address'])
         return result
+
+    @classmethod
+    def get_scoped_floating_ips(cls, context, router_ids):
+        query = context.session.query(l3.FloatingIP,
+                                      models_v2.SubnetPool.address_scope_id)
+        query = query.join(models_v2.Port,
+            l3.FloatingIP.fixed_port_id == models_v2.Port.id)
+        # Outer join of Subnet can cause each ip to have more than one row.
+        query = query.outerjoin(models_v2.Subnet,
+            models_v2.Subnet.network_id == models_v2.Port.network_id)
+        query = query.filter(models_v2.Subnet.ip_version == 4)
+        query = query.outerjoin(models_v2.SubnetPool,
+            models_v2.Subnet.subnetpool_id == models_v2.SubnetPool.id)
+
+        # Filter out on router_ids
+        query = query.filter(l3.FloatingIP.router_id.in_(router_ids))
+        return cls._unique_floatingip_iterator(context, query)
+
+    @classmethod
+    def _unique_floatingip_iterator(cls, context, query):
+        """Iterates over only one row per floating ip. Ignores others."""
+        # Group rows by fip id. They must be sorted by same.
+        q = query.order_by(l3.FloatingIP.id)
+        keyfunc = lambda row: row[0]['id']
+        group_iterator = itertools.groupby(q, keyfunc)
+
+        # Just hit the first row of each group
+        for key, value in group_iterator:
+            row = [r for r in six.next(value)]
+            yield (cls._load_object(context, row[0]), row[1])

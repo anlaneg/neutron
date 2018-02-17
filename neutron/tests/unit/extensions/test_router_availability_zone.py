@@ -11,8 +11,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
-
 from neutron_lib.plugins import constants
 
 from neutron.db.availability_zone import router as router_az_db
@@ -20,7 +18,6 @@ from neutron.db import common_db_mixin
 from neutron.db import l3_agentschedulers_db
 from neutron.db import l3_db
 from neutron.extensions import l3
-from neutron.extensions import router_availability_zone as router_az
 from neutron.tests.unit.extensions import test_availability_zone as test_az
 from neutron.tests.unit.extensions import test_l3
 
@@ -55,19 +52,9 @@ class TestAZRouterCase(test_az.AZTestCommon, test_l3.L3NatTestCaseMixin):
                      'test_router_availability_zone.AZRouterTestPlugin')
         service_plugins = {'l3_plugin_name': l3_plugin}
 
-        self._backup()
-        l3.RESOURCE_ATTRIBUTE_MAP['routers'].update(
-            router_az.EXTENDED_ATTRIBUTES_2_0['routers'])
         ext_mgr = AZL3ExtensionManager()
         super(TestAZRouterCase, self).setUp(plugin=plugin, ext_mgr=ext_mgr,
                                             service_plugins=service_plugins)
-
-    def _backup(self):
-        self.contents_backup = copy.deepcopy(l3.RESOURCE_ATTRIBUTE_MAP)
-        self.addCleanup(self._restore)
-
-    def _restore(self):
-        l3.RESOURCE_ATTRIBUTE_MAP = self.contents_backup
 
     def test_create_router_with_az(self):
         self._register_azs()

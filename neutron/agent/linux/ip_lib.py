@@ -31,6 +31,7 @@ import six
 from neutron._i18n import _
 from neutron.agent.common import utils
 from neutron.common import exceptions as n_exc
+from neutron.common import ipv6_utils
 from neutron.common import utils as common_utils
 from neutron.privileged.agent.linux import ip_lib as privileged
 
@@ -334,6 +335,8 @@ class IPDevice(SubProcessBase):
                           " floatingip %s", ip_str)
 
     def disable_ipv6(self):
+        if not ipv6_utils.is_enabled_and_bind_by_default():
+            return
         sysctl_name = re.sub(r'\.', '/', self.name)
         cmd = ['net.ipv6.conf.%s.disable_ipv6=1' % sysctl_name]
         return sysctl(cmd, namespace=self.namespace)
@@ -601,8 +604,13 @@ class IpAddrCommand(IpDeviceCommandBase):
                             filters=None, ip_version=None):
         """Get a list of all the devices with an IP attached in the namespace.
 
-        @param name: if it's not None, only a device with that matching name
+        :param name: if it's not None, only a device with that matching name
                      will be returned.
+        :param scope: address scope, for example, global, link, or host
+        :param to: IP address or cidr to match. If cidr then it will match
+                   any IP within the specified subnet
+        :param filters: list of any other filters supported by /sbin/ip
+        :param ip_version: 4 or 6
         """
         options = [ip_version] if ip_version else []
 
@@ -928,7 +936,7 @@ def device_exists_with_ips_and_mac(device_name, ip_cidrs, mac, namespace=None):
     """
     try:
         device = IPDevice(device_name, namespace=namespace)
-        if mac != device.link.address:
+        if mac and mac != device.link.address:
             return False
         device_ip_cidrs = [ip['cidr'] for ip in device.addr.list()]
         for ip_cidr in ip_cidrs:
@@ -1062,8 +1070,12 @@ def ensure_device_is_ready(device_name, namespace=None):
     dev = IPDevice(device_name, namespace=namespace)
     dev.set_log_fail_as_error(False)
     try:
-        # Ensure the device is up, even if it is already up. If the device
-        # doesn't exist, a RuntimeError will be raised.
+        # Ensure the device has a MAC address and is up, even if it is already
+        # up. If the device doesn't exist, a RuntimeError will be raised.
+        if not dev.link.address:
+            LOG.error("Device %s cannot be used as it has no MAC "
+                      "address", device_name)
+            return False
         dev.link.set_up()
     except RuntimeError:
         return False
@@ -1087,10 +1099,21 @@ def _arping(ns_name, iface_name, address, count, log_exception):
     # *  https://patchwork.ozlabs.org/patch/760372/
     # ** https://github.com/iputils/iputils/pull/86
     first = True
+    # Since arping is used to send gratuitous ARP, a response is
+    # not expected. In some cases (no response) and with some
+    # platforms (>=Ubuntu 14.04), arping exit code can be 1.
+    extra_ok_codes = [1]
+    ip_wrapper = IPWrapper(namespace=ns_name)
     for i in range(count):
         if not first:
             # hopefully enough for kernel to get out of locktime loop
             time.sleep(2)
+            # On the second (and subsequent) arping calls, we can get a
+            # "bind: Cannot assign requested address" error since
+            # the IP address might have been deleted concurrently.
+            # We will log an error below if this isn't the case, so
+            # no need to have execute() log one as well.
+            extra_ok_codes = [1, 2]
         first = False
 
         # some Linux kernels* don't honour REPLYs. Send both gratuitous REQUEST
@@ -1105,28 +1128,32 @@ def _arping(ns_name, iface_name, address, count, log_exception):
                           # removed while running
                           '-w', 1.5, address]
             try:
-                ip_wrapper = IPWrapper(namespace=ns_name)
-                # Since arping is used to send gratuitous ARP, a response is
-                # not expected. In some cases (no response) and with some
-                # platforms (>=Ubuntu 14.04), arping exit code can be 1.
-                ip_wrapper.netns.execute(arping_cmd, extra_ok_codes=[1])
+                ip_wrapper.netns.execute(arping_cmd,
+                                         extra_ok_codes=extra_ok_codes)
             except Exception as exc:
                 # Since this is spawned in a thread and executed 2 seconds
-                # apart, the interface may have been deleted while we were
-                # sleeping. Downgrade message to a warning and return early.
-                exists = device_exists(iface_name, namespace=ns_name)
+                # apart, something may have been deleted while we were
+                # sleeping. Downgrade message to info and return early
+                # unless it was the first try.
+                exists = device_exists_with_ips_and_mac(iface_name,
+                                                        [address],
+                                                        mac=None,
+                                                        namespace=ns_name)
                 msg = _("Failed sending gratuitous ARP to %(addr)s on "
                         "%(iface)s in namespace %(ns)s: %(err)s")
                 logger_method = LOG.exception
-                if not (log_exception or exists):
-                    logger_method = LOG.warning
+                if not (log_exception and (first or exists)):
+                    logger_method = LOG.info
                 logger_method(msg, {'addr': address,
                                     'iface': iface_name,
                                     'ns': ns_name,
                                     'err': exc})
                 if not exists:
-                    LOG.warning("Interface %s might have been deleted "
-                                "concurrently", iface_name)
+                    LOG.info("Interface %(iface)s or address %(addr)s "
+                             "in namespace %(ns)s was deleted concurrently",
+                             {'iface': iface_name,
+                              'addr': address,
+                              'ns': ns_name})
                     return
 
 #发送地址通告

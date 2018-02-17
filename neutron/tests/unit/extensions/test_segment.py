@@ -17,6 +17,8 @@ import copy
 from keystoneauth1 import exceptions as ks_exc
 import mock
 import netaddr
+from neutron_lib.api.definitions import ip_allocation as ipalloc_apidef
+from neutron_lib.api.definitions import l2_adjacency as l2adj_apidef
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import exceptions
@@ -38,8 +40,6 @@ from neutron.db import agentschedulers_db
 from neutron.db import db_base_plugin_v2
 from neutron.db import portbindings_db
 from neutron.db import segments_db
-from neutron.extensions import ip_allocation
-from neutron.extensions import l2_adjacency
 from neutron.extensions import segment as ext_segment
 from neutron.objects import network
 from neutron.services.segments import db
@@ -355,6 +355,18 @@ class TestSegment(SegmentTestCase):
             segment['segment']['segmentation_id'] = '201'
             self._update('segments', segment['segment']['id'], segment,
                          expected_code=webob.exc.HTTPClientError.code)
+
+    def test_segment_notification_on_delete_network(self):
+        with mock.patch.object(db, '_delete_segments_for_network') as dsn:
+            db.subscribe()
+            with self.network() as network:
+                network = network['network']
+                self._delete('networks', network['id'])
+        dsn.assert_called_with(resources.NETWORK,
+                               events.PRECOMMIT_DELETE,
+                               mock.ANY,
+                               context=mock.ANY,
+                               network_id=mock.ANY)
 
 
 class TestSegmentML2(SegmentTestCase):
@@ -843,7 +855,7 @@ class SegmentAwareIpamTestCase(SegmentTestCase):
         request = self.new_show_request('networks', network_id)
         response = self.deserialize(self.fmt, request.get_response(self.api))
         self.assertEqual(is_adjacent,
-                         response['network'][l2_adjacency.L2_ADJACENCY])
+                         response['network'][l2adj_apidef.L2_ADJACENCY])
 
 
 class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
@@ -1055,8 +1067,8 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         # Create an unbound port requesting no IP addresses
         response = self._create_port_and_show(network, fixed_ips=[])
         self.assertEqual([], response['port']['fixed_ips'])
-        self.assertEqual(ip_allocation.IP_ALLOCATION_NONE,
-                         response['port'][ip_allocation.IP_ALLOCATION])
+        self.assertEqual(ipalloc_apidef.IP_ALLOCATION_NONE,
+                         response['port'][ipalloc_apidef.IP_ALLOCATION])
 
     def test_port_create_with_no_fixed_ips_no_ipam(self):
         """Ports without addresses on non-routed networks are not deferred"""
@@ -1068,8 +1080,8 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         response = self._create_port_and_show(network, fixed_ips=[])
 
         self.assertEqual([], response['port']['fixed_ips'])
-        self.assertEqual(ip_allocation.IP_ALLOCATION_NONE,
-                         response['port'][ip_allocation.IP_ALLOCATION])
+        self.assertEqual(ipalloc_apidef.IP_ALLOCATION_NONE,
+                         response['port'][ipalloc_apidef.IP_ALLOCATION])
 
     def test_port_without_ip_not_deferred(self):
         """Ports without addresses on non-routed networks are not deferred"""
@@ -1087,8 +1099,8 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         response = self.deserialize(self.fmt, request.get_response(self.api))
 
         self.assertEqual([], response['port']['fixed_ips'])
-        self.assertEqual(ip_allocation.IP_ALLOCATION_IMMEDIATE,
-                         response['port'][ip_allocation.IP_ALLOCATION])
+        self.assertEqual(ipalloc_apidef.IP_ALLOCATION_IMMEDIATE,
+                         response['port'][ipalloc_apidef.IP_ALLOCATION])
 
     def test_port_without_ip_not_deferred_no_binding(self):
         """Ports without addresses on non-routed networks are not deferred"""
@@ -1098,8 +1110,8 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         # Create a unbound port with no IP address (since there is no subnet)
         response = self._create_port_and_show(network)
         self.assertEqual([], response['port']['fixed_ips'])
-        self.assertEqual(ip_allocation.IP_ALLOCATION_IMMEDIATE,
-                         response['port'][ip_allocation.IP_ALLOCATION])
+        self.assertEqual(ipalloc_apidef.IP_ALLOCATION_IMMEDIATE,
+                         response['port'][ipalloc_apidef.IP_ALLOCATION])
 
     def test_port_update_is_host_aware(self):
         """Binding information is provided, subnets on segments"""
@@ -1140,8 +1152,8 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         request = self.new_show_request('ports', port_id)
         response = self.deserialize(self.fmt, request.get_response(self.api))
 
-        self.assertEqual(ip_allocation.IP_ALLOCATION_DEFERRED,
-                         response['port'][ip_allocation.IP_ALLOCATION])
+        self.assertEqual(ipalloc_apidef.IP_ALLOCATION_DEFERRED,
+                         response['port'][ipalloc_apidef.IP_ALLOCATION])
         ips = response['port']['fixed_ips']
         self.assertEqual(0, len(ips))
 
@@ -1149,8 +1161,8 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         request = self.new_show_request('ports', port_id)
         response = self.deserialize(self.fmt, request.get_response(self.api))
 
-        self.assertEqual(ip_allocation.IP_ALLOCATION_IMMEDIATE,
-                         response['port'][ip_allocation.IP_ALLOCATION])
+        self.assertEqual(ipalloc_apidef.IP_ALLOCATION_IMMEDIATE,
+                         response['port'][ipalloc_apidef.IP_ALLOCATION])
         ips = response['port']['fixed_ips']
         self.assertNotEqual(0, len(ips))
 

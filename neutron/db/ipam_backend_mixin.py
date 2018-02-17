@@ -18,18 +18,17 @@ import copy
 import itertools
 
 import netaddr
+from neutron_lib.api.definitions import ip_allocation as ipalloc_apidef
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api import validators
 from neutron_lib import constants as const
 from neutron_lib import exceptions as exc
 from oslo_config import cfg
-from oslo_db import exception as db_exc
 from oslo_log import log as logging
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import exc as orm_exc
 
 from neutron._i18n import _
-from neutron.common import constants
 from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
 from neutron.common import utils as common_utils
@@ -40,7 +39,6 @@ from neutron.db import db_base_plugin_common
 from neutron.db.models import segment as segment_model
 from neutron.db.models import subnet_service_type as sst_model
 from neutron.db import models_v2
-from neutron.extensions import ip_allocation as ipa
 from neutron.extensions import segment
 from neutron.ipam import exceptions as ipam_exceptions
 from neutron.ipam import utils as ipam_utils
@@ -210,9 +208,10 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
             changes['service_types'] = (
                 self._update_subnet_service_types(context, subnet_id, s))
 
-        subnet = self._get_subnet(context, subnet_id)
-        subnet.update(s)
-        return subnet, changes
+        subnet_obj = self._get_subnet_object(context, subnet_id)
+        subnet_obj.update_fields(s)
+        subnet_obj.update()
+        return subnet_obj, changes
 
     def _validate_subnet_cidr(self, context, network, new_subnet_cidr):
         """Validate the CIDR for a subnet.
@@ -236,10 +235,10 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
         if cfg.CONF.allow_overlapping_ips:
             subnet_list = network.subnets
         else:
-            subnet_list = self._get_all_subnets(context)
+            subnet_list = self._get_subnets(context)
         for subnet in subnet_list:
             if ((netaddr.IPSet([subnet.cidr]) & new_subnet_ipset) and
-                subnet.cidr != constants.PROVISIONAL_IPV6_PD_PREFIX):
+                str(subnet.cidr) != const.PROVISIONAL_IPV6_PD_PREFIX):
                 # don't give out details of the overlapping subnet
                 err_msg = ("Requested subnet with cidr: %(cidr)s for "
                            "network: %(network_id)s overlaps with another "
@@ -348,11 +347,12 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
                         return subnet
             subnet = get_matching_subnet()
             if not subnet:
-                subnet = self._get_subnet(context, fixed['subnet_id'])
+                subnet_obj = self._get_subnet_object(context,
+                                                     fixed['subnet_id'])
                 msg = (_("Failed to create port on network %(network_id)s"
                          ", because fixed_ips included invalid subnet "
                          "%(subnet_id)s") %
-                       {'network_id': subnet['network_id'],
+                       {'network_id': subnet_obj.network_id,
                         'subnet_id': fixed['subnet_id']})
                 raise exc.InvalidInput(error_message=msg)
             # Ensure that the IP is valid on the subnet
@@ -401,9 +401,9 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
         if device_owner in const.ROUTER_INTERFACE_OWNERS_SNAT:
             return True
 
-        subnet = self._get_subnet(context, subnet_id)
-        return not (ipv6_utils.is_auto_address_subnet(subnet) and
-                    not ipv6_utils.is_ipv6_pd_enabled(subnet))
+        subnet_obj = self._get_subnet_object(context, subnet_id)
+        return not (ipv6_utils.is_auto_address_subnet(subnet_obj) and
+                    not ipv6_utils.is_ipv6_pd_enabled(subnet_obj))
 
     def _get_changed_ips_for_port(self, context, original_ips,
                                   new_ips, device_owner):
@@ -507,13 +507,20 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
 
         service_types = subnet_args.pop('service_types', [])
 
-        subnet = models_v2.Subnet(**subnet_args)
         segment_id = subnet_args.get('segment_id')
-        try:
-            context.session.add(subnet)
-            context.session.flush()
-        except db_exc.DBReferenceError:
-            raise segment_exc.SegmentNotFound(segment_id=segment_id)
+        if segment_id:
+            # TODO(slaweq): integrate check if segment exists in
+            # self._validate_segment() method
+            segment = network_obj.NetworkSegment.get_object(context,
+                                                            id=segment_id)
+            if not segment:
+                raise segment_exc.SegmentNotFound(segment_id=segment_id)
+
+        subnet = subnet_obj.Subnet(context, **subnet_args)
+        subnet.create()
+        # TODO(slaweq): when check is segment exists will be integrated in
+        # self._validate_segment() method, it should be moved to be done before
+        # subnet object is created
         self._validate_segment(context, network['id'], segment_id)
 
         # NOTE(changzhi) Store DNS nameservers with order into DB one
@@ -545,7 +552,7 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
         self.save_allocation_pools(context, subnet,
                                    subnet_request.allocation_pools)
 
-        return subnet
+        return subnet_obj.Subnet.get_object(context, id=subnet.id)
 
     def _classify_subnets(self, context, subnets):
         """Split into v4, v6 stateless and v6 stateful subnets"""
@@ -756,7 +763,8 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
         fixed_ips_requested = validators.is_attr_set(new_port.get('fixed_ips'))
         old_ips = old_port.get('fixed_ips')
         deferred_ip_allocation = (
-            old_port.get('ip_allocation') == ipa.IP_ALLOCATION_DEFERRED
+            old_port.get('ip_allocation') ==
+            ipalloc_apidef.IP_ALLOCATION_DEFERRED
             and host and not old_host
             and not old_ips
             and not fixed_ips_requested)

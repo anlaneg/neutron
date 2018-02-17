@@ -360,7 +360,7 @@ normal instances. The use cases of the FDB population extension are:
 
 For additional information describing the problem, refer to:
 `Virtual switching technologies and Linux bridge.
-<http://events.linuxfoundation.org/sites/events/files/slides/LinuxConJapan2014_makita_0.pdf>`_
+<https://events.static.linuxfound.org/sites/events/files/slides/LinuxConJapan2014_makita_0.pdf>`_
 
 #. Edit the ``ovs_agent.ini`` or ``linuxbridge_agent.ini`` file on each compute
    node. For example:
@@ -409,7 +409,7 @@ Once configuration is complete, you can launch instances with SR-IOV ports.
       There are two ways to attach VFs to an instance. You can create an SR-IOV
       port or use the ``pci_alias`` in the Compute service. For more
       information about using ``pci_alias``, refer to `nova-api configuration
-      <https://docs.openstack.org/admin-guide/compute-pci-passthrough.html#configure-nova-api-controller>`__.
+      <https://docs.openstack.org/nova/latest/admin/pci-passthrough.html#configure-nova-api-controller>`__.
 
 SR-IOV with InfiniBand
 ~~~~~~~~~~~~~~~~~~~~~~

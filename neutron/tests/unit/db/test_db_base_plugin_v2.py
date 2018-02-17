@@ -26,6 +26,7 @@ from neutron_lib.callbacks import registry
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib import exceptions as lib_exc
+from neutron_lib import fixture
 from neutron_lib.plugins import directory
 from neutron_lib.utils import helpers
 from neutron_lib.utils import net
@@ -43,7 +44,6 @@ import neutron
 from neutron.api import api_common
 from neutron.api import extensions
 from neutron.api.v2 import router
-from neutron.common import constants as n_const
 from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
 from neutron.common import test_lib
@@ -116,7 +116,7 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
         extensions.PluginAwareExtensionManager._instance = None
         # Save the attributes map in case the plugin will alter it
         # loading extensions
-        self.useFixture(tools.AttributeMapMemento())
+        self.useFixture(fixture.APIDefinitionFixture())
         self._tenant_id = TEST_TENANT_ID
 
         if not plugin:
@@ -630,6 +630,12 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
                tenant_id=None,
                service_types=None,
                set_context=False):
+
+        cidr = netaddr.IPNetwork(cidr) if cidr else None
+        if (gateway_ip is not None and
+                gateway_ip != constants.ATTR_NOT_SPECIFIED):
+            gateway_ip = netaddr.IPAddress(gateway_ip)
+
         with optional_ctx(network, self.network,
                           set_context=set_context,
                           tenant_id=tenant_id) as network_to_use:
@@ -3755,7 +3761,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
 
     @testtools.skipIf(tools.is_bsd(), 'bug/1484837')
     def test_create_subnet_ipv6_pd_gw_values(self):
-        cidr = n_const.PROVISIONAL_IPV6_PD_PREFIX
+        cidr = constants.PROVISIONAL_IPV6_PD_PREFIX
         # Gateway is last IP in IPv6 DHCPv6 Stateless subnet
         gateway = '::ffff:ffff:ffff:ffff'
         allocation_pools = [{'start': '::1',
@@ -3899,7 +3905,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
     @testtools.skipIf(tools.is_bsd(), 'bug/1484837')
     def test_create_subnet_with_v6_pd_allocation_pool(self):
         gateway_ip = '::1'
-        cidr = n_const.PROVISIONAL_IPV6_PD_PREFIX
+        cidr = constants.PROVISIONAL_IPV6_PD_PREFIX
         allocation_pools = [{'start': '::2',
                              'end': '::ffff:ffff:ffff:fffe'}]
         self._test_create_subnet(gateway_ip=gateway_ip,
@@ -4108,7 +4114,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
         plugin = directory.get_plugin()
         ctx = context.get_admin_context()
         new_subnet = {'ip_version': 6,
-                      'cidr': n_const.PROVISIONAL_IPV6_PD_PREFIX,
+                      'cidr': constants.PROVISIONAL_IPV6_PD_PREFIX,
                       'enable_dhcp': True,
                       'ipv6_address_mode': None,
                       'ipv6_ra_mode': None}
@@ -6270,11 +6276,11 @@ class DbModelMixin(object):
         return sg, rule
 
     def _make_floating_ip(self, ctx, port_id):
-        with db_api.context_manager.writer.using(ctx):
-            flip = l3_models.FloatingIP(floating_ip_address='1.2.3.4',
-                                        floating_network_id='somenet',
-                                        floating_port_id=port_id)
-            ctx.session.add(flip)
+        flip = l3_obj.FloatingIP(
+            ctx, floating_ip_address=netaddr.IPAddress('1.2.3.4'),
+            floating_network_id=uuidutils.generate_uuid(),
+            floating_port_id=port_id)
+        flip.create()
         return flip
 
     def _make_router(self, ctx):
@@ -6337,7 +6343,7 @@ class DbModelMixin(object):
         port = self._make_port(ctx, network.id)
         flip = self._make_floating_ip(ctx, port.id)
         self._test_staledata_error_on_concurrent_object_update(
-            l3_models.FloatingIP, flip['id'])
+            flip.db_model, flip.id)
 
     def test_staledata_error_on_concurrent_object_update_sg(self):
         ctx = context.get_admin_context()
@@ -6428,7 +6434,9 @@ class DbModelMixin(object):
         network = self._make_network(ctx)
         port = self._make_port(ctx, network.id)
         flip = self._make_floating_ip(ctx, port.id)
-        self._test_standardattr_removed_on_obj_delete(ctx, flip)
+        # TODO(lujinluo): Change flip.db_obj to flip once all
+        # codes are migrated to use Floating IP OVO object.
+        self._test_standardattr_removed_on_obj_delete(ctx, flip.db_obj)
 
     def test_standardattr_removed_on_router_delete(self):
         ctx = context.get_admin_context()
@@ -6652,7 +6660,7 @@ class DbOperationBoundMixin(object):
 
     def setUp(self, *args, **kwargs):
         super(DbOperationBoundMixin, self).setUp(*args, **kwargs)
-        self.useFixture(tools.AttributeMapMemento())
+        self.useFixture(fixture.APIDefinitionFixture())
         self._recorded_statements = []
 
         def _event_incrementer(conn, clauseelement, *args, **kwargs):

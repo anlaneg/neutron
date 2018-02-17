@@ -46,7 +46,6 @@ METADATA_PROXY_HANDLER_OPTS = [
                       "file for ssl")),
     cfg.HostAddressOpt('nova_metadata_host',
                        default='127.0.0.1',
-                       deprecated_name='nova_metadata_ip',
                        help=_("IP address or DNS name of Nova metadata "
                               "server.")),
     cfg.PortOpt('nova_metadata_port',
@@ -95,6 +94,7 @@ UNIX_DOMAIN_METADATA_PROXY_OPTS = [
                       "otherwise.")),
     cfg.IntOpt('metadata_workers',
                default=host.cpu_count() // 2,
+               sample_default='<num_of_cpus> / 2',
                help=_('Number of separate worker processes for metadata '
                       'server (defaults to half of the number of CPUs)')),
     cfg.IntOpt('metadata_backlog',

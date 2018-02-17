@@ -583,6 +583,41 @@ class OVS_Lib_Test(base.BaseTestCase):
 
         tools.verify_mock_calls(self.execute, expected_calls_and_values)
 
+    def test_add_vxlan_tos_tunnel_port(self):
+        pname = "tap99"
+        local_ip = "1.1.1.1"
+        remote_ip = "9.9.9.9"
+        ofport = 6
+        vxlan_udp_port = "9999"
+        dont_fragment = True
+        tunnel_csum = False
+        tos = 8
+        command = ["--may-exist", "add-port", self.BR_NAME, pname]
+        command.extend(["--", "set", "Interface", pname])
+        command.extend(["type=" + constants.TYPE_VXLAN,
+                        "options:dst_port=" + vxlan_udp_port,
+                        "options:df_default=true",
+                        "options:remote_ip=" + remote_ip,
+                        "options:local_ip=" + local_ip,
+                        "options:in_key=flow",
+                        "options:out_key=flow",
+                        "options:tos=" + str(tos)])
+        # Each element is a tuple of (expected mock call, return_value)
+        expected_calls_and_values = [
+            (self._vsctl_mock(*command), None),
+            (self._vsctl_mock("--columns=ofport", "list", "Interface", pname),
+             self._encode_ovs_json(['ofport'], [[ofport]])),
+        ]
+        tools.setup_mock_calls(self.execute, expected_calls_and_values)
+
+        self.assertEqual(
+            self.br.add_tunnel_port(pname, remote_ip, local_ip,
+                                    constants.TYPE_VXLAN, vxlan_udp_port,
+                                    dont_fragment, tunnel_csum, tos),
+            ofport)
+
+        tools.verify_mock_calls(self.execute, expected_calls_and_values)
+
     def _encode_ovs_json(self, headings, data):
         # See man ovs-vsctl(8) for the encoding details.
         r = {"data": [],
@@ -813,26 +848,6 @@ class OVS_Lib_Test(base.BaseTestCase):
             port_exists_mock.assert_called_once_with("test_port")
             set_egress_mock.assert_not_called()
 
-    def test_delete_ingress_bw_limit_for_port(self):
-        with mock.patch.object(
-            self.br, "_delete_ingress_bw_limit_for_port"
-        ) as delete_ingress_mock, mock.patch.object(
-            self.br, "port_exists", return_value=True
-        ) as port_exists_mock:
-            self.br.delete_ingress_bw_limit_for_port("test_port")
-            port_exists_mock.assert_called_once_with("test_port")
-            delete_ingress_mock.assert_called_once_with("test_port")
-
-    def test_delete_ingress_bw_limit_for_port_port_not_exists(self):
-        with mock.patch.object(
-            self.br, "_delete_ingress_bw_limit_for_port"
-        ) as delete_ingress_mock, mock.patch.object(
-            self.br, "port_exists", return_value=False
-        ) as port_exists_mock:
-            self.br.delete_ingress_bw_limit_for_port("test_port")
-            port_exists_mock.assert_called_once_with("test_port")
-            delete_ingress_mock.assert_not_called()
-
     def test_get_vifs_by_ids(self):
         db_list_res = [
             {'name': 'qvo1', 'ofport': 1,
@@ -977,6 +992,38 @@ class OVS_Lib_Test(base.BaseTestCase):
                 side_effect=[[] for _ in range(7)]):
             self.assertRaises(tenacity.RetryError,
                               self.br._get_port_val, '1', 'external_ids')
+
+    def test_set_controller_rate_limit(self):
+        with mock.patch.object(
+                self.br, "set_controller_field"
+        ) as set_ctrl_field_mock:
+            self.br.set_controller_rate_limit(200)
+            set_ctrl_field_mock.assert_called_once_with(
+                'controller_rate_limit', 200)
+
+    def test_set_controller_rate_limit_with_value_less_than_min(self):
+        with mock.patch.object(
+                self.br, "set_controller_field"
+        ) as set_ctrl_field_mock:
+            self.br.set_controller_rate_limit(50)
+            set_ctrl_field_mock.assert_called_once_with(
+                'controller_rate_limit', ovs_lib.CTRL_RATE_LIMIT_MIN)
+
+    def test_set_controller_burst_limit(self):
+        with mock.patch.object(
+                self.br, "set_controller_field"
+        ) as set_ctrl_field_mock:
+            self.br.set_controller_burst_limit(100)
+            set_ctrl_field_mock.assert_called_once_with(
+                'controller_burst_limit', 100)
+
+    def test_set_controller_burst_limit_with_value_less_than_min(self):
+        with mock.patch.object(
+                self.br, "set_controller_field"
+        ) as set_ctrl_field_mock:
+            self.br.set_controller_burst_limit(10)
+            set_ctrl_field_mock.assert_called_once_with(
+                'controller_burst_limit', ovs_lib.CTRL_BURST_LIMIT_MIN)
 
 
 class TestDeferredOVSBridge(base.BaseTestCase):

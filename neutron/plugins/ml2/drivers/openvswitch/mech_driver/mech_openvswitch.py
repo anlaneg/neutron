@@ -26,6 +26,7 @@ from neutron.agent import securitygroups_rpc
 from neutron.plugins.ml2.drivers import mech_agent
 from neutron.plugins.ml2.drivers.openvswitch.agent.common \
     import constants as a_const
+from neutron.services.logapi.drivers.openvswitch import driver as log_driver
 from neutron.services.qos.drivers.openvswitch import driver as ovs_qos_driver
 
 LOG = log.getLogger(__name__)
@@ -63,6 +64,7 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
             vif_details, supported_vnic_types=[portbindings.VNIC_NORMAL,
                                                portbindings.VNIC_DIRECT])
         ovs_qos_driver.register()
+        log_driver.register()
 
     def get_allowed_network_types(self, agent):
         #返回自身支持哪些网络类型
@@ -128,9 +130,9 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         def set_bridge_name_inner(bridge_name):
             vif_details[portbindings.VIF_DETAILS_BRIDGE_NAME] = bridge_name
 
-        registry.notify(
-            a_const.OVS_BRIDGE_NAME, events.BEFORE_READ,
-            set_bridge_name_inner, port=port)
+        registry.publish(a_const.OVS_BRIDGE_NAME, events.BEFORE_READ,
+            set_bridge_name_inner, payload=events.EventPayload(
+                None, metadata={'port': port}))
 
     def _pre_get_vif_details(self, agent, context):
         a_config = agent['configurations']

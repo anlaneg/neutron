@@ -15,6 +15,7 @@ import copy
 import itertools
 import random
 
+import fixtures
 import mock
 import netaddr
 from neutron_lib import constants
@@ -28,12 +29,9 @@ from oslo_utils import uuidutils
 from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import exception
 from oslo_versionedobjects import fields as obj_fields
-from oslo_versionedobjects import fixture
 import testtools
 
 from neutron.db import _model_query as model_query
-from neutron.db.models import l3 as l3_model
-from neutron.db import standard_attr
 from neutron import objects
 from neutron.objects import agent
 from neutron.objects import base
@@ -45,7 +43,9 @@ from neutron.objects import network as net_obj
 from neutron.objects import ports
 from neutron.objects.qos import policy as qos_policy
 from neutron.objects import rbac_db
+from neutron.objects import router
 from neutron.objects import securitygroup
+from neutron.objects import stdattrs
 from neutron.objects import subnet
 from neutron.objects import utils as obj_utils
 from neutron.tests import base as test_base
@@ -54,6 +54,7 @@ from neutron.tests.unit.db import test_db_base_plugin_v2
 
 
 SQLALCHEMY_COMMIT = 'sqlalchemy.engine.Connection._commit_impl'
+SQLALCHEMY_CLOSE = 'sqlalchemy.engine.Connection.close'
 OBJECTS_BASE_OBJ_FROM_PRIMITIVE = ('oslo_versionedobjects.base.'
                                    'VersionedObject.obj_from_primitive')
 TIMESTAMP_FIELDS = ['created_at', 'updated_at', 'revision_number']
@@ -67,7 +68,7 @@ class ObjectFieldsModel(dict):
     pass
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeSmallNeutronObject(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -89,7 +90,7 @@ class FakeSmallNeutronObject(base.NeutronDbObject):
     }
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeSmallNeutronObjectWithMultipleParents(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -109,7 +110,7 @@ class FakeSmallNeutronObjectWithMultipleParents(base.NeutronDbObject):
     }
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeParent(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -128,7 +129,7 @@ class FakeParent(base.NeutronDbObject):
     synthetic_fields = ['children']
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeWeirdKeySmallNeutronObject(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -148,7 +149,30 @@ class FakeWeirdKeySmallNeutronObject(base.NeutronDbObject):
     }
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+class NeutronObjectRegistryFixture(fixtures.Fixture):
+    """Use a NeutronObjectRegistry as a temp registry pattern fixture.
+
+    It is fixture similar to
+    oslo_versionedobjects.fixture.VersionedObjectRegistryFixture
+    but it uses Neutron's base registry class
+    """
+
+    def setUp(self):
+        super(NeutronObjectRegistryFixture, self).setUp()
+        self._base_test_obj_backup = copy.deepcopy(
+            base.NeutronObjectRegistry._registry._obj_classes)
+        self.addCleanup(self._restore_obj_registry)
+
+    @staticmethod
+    def register(cls_name):
+        base.NeutronObjectRegistry.register(cls_name)
+
+    def _restore_obj_registry(self):
+        base.NeutronObjectRegistry._registry._obj_classes = \
+            self._base_test_obj_backup
+
+
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronDbObject(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -169,7 +193,7 @@ class FakeNeutronDbObject(base.NeutronDbObject):
     synthetic_fields = ['obj_field']
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectNonStandardPrimaryKey(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -189,7 +213,7 @@ class FakeNeutronObjectNonStandardPrimaryKey(base.NeutronDbObject):
     synthetic_fields = ['obj_field', 'field2']
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectCompositePrimaryKey(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -208,7 +232,7 @@ class FakeNeutronObjectCompositePrimaryKey(base.NeutronDbObject):
     synthetic_fields = ['obj_field']
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectUniqueKey(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -230,7 +254,7 @@ class FakeNeutronObjectUniqueKey(base.NeutronDbObject):
     synthetic_fields = ['obj_field']
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectRenamedField(base.NeutronDbObject):
     """
     Testing renaming the parameter from DB to NeutronDbObject
@@ -256,7 +280,7 @@ class FakeNeutronObjectRenamedField(base.NeutronDbObject):
     fields_need_translation = {'field_ovo': 'field_db'}
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectCompositePrimaryKeyWithId(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -274,7 +298,7 @@ class FakeNeutronObjectCompositePrimaryKeyWithId(base.NeutronDbObject):
     synthetic_fields = ['obj_field']
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectMultipleForeignKeys(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -291,7 +315,7 @@ class FakeNeutronObjectMultipleForeignKeys(base.NeutronDbObject):
     }
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectSyntheticField(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -307,7 +331,7 @@ class FakeNeutronObjectSyntheticField(base.NeutronDbObject):
     synthetic_fields = ['obj_field']
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectSyntheticField2(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -322,7 +346,7 @@ class FakeNeutronObjectSyntheticField2(base.NeutronDbObject):
     synthetic_fields = ['obj_field']
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectWithProjectId(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -336,7 +360,7 @@ class FakeNeutronObjectWithProjectId(base.NeutronDbObject):
     }
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObject(base.NeutronObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -363,7 +387,7 @@ class FakeNeutronObject(base.NeutronObject):
         ]
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectDictOfMiscValues(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -376,7 +400,7 @@ class FakeNeutronObjectDictOfMiscValues(base.NeutronDbObject):
     }
 
 
-@obj_base.VersionedObjectRegistry.register_if(False)
+@base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectListOfDictOfMiscValues(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -465,6 +489,7 @@ FIELD_TYPE_VALUE_GENERATOR_MAP = {
         tools.get_random_port_binding_statuses,
     common_types.PortRangeField: tools.get_random_port,
     common_types.PortRangeWith0Field: lambda: tools.get_random_port(0),
+    common_types.RouterStatusEnumField: tools.get_random_router_status,
     common_types.SetOfUUIDsField: get_set_of_random_uuids,
     common_types.UUIDField: uuidutils.generate_uuid,
     common_types.VlanIdRangeField: tools.get_random_vlan,
@@ -543,7 +568,7 @@ class _BaseObjectTestCase(object):
         self.valid_field_filter = {valid_field:
                                    self.obj_fields[-1][valid_field]}
         self.obj_registry = self.useFixture(
-            fixture.VersionedObjectRegistryFixture())
+            NeutronObjectRegistryFixture())
         self.obj_registry.register(FakeSmallNeutronObject)
         self.obj_registry.register(FakeWeirdKeySmallNeutronObject)
         self.obj_registry.register(FakeNeutronObjectMultipleForeignKeys)
@@ -639,8 +664,8 @@ class _BaseObjectTestCase(object):
     def _is_test_class(cls, obj):
         return isinstance(obj, cls._test_class)
 
-    def fake_get_objects(self, context, model, **kwargs):
-        return self.model_map[model]
+    def fake_get_objects(self, obj_cls, context, **kwargs):
+        return self.model_map[obj_cls.db_model]
 
     def _get_object_synthetic_fields(self, objclass):
         return [field for field in objclass.synthetic_fields
@@ -649,7 +674,7 @@ class _BaseObjectTestCase(object):
     def _get_ovo_object_class(self, objclass, field):
         try:
             name = objclass.fields[field].objname
-            return obj_base.VersionedObjectRegistry.obj_classes().get(name)[0]
+            return base.NeutronObjectRegistry.obj_classes().get(name)[0]
         except TypeError:
             # NOTE(korzen) some synthetic fields are not handled by
             # this method, for example the ones that have subclasses, see
@@ -681,13 +706,14 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
         # NOTE(ihrachys): for matters of basic object behaviour validation,
         # mock out rbac code accessing database. There are separate tests that
         # cover RBAC, per object type.
-        if getattr(self._test_class, 'rbac_db_model', None):
-            mock.patch.object(
-                rbac_db.RbacNeutronDbObjectMixin,
-                'is_shared_with_tenant', return_value=False).start()
-            mock.patch.object(
-                rbac_db.RbacNeutronDbObjectMixin,
-                'get_shared_with_tenant').start()
+        if self._test_class.rbac_db_cls is not None:
+            if getattr(self._test_class.rbac_db_cls, 'db_model', None):
+                mock.patch.object(
+                    rbac_db.RbacNeutronDbObjectMixin,
+                    'is_shared_with_tenant', return_value=False).start()
+                mock.patch.object(
+                    rbac_db.RbacNeutronDbObjectMixin,
+                    'get_shared_with_tenant').start()
 
     def fake_get_object(self, context, model, **kwargs):
         objs = self.model_map[model]
@@ -695,8 +721,8 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
             return None
         return [obj for obj in objs if obj['id'] == kwargs['id']][0]
 
-    def fake_get_objects(self, context, model, **kwargs):
-        return self.model_map[model]
+    def fake_get_objects(self, obj_cls, context, **kwargs):
+        return self.model_map[obj_cls.db_model]
 
     # TODO(ihrachys) document the intent of all common test cases in docstrings
     def test_get_object(self):
@@ -710,7 +736,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                 self.assertTrue(self._is_test_class(obj))
                 self._check_equal(self.objs[0], obj)
                 get_object_mock.assert_called_once_with(
-                    self.context, self._test_class.db_model,
+                    self._test_class, self.context,
                     **self._test_class.modify_fields_to_db(obj_keys))
 
     def test_get_object_missing_object(self):
@@ -726,9 +752,10 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                                  self._test_class.unique_keys)))
         obj_keys = self.generate_object_keys(self._test_class,
                                              non_unique_fields)
-        self.assertRaises(o_exc.NeutronPrimaryKeyMissing,
-                          self._test_class.get_object,
-                          self.context, **obj_keys)
+        exception = self.assertRaises(o_exc.NeutronPrimaryKeyMissing,
+                                      self._test_class.get_object,
+                                      self.context, **obj_keys)
+        self.assertIn(self._test_class.__name__, str(exception))
 
     def test_get_object_unique_key(self):
         if not self._test_class.unique_keys:
@@ -748,7 +775,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                     self.assertTrue(self._is_test_class(obj))
                     self._check_equal(self.objs[0], obj)
                     get_object_mock.assert_called_once_with(
-                        mock.ANY, self._test_class.db_model,
+                        self._test_class, mock.ANY,
                         **self._test_class.modify_fields_to_db(obj_keys))
 
     def _get_synthetic_fields_get_objects_calls(self, db_objs):
@@ -765,7 +792,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                     }
                     mock_calls.append(
                         mock.call(
-                            self.context, obj_class.db_model,
+                            obj_class, self.context,
                             _pager=self.pager_map[obj_class.obj_name()],
                             **filter_kwargs))
         return mock_calls
@@ -780,7 +807,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                 [get_obj_persistent_fields(obj) for obj in self.objs],
                 [get_obj_persistent_fields(obj) for obj in objs])
         get_objects_mock.assert_any_call(
-            self.context, self._test_class.db_model,
+            self._test_class, self.context,
             _pager=self.pager_map[self._test_class.obj_name()]
         )
 
@@ -927,7 +954,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
         ) as delete_objects_mock:
             self.assertEqual(0, self._test_class.delete_objects(self.context))
         delete_objects_mock.assert_any_call(
-            self.context, self._test_class.db_model)
+            self._test_class, self.context)
 
     def test_delete_objects_valid_fields(self):
         '''Test that a valid filter does not raise an error.'''
@@ -987,7 +1014,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                 obj.create()
                 self._check_equal(self.objs[0], obj)
                 create_mock.assert_called_once_with(
-                    self.context, self._test_class.db_model,
+                    obj, self.context,
                     self._test_class.modify_fields_to_db(
                         get_obj_persistent_fields(self.objs[0])))
 
@@ -1101,7 +1128,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                     update_mock.return_value[key] = value
                 obj.update()
                 update_mock.assert_called_once_with(
-                    self.context, self._test_class.db_model,
+                    obj, self.context,
                     self._test_class.modify_fields_to_db(fields_to_update),
                     **fixed_keys)
 
@@ -1147,7 +1174,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
         obj.delete()
         self._check_equal(self.objs[0], obj)
         delete_mock.assert_called_once_with(
-            self.context, self._test_class.db_model,
+            obj, self.context,
             **self._test_class.modify_fields_to_db(obj._get_composite_keys()))
 
     @mock.patch(OBJECTS_BASE_OBJ_FROM_PRIMITIVE)
@@ -1204,7 +1231,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
             pager = base.Pager()
             self._test_class.get_objects(self.context, _pager=pager)
             get_objects.assert_called_once_with(
-                mock.ANY, self._test_class.db_model, _pager=pager)
+                self._test_class, mock.ANY, _pager=pager)
 
 
 class BaseDbObjectNonStandardPrimaryKeyTestCase(BaseObjectIfaceTestCase):
@@ -1230,7 +1257,7 @@ class UniqueKeysTestCase(test_base.BaseTestCase):
             get_unique_keys.return_value = [['field1'],
                                             ['field2', 'db_field3']]
 
-            @obj_base.VersionedObjectRegistry.register_if(False)
+            @base.NeutronObjectRegistry.register_if(False)
             class UniqueKeysTestObject(base.NeutronDbObject):
                 # Version 1.0: Initial version
                 VERSION = '1.0'
@@ -1420,17 +1447,20 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         ext_net.create()
         return ext_net.network_id
 
-    def _create_test_fip_id(self):
+    def _create_test_fip_id(self, fip_id=None):
         fake_fip = '172.23.3.0'
         ext_net_id = self._create_external_network_id()
-        # TODO(manjeets) replace this with fip ovo
-        # once it is implemented
-        return obj_db_api.create_object(
-            self.context, l3_model.FloatingIP,
-            {'floating_ip_address': fake_fip,
-             'floating_network_id': ext_net_id,
-             'floating_port_id': self._create_test_port_id(
-                 network_id=ext_net_id)}).id
+        values = {
+            'floating_ip_address': netaddr.IPAddress(fake_fip),
+            'floating_network_id': ext_net_id,
+            'floating_port_id': self._create_test_port_id(
+                network_id=ext_net_id)
+        }
+        if fip_id:
+            values['id'] = fip_id
+        fip_obj = router.FloatingIP(self.context, **values)
+        fip_obj.create()
+        return fip_obj.id
 
     def _create_test_subnet_id(self, network_id=None):
         if not network_id:
@@ -1494,10 +1524,9 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         attrs = {
             'name': 'test_router',
         }
-        # TODO(sindhu): Replace with the router object once its ready
-        router = obj_db_api.create_object(
-            self.context, l3_model.Router, attrs)
-        return router['id']
+        self._router = router.Router(self.context, **attrs)
+        self._router.create()
+        return self._router['id']
 
     def _create_test_security_group_id(self):
         sg_fields = self.get_random_object_fields(securitygroup.SecurityGroup)
@@ -1518,9 +1547,8 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
             'revision_number': tools.get_random_integer()
         }
         return obj_db_api.create_object(
-            self.context,
-            standard_attr.StandardAttribute, attrs,
-            populate_id=False)['id']
+            stdattrs.StandardAttribute,
+            self.context, attrs, populate_id=False)['id']
 
     def _create_test_flavor_id(self):
         attrs = self.get_random_object_fields(obj_cls=flavor.Flavor)
@@ -1646,19 +1674,27 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
             obj.delete()
         self.assertEqual(1, mock_commit.call_count)
 
-    @mock.patch(SQLALCHEMY_COMMIT)
-    def test_get_objects_single_transaction(self, mock_commit):
-        self._test_class.get_objects(self.context)
-        self.assertEqual(1, mock_commit.call_count)
+    def _get_ro_txn_exit_func_name(self):
+        # for old engine facade, we didn't have distinction between r/o and r/w
+        # transactions and so we always call commit even for getters when the
+        # old facade is used
+        return (
+            SQLALCHEMY_CLOSE
+            if self._test_class.new_facade else SQLALCHEMY_COMMIT)
 
-    @mock.patch(SQLALCHEMY_COMMIT)
-    def test_get_object_single_transaction(self, mock_commit):
+    def test_get_objects_single_transaction(self):
+        with mock.patch(self._get_ro_txn_exit_func_name()) as mock_exit:
+            self._test_class.get_objects(self.context)
+        self.assertEqual(1, mock_exit.call_count)
+
+    def test_get_object_single_transaction(self):
         obj = self._make_object(self.obj_fields[0])
         obj.create()
 
-        obj = self._test_class.get_object(self.context,
-                                          **obj._get_composite_keys())
-        self.assertEqual(2, mock_commit.call_count)
+        with mock.patch(self._get_ro_txn_exit_func_name()) as mock_exit:
+            obj = self._test_class.get_object(self.context,
+                                              **obj._get_composite_keys())
+        self.assertEqual(1, mock_exit.call_count)
 
     def test_get_objects_supports_extra_filtername(self):
         self.filtered_args = None
@@ -1835,6 +1871,29 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         self.assertTrue(self._test_class.objects_exist(
             self.context, validate_filters=False, fake_filter='xxx'))
 
+    def test_update_object(self):
+        fields_to_update = self.get_updatable_fields(
+            self.obj_fields[1])
+        if not fields_to_update:
+            self.skipTest('No updatable fields found in test '
+                          'class %r' % self._test_class)
+        for fields in self.obj_fields:
+            self._make_object(fields).create()
+
+        obj = self._test_class.get_objects(
+            self.context, **self.valid_field_filter)
+        for k, v in self.valid_field_filter.items():
+            self.assertEqual(v, obj[0][k])
+
+        new_values = self._get_random_update_fields()
+        keys = self.objs[0]._get_composite_keys()
+        updated_obj = self._test_class.update_object(
+            self.context, new_values, **keys)
+
+        # Check the correctness of the updated object
+        for k, v in new_values.items():
+            self.assertEqual(v, updated_obj[k])
+
     def test_update_objects(self):
         fields_to_update = self.get_updatable_fields(
             self.obj_fields[1])
@@ -1932,7 +1991,7 @@ class UniqueObjectBase(test_base.BaseTestCase):
     def setUp(self):
         super(UniqueObjectBase, self).setUp()
         obj_registry = self.useFixture(
-            fixture.VersionedObjectRegistryFixture())
+            NeutronObjectRegistryFixture())
         self.db_model = FakeModel
 
         class RegisteredObject(base.NeutronDbObject):
@@ -1991,3 +2050,24 @@ class OperationOnStringAndJsonTestCase(test_base.BaseTestCase):
                 res = base.NeutronDbObject.filter_to_json_str(field_val,
                                                               default_val)
                 self.assertEqual(default_val, res)
+
+
+class NeutronObjectValidatorTestCase(test_base.BaseTestCase):
+
+    def test_load_wrong_synthetic_fields(self):
+        try:
+            @obj_base.VersionedObjectRegistry.register_if(False)
+            class FakeNeutronObjectSyntheticFieldWrong(base.NeutronDbObject):
+                # Version 1.0: Initial version
+                VERSION = '1.0'
+
+                db_model = FakeModel
+
+                fields = {
+                    'id': common_types.UUIDField(),
+                    'obj_field': common_types.UUIDField()
+                }
+
+                synthetic_fields = ['obj_field', 'wrong_synthetic_field_name']
+        except o_exc.NeutronObjectValidatorException as exc:
+            self.assertIn('wrong_synthetic_field_name', str(exc))

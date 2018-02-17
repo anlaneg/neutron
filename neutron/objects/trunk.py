@@ -17,17 +17,15 @@ from neutron_lib import exceptions as n_exc
 from neutron_lib.objects import exceptions as o_exc
 from oslo_db import exception as o_db_exc
 from oslo_utils import versionutils
-from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import fields as obj_fields
 
-from neutron.db import api as db_api
 from neutron.objects import base
 from neutron.objects import common_types
 from neutron.services.trunk import exceptions as t_exc
 from neutron.services.trunk import models
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class SubPort(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -53,7 +51,7 @@ class SubPort(base.NeutronDbObject):
         return _dict
 
     def create(self):
-        with db_api.autonested_transaction(self.obj_context.session):
+        with self.db_context_writer(self.obj_context):
             try:
                 super(SubPort, self).create()
             except o_db_exc.DBReferenceError as ex:
@@ -82,7 +80,7 @@ class SubPort(base.NeutronDbObject):
                     trunk_id=self.trunk_id)
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class Trunk(base.NeutronDbObject):
     # Version 1.0: Initial version
     # Version 1.1: Changed tenant_id to project_id
@@ -105,7 +103,7 @@ class Trunk(base.NeutronDbObject):
     synthetic_fields = ['sub_ports']
 
     def create(self):
-        with db_api.autonested_transaction(self.obj_context.session):
+        with self.db_context_writer(self.obj_context):
             sub_ports = []
             if self.obj_attr_is_set('sub_ports'):
                 sub_ports = self.sub_ports

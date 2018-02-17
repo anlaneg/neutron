@@ -14,22 +14,19 @@
 #    under the License.
 
 import netaddr
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources
 from neutron_lib import constants as const
 from neutron_lib.utils import helpers
-from oslo_log import log as logging
 
 from neutron._i18n import _
-from neutron.callbacks import events
-from neutron.callbacks import registry
-from neutron.callbacks import resources
 from neutron.db import api as db_api
 from neutron.db.models import allowed_address_pair as aap_models
 from neutron.db.models import securitygroup as sg_models
 from neutron.db import models_v2
 from neutron.db import securitygroups_db as sg_db
 from neutron.extensions import securitygroup as ext_sg
-
-LOG = logging.getLogger(__name__)
 
 
 DIRECTION_IP_PREFIX = {'ingress': 'source_ip_prefix',

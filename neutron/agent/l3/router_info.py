@@ -77,6 +77,7 @@ class RouterInfo(object):
         self.routes = []
         self.agent_conf = agent_conf
         self.driver = interface_driver
+        self.process_monitor = None
         # radvd is a neutron.agent.linux.ra.DaemonMonitor
         self.radvd = None
 
@@ -444,7 +445,7 @@ class RouterInfo(object):
     def _internal_network_updated(self, port, subnet_id, prefix, old_prefix,
                                   updated_cidrs):
         interface_name = self.get_internal_device_name(port['id'])
-        if prefix != n_const.PROVISIONAL_IPV6_PD_PREFIX:
+        if prefix != lib_constants.PROVISIONAL_IPV6_PD_PREFIX:
             fixed_ips = port['fixed_ips']
             for fixed_ip in fixed_ips:
                 if fixed_ip['subnet_id'] == subnet_id:
@@ -533,7 +534,8 @@ class RouterInfo(object):
         if 'subnets' in port:
             for subnet in port['subnets']:
                 if (netaddr.IPNetwork(subnet['cidr']).version == 6 and
-                    subnet['cidr'] != n_const.PROVISIONAL_IPV6_PD_PREFIX):
+                    subnet['cidr'] !=
+                        lib_constants.PROVISIONAL_IPV6_PD_PREFIX):
                     return True
 
     def enable_radvd(self, internal_ports=None):
@@ -1091,7 +1093,7 @@ class RouterInfo(object):
                     'scope',
                     self.address_scope_filter_rule(device_name, mark))
         for subnet_id, prefix in self.pd_subnets.items():
-            if prefix != n_const.PROVISIONAL_IPV6_PD_PREFIX:
+            if prefix != lib_constants.PROVISIONAL_IPV6_PD_PREFIX:
                 self._process_pd_iptables_rules(prefix, subnet_id)
 
     def process_ports_address_scope_iptables(self):
@@ -1153,14 +1155,14 @@ class RouterInfo(object):
 
         :param agent: Passes the agent in order to send RPC messages.
         """
-        LOG.debug("process router delete")
+        LOG.debug("Process delete, router %s", self.router['id'])
         if self.router_namespace.exists():
             self._process_internal_ports()
             self.agent.pd.sync_router(self.router['id'])
             self._process_external_on_delete()
         else:
             LOG.warning("Can't gracefully delete the router %s: "
-                        "no router namespace found.", self.router['id'])
+                        "no router namespace found", self.router['id'])
 
     @common_utils.exception_logger()
     def process(self):
@@ -1171,7 +1173,7 @@ class RouterInfo(object):
 
         :param agent: Passes the agent in order to send RPC messages.
         """
-        LOG.debug("process router updates")
+        LOG.debug("Process updates, router %s", self.router['id'])
         self._process_internal_ports()
         self.agent.pd.sync_router(self.router['id'])
         self.process_external()

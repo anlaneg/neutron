@@ -15,10 +15,10 @@
 import os
 import pprint
 
-from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import fixture
 
 from neutron import objects
+from neutron.objects import base
 from neutron.tests import base as test_base
 
 
@@ -39,7 +39,7 @@ object_data = {
     'FlatAllocation': '1.0-bf666f24f4642b047eeca62311fbcb41',
     'Flavor': '1.0-82194de5c9aafce08e8527bb7977f5c6',
     'FlavorServiceProfileBinding': '1.0-a2c8731e16cefdac4571f80abf1f8930',
-    'FloatingIP': '1.0-ea69515cfe08b5efc0600e6446efe64f',
+    'FloatingIP': '1.0-0205cc99ec79e8089d641ed1b565ddae',
     'FloatingIPDNS': '1.0-ee3db848500fa1825235f701828c06d5',
     'GeneveAllocation': '1.0-d5f76e8eac60a778914d61dd8e23e90f',
     'GeneveEndpoint': '1.0-040f026996b5952e2ae4ccd40ac61ca6',
@@ -60,6 +60,7 @@ object_data = {
     'NetworkDhcpAgentBinding': '1.0-6eeceb5fb4335cd65a305016deb41c68',
     'NetworkDNSDomain': '1.0-420db7910294608534c1e2e30d6d8319',
     'NetworkPortSecurity': '1.0-b30802391a87945ee9c07582b4ff95e3',
+    'NetworkRBAC': '1.0-c8a67f39809c5a3c8c7f26f2f2c620b2',
     'NetworkSegment': '1.0-57b7f2960971e3b95ded20cbc59244a8',
     'Port': '1.1-5bf48d12a7bf7f5b7a319e8003b437a5',
     'PortBinding': '1.0-3306deeaa6deb01e33af06777d48d578',
@@ -72,10 +73,12 @@ object_data = {
     'QosBandwidthLimitRule': '1.3-51b662b12a8d1dfa89288d826c6d26d3',
     'QosDscpMarkingRule': '1.3-0313c6554b34fd10c753cb63d638256c',
     'QosMinimumBandwidthRule': '1.3-314c3419f4799067cc31cc319080adff',
+    'QosPolicyRBAC': '1.0-c8a67f39809c5a3c8c7f26f2f2c620b2',
     'QosRuleType': '1.3-7286188edeb3a0386f9cf7979b9700fc',
     'QosRuleTypeDriver': '1.0-7d8cb9f0ef661ac03700eae97118e3db',
-    'QosPolicy': '1.6-4adb0cde3102c10d8970ec9487fd7fe7',
+    'QosPolicy': '1.7-4adb0cde3102c10d8970ec9487fd7fe7',
     'QosPolicyDefault': '1.0-59e5060eedb1f06dd0935a244d27d11c',
+    'QosPolicyFloatingIPBinding': '1.0-5625df4205a18778cd6aa40f99be024e',
     'QosPolicyNetworkBinding': '1.0-df53a1e0f675aab8d27a1ccfed38dc42',
     'QosPolicyPortBinding': '1.0-66cb364ac99aa64523ade07f9f868ea6',
     'Quota': '1.0-6bb6a0f1bd5d66a2134ffa1a61873097',
@@ -83,15 +86,18 @@ object_data = {
     'Reservation': '1.0-49929fef8e82051660342eed51b48f2a',
     'ResourceDelta': '1.0-a980b37e0a52618b5af8db29af18be76',
     'Route': '1.0-a9883a63b416126f9e345523ec09483b',
+    'Router': '1.0-adb984d9b73aa11566d40abbeb790df1',
     'RouterExtraAttributes': '1.0-ef8d61ae2864f0ec9af0ab7939cab318',
     'RouterL3AgentBinding': '1.0-c5ba6c95e3a4c1236a55f490cd67da82',
     'RouterPort': '1.0-c8c8f499bcdd59186fcd83f323106908',
     'RouterRoute': '1.0-07fc5337c801fb8c6ccfbcc5afb45907',
     'SecurityGroup': '1.0-e26b90c409b31fd2e3c6fcec402ac0b9',
+    'SecurityGroupPortBinding': '1.0-6879d5c0af80396ef5a72934b6a6ef20',
     'SecurityGroupRule': '1.0-e9b8dace9d48b936c62ad40fe1f339d5',
     'SegmentHostMapping': '1.0-521597cf82ead26217c3bd10738f00f0',
     'ServiceProfile': '1.0-9beafc9e7d081b8258f3c5cb66ac5eed',
-    'Subnet': '1.0-9c19023a61b42d29fbf3766df380e5b7',
+    'StandardAttribute': '1.0-617d4f46524c4ce734a6fc1cc0ac6a0b',
+    'Subnet': '1.0-927155c1fdd5a615cbcb981dda97bce4',
     'SubnetPool': '1.0-a0e03895d1a6e7b9d4ab7b0ca13c3867',
     'SubnetPoolPrefix': '1.0-13c15144135eb869faa4a76dc3ee3b6c',
     'SubnetServiceType': '1.0-05ae4cdb2a9026a697b143926a1add8c',
@@ -114,7 +120,7 @@ class TestObjectVersions(test_base.BaseTestCase):
 
     def test_versions(self):
         checker = fixture.ObjectVersionChecker(
-            obj_base.VersionedObjectRegistry.obj_classes())
+            base.NeutronObjectRegistry.obj_classes())
         fingerprints = checker.get_hashes()
 
         if os.getenv('GENERATE_HASHES'):

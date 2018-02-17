@@ -21,6 +21,7 @@ from neutron_lib.callbacks import resources
 from neutron_lib import constants as const
 from neutron_lib import context
 from neutron_lib import exceptions
+from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from oslo_utils import uuidutils
@@ -29,10 +30,9 @@ from neutron.db import agents_db
 from neutron.db import common_db_mixin
 from neutron.db import l3_dvr_db
 from neutron.db import l3_dvrscheduler_db
-from neutron.db.models import agent as agent_model
 from neutron.db.models import l3 as l3_models
 from neutron.db import models_v2
-from neutron.extensions import l3
+from neutron.objects import agent as agent_obj
 from neutron.objects import router as router_obj
 from neutron.tests.unit.db import test_db_base_plugin_v2
 
@@ -476,12 +476,14 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
         self.mixin._get_agent_gw_ports_exist_for_network = mock.Mock(
             return_value=fport_db)
 
-        fipagent = agent_model.Agent(
+        fipagent = agent_obj.Agent(
+                self.ctx,
+                id=_uuid(),
                 binary='foo-agent',
                 host='host',
                 agent_type='L3 agent',
                 topic='foo_topic',
-                configurations='{"agent_mode": "dvr_no_external"}')
+                configurations={"agent_mode": "dvr_no_external"})
         self.mixin._get_agent_by_type_and_host = mock.Mock(
             return_value=fipagent)
         fport = self.mixin.create_fip_agent_gw_port_if_not_exists(
@@ -490,12 +492,14 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
                                                 'host')
         self.assertIsNone(fport)
 
-        fipagent = agent_model.Agent(
+        fipagent = agent_obj.Agent(
+                self.ctx,
+                id=_uuid(),
                 binary='foo-agent',
                 host='host',
                 agent_type='L3 agent',
                 topic='foo_topic',
-                configurations='{"agent_mode": "dvr"}')
+                configurations={"agent_mode": "dvr"})
         self.mixin._get_agent_by_type_and_host = mock.Mock(
             return_value=fipagent)
         fport = self.mixin.create_fip_agent_gw_port_if_not_exists(
@@ -850,7 +854,7 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
                 self.mixin, '_add_csnat_router_interface_port') as f:
                 f.side_effect = RuntimeError()
                 self.assertRaises(
-                    l3.RouterInterfaceAttachmentConflict,
+                    l3_exc.RouterInterfaceAttachmentConflict,
                     self.mixin.add_router_interface,
                     self.ctx, router['id'],
                     {'subnet_id': subnet['subnet']['id']})
@@ -881,7 +885,7 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
                 router_obj.RouterPort, 'create') as rtrport_update:
                 rtrport_update.side_effect = Exception()
                 self.assertRaises(
-                    l3.RouterInterfaceAttachmentConflict,
+                    l3_exc.RouterInterfaceAttachmentConflict,
                     self.mixin.add_router_interface,
                     self.ctx, router['id'],
                     {'subnet_id': subnet['subnet']['id']})

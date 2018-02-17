@@ -26,7 +26,6 @@ import testscenarios
 
 from neutron.db import agentschedulers_db as sched_db
 from neutron.db import common_db_mixin
-from neutron.db import models_v2
 from neutron.extensions import dhcpagentscheduler
 from neutron.objects import agent
 from neutron.objects import network as network_obj
@@ -69,8 +68,7 @@ class TestDhcpSchedulerBaseTestCase(testlib_api.SqlTestCase):
 
     def _save_networks(self, networks):
         for network_id in networks:
-            with self.ctx.session.begin(subtransactions=True):
-                self.ctx.session.add(models_v2.Network(id=network_id))
+            network_obj.Network(self.ctx, id=network_id).create()
 
     def _test_schedule_bind_network(self, agents, network_id):
         scheduler = dhcp_agent_scheduler.ChanceScheduler()
@@ -116,7 +114,7 @@ class TestDhcpScheduler(TestDhcpSchedulerBaseTestCase):
         plugin = mock.Mock()
         plugin.get_subnets.return_value = [{"network_id": self.network_id,
                                             "enable_dhcp": True}]
-        plugin.get_agents_db.return_value = dead_agent + alive_agent
+        plugin.get_agent_objects.return_value = dead_agent + alive_agent
         plugin.filter_hosts_with_network_access.side_effect = (
             lambda context, network_id, hosts: hosts)
         if active_hosts_only:

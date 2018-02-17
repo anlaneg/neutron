@@ -213,15 +213,15 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
     def _bind_router(self, router_id, tenant_id):
         scheduler = l3_agent_scheduler.ChanceScheduler()
         filters = {'agent_type': [constants.AGENT_TYPE_L3]}
-        agents_db = self.plugin.get_agents_db(self.adminContext,
-                                              filters=filters)
-        for agent_db in agents_db:
+        agents_object = self.plugin.get_agent_objects(
+            self.adminContext, filters=filters)
+        for agent_obj in agents_object:
             scheduler.create_ha_port_and_bind(
                 self.plugin,
                 self.adminContext,
                 router_id,
                 tenant_id,
-                agent_db)
+                agent_obj)
         self._bind_ha_network_ports(router_id)
 
     def _bind_ha_network_ports(self, router_id):
@@ -1262,11 +1262,10 @@ class TestL2PopulationMechDriver(base.BaseTestCase):
                 mock.patch.object(l2pop_db,
                                   'get_distributed_active_network_ports',
                                   return_value=tunnel_network_ports):
-            session = mock.Mock()
             agent = mock.Mock()
             agent.host = HOST
             segment = {'segmentation_id': 1, 'network_type': 'vxlan'}
-            return mech_driver._create_agent_fdb(session,
+            return mech_driver._create_agent_fdb(context,
                                                  agent,
                                                  segment,
                                                  'network_id')

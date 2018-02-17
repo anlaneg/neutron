@@ -18,11 +18,13 @@ import uuid
 
 import mock
 from neutron_lib import constants as const
+from ovsdbapp.backend.ovs_idl import idlutils
 
 from neutron.agent.common import ovs_lib
 from neutron.agent.linux import ip_lib
-from neutron.agent.ovsdb.native import idlutils
 from neutron.common import utils
+from neutron.plugins.ml2.drivers.openvswitch.agent.common import (
+    constants as agent_const)
 from neutron.tests.common.exclusive_resources import port
 from neutron.tests.common import net_helpers
 from neutron.tests.functional.agent.linux import base
@@ -154,12 +156,6 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
             self.br.db_get_val('Bridge', self.br.br_name, 'fail_mode'),
             fail_mode)
 
-    def test_set_protocols(self):
-        self.br.set_protocols('OpenFlow10')
-        self.assertEqual(
-            self.br.db_get_val('Bridge', self.br.br_name, 'protocols'),
-            "OpenFlow10")
-
     def test_add_protocols_start_with_one(self):
         self.br.set_db_attribute('Bridge', self.br.br_name, 'protocols',
                                  ['OpenFlow10'],
@@ -217,6 +213,32 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
             'local_ip': '2001:db8:100::1',
         }
         self._test_add_tunnel_port(attrs)
+
+    def test_add_tunnel_port_custom_port(self):
+        port_name = utils.get_rand_device_name(net_helpers.PORT_PREFIX)
+        self.br.add_tunnel_port(
+            port_name,
+            self.get_test_net_address(1),
+            self.get_test_net_address(2),
+            tunnel_type=const.TYPE_VXLAN,
+            vxlan_udp_port=12345)
+        options = self.ovs.db_get_val('Interface', port_name, 'options')
+        self.assertEqual("12345", options['dst_port'])
+
+    def test_add_tunnel_port_tos(self):
+        attrs = {
+            'remote_ip': self.get_test_net_address(1),
+            'local_ip': self.get_test_net_address(2),
+            'tos': 'inherit',
+        }
+        port_name = utils.get_rand_device_name(net_helpers.PORT_PREFIX)
+        self.br.add_tunnel_port(port_name, attrs['remote_ip'],
+                                attrs['local_ip'], tos=attrs['tos'])
+        self.assertEqual('gre',
+                         self.ovs.db_get_val('Interface', port_name, 'type'))
+        options = self.ovs.db_get_val('Interface', port_name, 'options')
+        for attr, val in attrs.items():
+            self.assertEqual(val, options[attr])
 
     def test_add_patch_port(self):
         local = utils.get_rand_device_name(net_helpers.PORT_PREFIX)
@@ -395,6 +417,27 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
 
         self.br.delete_ingress_bw_limit_for_port(port_name)
         max_rate, burst = self.br.get_ingress_bw_limit_for_port(port_name)
+        self.assertIsNone(max_rate)
+        self.assertIsNone(burst)
+
+    def test_ingress_bw_limit_dpdk_port(self):
+        port_name, _ = self.create_ovs_port(
+            ('type', agent_const.OVS_DPDK_VHOST_USER))
+        self.br.update_ingress_bw_limit_for_port(port_name, 700, 70)
+        max_rate, burst = self.br.get_ingress_bw_limit_for_dpdk_port(
+            port_name)
+        self.assertEqual(700, max_rate)
+        self.assertEqual(70, burst)
+
+        self.br.update_ingress_bw_limit_for_port(port_name, 750, 100)
+        max_rate, burst = self.br.get_ingress_bw_limit_for_dpdk_port(
+            port_name)
+        self.assertEqual(750, max_rate)
+        self.assertEqual(100, burst)
+
+        self.br.delete_ingress_bw_limit_for_port(port_name)
+        max_rate, burst = self.br.get_ingress_bw_limit_for_dpdk_port(
+            port_name)
         self.assertIsNone(max_rate)
         self.assertIsNone(burst)
 

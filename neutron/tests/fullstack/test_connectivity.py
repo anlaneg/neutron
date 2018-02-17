@@ -21,6 +21,7 @@ from oslo_utils import uuidutils
 import testscenarios
 
 from neutron.common import utils as common_utils
+from neutron.tests import base as tests_base
 from neutron.tests.common import net_helpers
 from neutron.tests.fullstack import base
 from neutron.tests.fullstack.resources import config
@@ -39,7 +40,6 @@ LOG = logging.getLogger(__name__)
 class BaseConnectivitySameNetworkTest(base.BaseFullStackTestCase):
 
     of_interface = None
-    ovsdb_interface = None
     arp_responder = False
     use_dhcp = True
 
@@ -53,7 +53,6 @@ class BaseConnectivitySameNetworkTest(base.BaseFullStackTestCase):
             environment.HostDescription(
                 l3_agent=self.l2_pop,
                 of_interface=self.of_interface,
-                ovsdb_interface=self.ovsdb_interface,
                 l2_agent_type=self.l2_agent_type,
                 dhcp_agent=self.use_dhcp,
             )
@@ -118,6 +117,7 @@ class TestOvsConnectivitySameNetwork(BaseConnectivitySameNetworkTest):
     scenarios = testscenarios.multiply_scenarios(
         network_scenarios, utils.get_ovs_interface_scenarios())
 
+    @tests_base.unstable_test("bug 1728948")
     def test_connectivity(self):
         self._test_connectivity()
 
@@ -190,6 +190,7 @@ class TestLinuxBridgeConnectivitySameNetwork(BaseConnectivitySameNetworkTest):
                              'l2_pop': True})
     ]
 
+    @tests_base.unstable_test("bug 1728948")
     def test_connectivity(self):
         self._test_connectivity()
 
@@ -206,9 +207,9 @@ class TestConnectivitySameNetworkNoDhcp(BaseConnectivitySameNetworkTest):
     use_dhcp = False
     network_type = 'vxlan'
     l2_pop = False
-    ovsdb_interface = 'native'
     of_interface = 'native'
 
+    @tests_base.unstable_test("bug 1728948")
     def test_connectivity(self):
         self._test_connectivity()
 

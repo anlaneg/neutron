@@ -10,17 +10,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import fields as obj_fields
 
 from neutron.common import utils
-from neutron.db import api as db_api
 from neutron.db.models import securitygroup as sg_models
 from neutron.objects import base
 from neutron.objects import common_types
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class SecurityGroup(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -48,7 +46,7 @@ class SecurityGroup(base.NeutronDbObject):
     def create(self):
         # save is_default before super() resets it to False
         is_default = self.is_default
-        with db_api.autonested_transaction(self.obj_context.session):
+        with self.db_context_writer(self.obj_context):
             super(SecurityGroup, self).create()
             if is_default:
                 default_group = DefaultSecurityGroup(
@@ -65,7 +63,7 @@ class SecurityGroup(base.NeutronDbObject):
         self.obj_reset_changes(['is_default'])
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class DefaultSecurityGroup(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -82,7 +80,7 @@ class DefaultSecurityGroup(base.NeutronDbObject):
     primary_keys = ['project_id']
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class SecurityGroupRule(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'

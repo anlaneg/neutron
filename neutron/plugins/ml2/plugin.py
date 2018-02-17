@@ -15,9 +15,11 @@
 #    under the License.
 
 from eventlet import greenthread
+from neutron_lib.api.definitions import allowedaddresspairs as addr_apidef
 from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import network as net_def
+from neutron_lib.api.definitions import network_mtu_writable as mtuw_apidef
 from neutron_lib.api.definitions import port as port_def
 from neutron_lib.api.definitions import port_security as psec
 from neutron_lib.api.definitions import portbindings
@@ -30,6 +32,7 @@ from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as const
 from neutron_lib import exceptions as exc
+from neutron_lib.exceptions import allowedaddresspairs as addr_exc
 from neutron_lib.exceptions import port_security as psec_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
@@ -44,6 +47,7 @@ from oslo_utils import excutils
 from oslo_utils import importutils
 from oslo_utils import uuidutils
 import sqlalchemy
+from sqlalchemy import or_
 from sqlalchemy.orm import exc as sa_exc
 
 from neutron._i18n import _
@@ -78,8 +82,6 @@ from neutron.db import securitygroups_rpc_base as sg_db_rpc
 from neutron.db import segments_db
 from neutron.db import subnet_service_type_db_models as service_type_db
 from neutron.db import vlantransparent_db
-from neutron.extensions import allowedaddresspairs as addr_pair
-from neutron.extensions import netmtu_writable as mtu_ext
 from neutron.extensions import providernet as provider
 from neutron.extensions import vlantransparent
 from neutron.plugins.common import utils as p_utils
@@ -153,7 +155,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                                     "availability_zone",
                                     "network_availability_zone",
                                     "default-subnetpools",
-                                    "subnet-service-types"]
+                                    "subnet-service-types",
+                                    "ip-substring-filtering"]
 
     @property
     def supported_extension_aliases(self):
@@ -911,7 +914,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             context.session.expire(db_network)
 
             if (
-                mtu_ext.MTU in net_data or
+                mtuw_apidef.MTU in net_data or
                 # NOTE(ihrachys) mtu may be null for existing networks,
                 # calculate and update it as needed; the conditional can be
                 # removed in Queens when we populate all mtu attributes and
@@ -1134,8 +1137,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
     @registry.receives(resources.SUBNET, [events.PRECOMMIT_DELETE])
     def _subnet_delete_precommit_handler(self, rtype, event, trigger,
                                          context, subnet_id, **kwargs):
-        record = self._get_subnet(context, subnet_id)
-        subnet = self._make_subnet_dict(record, context=context)
+        subnet_obj = self._get_subnet_object(context, subnet_id)
+        subnet = self._make_subnet_dict(subnet_obj, context=context)
         network = self.get_network(context, subnet['network_id'])
         mech_context = driver_context.SubnetContext(self, context,
                                                     subnet, network)
@@ -1167,11 +1170,11 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         if self._check_update_has_allowed_address_pairs(port):
             if not port_security:
                 #配置了address pair但没有配置安全组
-                raise addr_pair.AddressPairAndPortSecurityRequired()
+                raise addr_exc.AddressPairAndPortSecurityRequired()
         else:
             # remove ATTR_NOT_SPECIFIED
             # 未配置address pair
-            attrs[addr_pair.ADDRESS_PAIRS] = []
+            attrs[addr_apidef.ADDRESS_PAIRS] = []
 
         if port_security:
             self._ensure_default_security_group_on_port(context, port)
@@ -1229,10 +1232,10 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             self._process_port_binding(mech_context, attrs)
 
             #处理地址对信息，将其存放在数据库中
-            result[addr_pair.ADDRESS_PAIRS] = (
+            result[addr_apidef.ADDRESS_PAIRS] = (
                 self._process_create_allowed_address_pairs(
                     context, result,
-                    attrs.get(addr_pair.ADDRESS_PAIRS)))
+                    attrs.get(addr_apidef.ADDRESS_PAIRS)))
             #处理port中含有的dhcp注入信息
             self._process_port_create_extra_dhcp_opts(context, result,
                                                       dhcp_opts)
@@ -1299,17 +1302,17 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         # check the address-pairs
         if self._check_update_has_allowed_address_pairs(port):
             #  has address pairs in request
-            raise addr_pair.AddressPairAndPortSecurityRequired()
+            raise addr_exc.AddressPairAndPortSecurityRequired()
         elif (not
          self._check_update_deletes_allowed_address_pairs(port)):
             # not a request for deleting the address-pairs
-            updated_port[addr_pair.ADDRESS_PAIRS] = (
+            updated_port[addr_apidef.ADDRESS_PAIRS] = (
                     self.get_allowed_address_pairs(context, id))
 
             # check if address pairs has been in db, if address pairs could
             # be put in extension driver, we can refine here.
-            if updated_port[addr_pair.ADDRESS_PAIRS]:
-                raise addr_pair.AddressPairAndPortSecurityRequired()
+            if updated_port[addr_apidef.ADDRESS_PAIRS]:
+                raise addr_exc.AddressPairAndPortSecurityRequired()
 
         # checks if security groups were updated adding/modifying
         # security groups, port security is set
@@ -1366,7 +1369,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                     updated_port[qos_consts.QOS_POLICY_ID]):
                 need_port_update_notify = True
 
-            if addr_pair.ADDRESS_PAIRS in attrs:
+            if addr_apidef.ADDRESS_PAIRS in attrs:
                 need_port_update_notify |= (
                     self.update_address_pairs_on_port(context, id, port,
                                                       original_port,
@@ -1571,6 +1574,14 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
             network = self.get_network(context, port['network_id'])
             bound_mech_contexts = []
+            kwargs = {
+                'context': context,
+                'id': id,
+                'network': network,
+                'port': port,
+                'port_db': port_db,
+                'bindings': binding,
+            }
             device_owner = port['device_owner']
             if device_owner == const.DEVICE_OWNER_DVR_INTERFACE:
                 bindings = db.get_distributed_port_bindings(context,
@@ -1578,6 +1589,10 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 for bind in bindings:
                     levels = db.get_binding_levels(context, id,
                                                    bind.host)
+                    kwargs['bind'] = bind
+                    kwargs['levels'] = levels
+                    registry.notify(resources.PORT, events.PRECOMMIT_DELETE,
+                                    self, **kwargs)
                     mech_context = driver_context.PortContext(
                         self, context, port, network, bind, levels)
                     self.mechanism_manager.delete_port_precommit(mech_context)
@@ -1585,6 +1600,10 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             else:
                 levels = db.get_binding_levels(context, id,
                                                binding.host)
+                kwargs['bind'] = None
+                kwargs['levels'] = levels
+                registry.notify(resources.PORT, events.PRECOMMIT_DELETE,
+                                self, **kwargs)
                 mech_context = driver_context.PortContext(
                     self, context, port, network, binding, levels)
                 self.mechanism_manager.delete_port_precommit(mech_context)
@@ -1905,6 +1924,19 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 return port.id
         #设备id就是uuid,直接返回
         return device
+
+    def _get_ports_query(self, context, filters=None, *args, **kwargs):
+        filters = filters or {}
+        fixed_ips = filters.get('fixed_ips', {})
+        ip_addresses_s = fixed_ips.get('ip_address_substr')
+        query = super(Ml2Plugin, self)._get_ports_query(context, filters,
+                                                        *args, **kwargs)
+        if ip_addresses_s:
+            substr_filter = or_(*[models_v2.Port.fixed_ips.any(
+                models_v2.IPAllocation.ip_address.like('%%%s%%' % ip))
+                for ip in ip_addresses_s])
+            query = query.filter(substr_filter)
+        return query
 
     def filter_hosts_with_network_access(
             self, context, network_id, candidate_hosts):

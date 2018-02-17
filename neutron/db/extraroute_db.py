@@ -14,29 +14,23 @@
 #    under the License.
 
 import netaddr
+from neutron_lib.api.definitions import l3 as l3_apidef
+from neutron_lib.exceptions import extraroute as xroute_exc
 from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_log import log as logging
 
 from neutron._i18n import _
 from neutron.common import utils
+from neutron.conf.db import extraroute_db
 from neutron.db import _resource_extend as resource_extend
 from neutron.db import l3_db
-from neutron.db import models_v2
-from neutron.extensions import extraroute
-from neutron.extensions import l3
 from neutron.objects import router as l3_obj
 
 
 LOG = logging.getLogger(__name__)
 
-extra_route_opts = [
-    #TODO(nati): use quota framework when it support quota for attributes
-    cfg.IntOpt('max_routes', default=30,
-               help=_("Maximum number of routes per router")),
-]
-
-cfg.CONF.register_opts(extra_route_opts)
+extraroute_db.register_db_extraroute_opts()
 
 
 @resource_extend.has_resource_extenders
@@ -44,7 +38,7 @@ class ExtraRoute_dbonly_mixin(l3_db.L3_NAT_dbonly_mixin):
     """Mixin class to support extra route configuration on router."""
 
     @staticmethod
-    @resource_extend.extends([l3.ROUTERS])
+    @resource_extend.extends([l3_apidef.ROUTERS])
     def _extend_router_dict_extraroute(router_res, router_db):
         router_res['routes'] = (ExtraRoute_dbonly_mixin.
                                 _make_extra_route_list(
@@ -64,28 +58,24 @@ class ExtraRoute_dbonly_mixin(l3_db.L3_NAT_dbonly_mixin):
         return super(ExtraRoute_dbonly_mixin, self).update_router(
             context, id, router)
 
-    def _get_subnets_by_cidr(self, context, cidr):
-        query_subnets = context.session.query(models_v2.Subnet)
-        return query_subnets.filter_by(cidr=cidr).all()
-
     def _validate_routes_nexthop(self, cidrs, ips, routes, nexthop):
         #Note(nati): Nexthop should be connected,
         # so we need to check
         # nexthop belongs to one of cidrs of the router ports
         if not netaddr.all_matching_cidrs(nexthop, cidrs):
-            raise extraroute.InvalidRoutes(
+            raise xroute_exc.InvalidRoutes(
                 routes=routes,
                 reason=_('the nexthop is not connected with router'))
         #Note(nati) nexthop should not be same as fixed_ips
         if nexthop in ips:
-            raise extraroute.InvalidRoutes(
+            raise xroute_exc.InvalidRoutes(
                 routes=routes,
                 reason=_('the nexthop is used by router'))
 
     def _validate_routes(self, context,
                          router_id, routes):
         if len(routes) > cfg.CONF.max_routes:
-            raise extraroute.RoutesExhausted(
+            raise xroute_exc.RoutesExhausted(
                 router_id=router_id,
                 quota=cfg.CONF.max_routes)
 
@@ -144,7 +134,7 @@ class ExtraRoute_dbonly_mixin(l3_db.L3_NAT_dbonly_mixin):
         extra_routes = self._get_extra_routes_by_router_id(context, router_id)
         for route in extra_routes:
             if netaddr.all_matching_cidrs(route['nexthop'], [subnet_cidr]):
-                raise extraroute.RouterInterfaceInUseByRoute(
+                raise xroute_exc.RouterInterfaceInUseByRoute(
                     router_id=router_id, subnet_id=subnet_id)
 
 

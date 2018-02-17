@@ -42,3 +42,12 @@ class InvalidResourceConstraint(n_exc.InvalidInput):
     message = _("Invalid resource constraint between resource "
                 "(%(resource)s %(resource_id)s) and target resource "
                 "(%(target_resource)s %(target_id)s).")
+
+
+class LogapiDriverException(n_exc.NeutronException):
+    """A log api driver Exception"""
+    message = _("Driver exception: %(exception_msg)s")
+
+
+class CookieNotFound(n_exc.NotFound):
+    message = _("Cookie %(cookie_id)s could not be found.")

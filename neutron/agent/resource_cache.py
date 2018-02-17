@@ -12,14 +12,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import registry
 from neutron_lib import context as n_ctx
 from oslo_log import log as logging
 
 from neutron.api.rpc.callbacks.consumer import registry as registry_rpc
 from neutron.api.rpc.callbacks import events as events_rpc
 from neutron.api.rpc.handlers import resources_rpc
-from neutron.callbacks import events
-from neutron.callbacks import registry
 from neutron.common import rpc as n_rpc
 from neutron import objects
 
@@ -80,7 +80,7 @@ class RemoteResourceCache(object):
                 # been updated already and pushed to us in another thread.
                 LOG.debug("Ignoring stale update for %s: %s", rtype, resource)
                 continue
-            self._type_cache(rtype)[resource.id] = resource
+            self.record_resource_update(context, rtype, resource)
         LOG.debug("%s resources returned for queries %s", len(resources),
                   query_ids)
         self._satisfied_server_queries.update(query_ids)

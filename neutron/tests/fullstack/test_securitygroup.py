@@ -17,6 +17,7 @@ from oslo_utils import uuidutils
 
 from neutron.cmd.sanity import checks
 from neutron.common import utils as common_utils
+from neutron.tests import base as tests_base
 from neutron.tests.common import net_helpers
 from neutron.tests.fullstack import base
 from neutron.tests.fullstack.resources import environment
@@ -40,16 +41,14 @@ class OVSVersionChecker(object):
 class BaseSecurityGroupsSameNetworkTest(base.BaseFullStackTestCase):
 
     of_interface = None
-    ovsdb_interface = None
 
     def setUp(self):
         host_descriptions = [
             environment.HostDescription(
                 of_interface=self.of_interface,
-                ovsdb_interface=self.ovsdb_interface,
                 l2_agent_type=self.l2_agent_type,
                 firewall_driver=self.firewall_driver,
-                dhcp_agent=True) for _ in range(2)]
+                dhcp_agent=True) for _ in range(self.num_hosts)]
         env = environment.Environment(
             environment.EnvironmentDescription(
                 network_type=self.network_type),
@@ -80,28 +79,32 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
 
     network_type = 'vxlan'
     scenarios = [
+        # The iptables_hybrid driver lacks isolation between agents and
+        # because of that using only one host is enough
         ('ovs-hybrid', {
             'firewall_driver': 'iptables_hybrid',
             'of_interface': 'native',
-            'ovsdb_interface': 'native',
-            'l2_agent_type': constants.AGENT_TYPE_OVS}),
-        ('ovs-openflow-cli_ovsdb-cli', {
+            'l2_agent_type': constants.AGENT_TYPE_OVS,
+            'num_hosts': 1}),
+        ('ovs-openflow-cli', {
             'firewall_driver': 'openvswitch',
             'of_interface': 'ovs-ofctl',
-            'ovsdb_interface': 'vsctl',
-            'l2_agent_type': constants.AGENT_TYPE_OVS}),
-        ('ovs-openflow-native_ovsdb-native', {
+            'l2_agent_type': constants.AGENT_TYPE_OVS,
+            'num_hosts': 2}),
+        ('ovs-openflow-native', {
             'firewall_driver': 'openvswitch',
             'of_interface': 'native',
-            'ovsdb_interface': 'native',
-            'l2_agent_type': constants.AGENT_TYPE_OVS}),
+            'l2_agent_type': constants.AGENT_TYPE_OVS,
+            'num_hosts': 2}),
         ('linuxbridge-iptables', {
             'firewall_driver': 'iptables',
-            'l2_agent_type': constants.AGENT_TYPE_LINUXBRIDGE})]
+            'l2_agent_type': constants.AGENT_TYPE_LINUXBRIDGE,
+            'num_hosts': 2})]
 
     # NOTE(toshii): As a firewall_driver can interfere with others,
     # the recommended way to add test is to expand this method, not
     # adding another.
+    @tests_base.unstable_test("bug 1744402")
     def test_securitygroup(self):
         """Tests if a security group rules are working, by confirming
         that 0. traffic is allowed when port security is disabled,
@@ -111,16 +114,17 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
              4. a security group update takes effect,
              5. a remote security group member addition works, and
              6. an established connection stops by deleting a SG rule.
-             7. test other protocol functionality by using SCTP protocol
-             8. test two vms with same mac on the same host in different
+             7. multiple overlapping remote rules work,
+             8. test other protocol functionality by using SCTP protocol
+             9. test two vms with same mac on the same host in different
                 networks
         """
-        index_to_sg = [0, 0, 1]
+        index_to_sg = [0, 0, 1, 2]
         if self.firewall_driver == 'iptables_hybrid':
             # The iptables_hybrid driver lacks isolation between agents
-            index_to_host = [0] * 3
+            index_to_host = [0] * 4
         else:
-            index_to_host = [0, 1, 1]
+            index_to_host = [0, 1, 1, 0]
 
         tenant_uuid = uuidutils.generate_uuid()
 
@@ -129,7 +133,7 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
             tenant_uuid, network['id'], '20.0.0.0/24')
 
         sgs = [self.safe_client.create_security_group(tenant_uuid)
-               for i in range(2)]
+               for i in range(3)]
         ports = [
             self.safe_client.create_port(tenant_uuid, network['id'],
                                          self.environment.hosts[host].hostname,
@@ -233,22 +237,23 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
         ports.append(
             self.safe_client.create_port(tenant_uuid, network['id'],
                                          self.environment.hosts[
-                                             index_to_host[3]].hostname,
+                                             index_to_host[-1]].hostname,
                                          security_groups=[sgs[1]['id']]))
 
         vms.append(
             self.useFixture(
                 machine.FakeFullstackMachine(
-                    self.environment.hosts[index_to_host[3]],
+                    self.environment.hosts[index_to_host[-1]],
                     network['id'],
                     tenant_uuid,
                     self.safe_client,
-                    neutron_port=ports[3],
+                    neutron_port=ports[-1],
                     use_dhcp=True)))
+        self.assertEqual(5, len(vms))
 
-        vms[3].block_until_boot()
+        vms[4].block_until_boot()
 
-        netcat = net_helpers.NetcatTester(vms[3].namespace,
+        netcat = net_helpers.NetcatTester(vms[4].namespace,
             vms[0].namespace, vms[0].ip, 3355,
             net_helpers.NetcatTester.TCP)
 
@@ -260,7 +265,30 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
                                      sleep=8)
         netcat.stop_processes()
 
-        # 7. check SCTP is supported by security group
+        # 7. check if multiple overlapping remote rules work
+        self.safe_client.create_security_group_rule(
+            tenant_uuid, sgs[0]['id'],
+            remote_group_id=sgs[1]['id'], direction='ingress',
+            ethertype=constants.IPv4,
+            protocol=constants.PROTO_NAME_TCP,
+            port_range_min=3333, port_range_max=3333)
+        self.safe_client.create_security_group_rule(
+            tenant_uuid, sgs[0]['id'],
+            remote_group_id=sgs[2]['id'], direction='ingress',
+            ethertype=constants.IPv4)
+
+        for i in range(2):
+            self.assert_connection(
+                vms[0].namespace, vms[1].namespace, vms[1].ip, 3333,
+                net_helpers.NetcatTester.TCP)
+            self.assert_connection(
+                vms[2].namespace, vms[1].namespace, vms[1].ip, 3333,
+                net_helpers.NetcatTester.TCP)
+            self.assert_connection(
+                vms[3].namespace, vms[0].namespace, vms[0].ip, 8080,
+                net_helpers.NetcatTester.TCP)
+
+        # 8. check SCTP is supported by security group
         self.assert_no_connection(
             vms[1].namespace, vms[0].namespace, vms[0].ip, 3366,
             net_helpers.NetcatTester.SCTP)
@@ -276,7 +304,7 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
             vms[1].namespace, vms[0].namespace, vms[0].ip, 3366,
             net_helpers.NetcatTester.SCTP)
 
-        # 8. test two vms with same mac on the same host in different networks
+        # 9. test two vms with same mac on the same host in different networks
         self._test_overlapping_mac_addresses()
 
     def _create_vm_on_host(

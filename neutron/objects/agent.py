@@ -12,19 +12,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_versionedobjects import base as obj_base
+from neutron_lib import constants as const
 from oslo_versionedobjects import fields as obj_fields
 from sqlalchemy import func
 
 from neutron.agent.common import utils
 from neutron.db.models import agent as agent_model
 from neutron.db.models import l3agent as rb_model
+from neutron.db.models import l3ha as l3ha_model
+from neutron.db import models_v2
 from neutron.objects import base
 from neutron.objects import common_types
 from neutron.objects import utils as obj_utils
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class Agent(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -87,7 +89,7 @@ class Agent(base.NeutronDbObject):
     @classmethod
     def get_l3_agent_with_min_routers(cls, context, agent_ids):
         """Return l3 agent with the least number of routers."""
-        with context.session.begin(subtransactions=True):
+        with cls.db_context_reader(context):
             query = context.session.query(
                 agent_model.Agent,
                 func.count(
@@ -103,7 +105,7 @@ class Agent(base.NeutronDbObject):
 
     @classmethod
     def get_l3_agents_ordered_by_num_routers(cls, context, agent_ids):
-        with context.session.begin(subtransactions=True):
+        with cls.db_context_reader(context):
             query = (context.session.query(agent_model.Agent, func.count(
                 rb_model.RouterL3AgentBinding.router_id)
                 .label('count')).
@@ -114,3 +116,47 @@ class Agent(base.NeutronDbObject):
         agents = [cls._load_object(context, record[0]) for record in query]
 
         return agents
+
+    @classmethod
+    def get_ha_agents(cls, context, network_id=None, router_id=None):
+        if not (network_id or router_id):
+            return []
+        query = context.session.query(agent_model.Agent.host)
+        query = query.join(l3ha_model.L3HARouterAgentPortBinding,
+                           l3ha_model.L3HARouterAgentPortBinding.l3_agent_id ==
+                           agent_model.Agent.id)
+        if router_id:
+            query = query.filter(
+                l3ha_model.L3HARouterAgentPortBinding.router_id ==
+                router_id).all()
+        elif network_id:
+            query = query.join(models_v2.Port, models_v2.Port.device_id ==
+                               l3ha_model.L3HARouterAgentPortBinding.router_id)
+            query = query.filter(models_v2.Port.network_id == network_id,
+                                 models_v2.Port.status ==
+                                 const.PORT_STATUS_ACTIVE,
+                                 models_v2.Port.device_owner.in_(
+                                     (const.DEVICE_OWNER_HA_REPLICATED_INT,
+                                      const.DEVICE_OWNER_ROUTER_SNAT))).all()
+        # L3HARouterAgentPortBinding will have l3 agent ids of hosting agents.
+        # But we need l2 agent(for tunneling ip) while creating FDB entries.
+        hosts = [host[0] for host in query]
+        agents = cls.get_objects(context, host=hosts)
+        return agents
+
+    @classmethod
+    def _get_agents_by_availability_zones_and_agent_type(
+            cls, context, agent_type, availability_zones):
+        query = context.session.query(
+            agent_model.Agent).filter_by(
+            agent_type=agent_type).group_by(
+            agent_model.Agent.availability_zone)
+        query = query.filter(
+            agent_model.Agent.availability_zone.in_(availability_zones)).all()
+        agents = [cls._load_object(context, record) for record in query]
+        return agents
+
+    @classmethod
+    def get_objects_by_agent_mode(cls, context, agent_mode=None, **kwargs):
+        mode_filter = obj_utils.StringContains(agent_mode)
+        return cls.get_objects(context, configurations=mode_filter, **kwargs)

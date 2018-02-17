@@ -15,11 +15,9 @@
 import netaddr
 from neutron_lib import constants
 from oslo_utils import versionutils
-from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import fields as obj_fields
 
 from neutron.common import utils
-from neutron.db import api as db_api
 from neutron.db.models import dns as dns_models
 from neutron.db.models import l3
 from neutron.db.models import securitygroup as sg_models
@@ -61,7 +59,7 @@ class PortBindingBase(base.NeutronDbObject):
         return fields
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class PortBinding(PortBindingBase):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -82,7 +80,7 @@ class PortBinding(PortBindingBase):
     primary_keys = ['port_id', 'host']
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class DistributedPortBinding(PortBindingBase):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -106,7 +104,7 @@ class DistributedPortBinding(PortBindingBase):
     primary_keys = ['host', 'port_id']
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class PortBindingLevel(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -143,7 +141,7 @@ class PortBindingLevel(base.NeutronDbObject):
             context, _pager, validate_filters, **kwargs)
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class IPAllocation(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -205,7 +203,7 @@ class IPAllocation(base.NeutronDbObject):
             return True
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class PortDNS(base.NeutronDbObject):
     # Version 1.0: Initial version
     # Version 1.1: Add dns_domain attribute
@@ -235,7 +233,23 @@ class PortDNS(base.NeutronDbObject):
             primitive.pop('dns_domain', None)
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
+class SecurityGroupPortBinding(base.NeutronDbObject):
+
+    # Version 1.0: Initial version
+    VERSION = '1.0'
+
+    db_model = sg_models.SecurityGroupPortBinding
+
+    fields = {
+        'port_id': common_types.UUIDField(),
+        'security_group_id': common_types.UUIDField(),
+    }
+
+    primary_keys = ['port_id', 'security_group_id']
+
+
+@base.NeutronObjectRegistry.register
 class Port(base.NeutronDbObject):
     # Version 1.0: Initial version
     # Version 1.1: Add data_plane_status field
@@ -319,7 +333,7 @@ class Port(base.NeutronDbObject):
 
     def create(self):
         fields = self.obj_get_changes()
-        with db_api.autonested_transaction(self.obj_context.session):
+        with self.db_context_writer(self.obj_context):
             sg_ids = self.security_group_ids
             if sg_ids is None:
                 sg_ids = set()
@@ -332,7 +346,7 @@ class Port(base.NeutronDbObject):
 
     def update(self):
         fields = self.obj_get_changes()
-        with db_api.autonested_transaction(self.obj_context.session):
+        with self.db_context_writer(self.obj_context):
             super(Port, self).update()
             if 'security_group_ids' in fields:
                 self._attach_security_groups(fields['security_group_ids'])
@@ -354,9 +368,7 @@ class Port(base.NeutronDbObject):
         # TODO(ihrachys): consider introducing an (internal) object for the
         # binding to decouple database operations a bit more
         obj_db_api.delete_objects(
-            self.obj_context, sg_models.SecurityGroupPortBinding,
-            port_id=self.id,
-        )
+            SecurityGroupPortBinding, self.obj_context, port_id=self.id)
         if sg_ids:
             for sg_id in sg_ids:
                 self._attach_security_group(sg_id)
@@ -365,9 +377,23 @@ class Port(base.NeutronDbObject):
 
     def _attach_security_group(self, sg_id):
         obj_db_api.create_object(
-            self.obj_context, sg_models.SecurityGroupPortBinding,
+            SecurityGroupPortBinding, self.obj_context,
             {'port_id': self.id, 'security_group_id': sg_id}
         )
+
+    @classmethod
+    def get_objects(cls, context, _pager=None, validate_filters=True,
+                    security_group_ids=None, **kwargs):
+        if security_group_ids:
+            ports_with_sg = cls.get_ports_ids_by_security_groups(
+                context, security_group_ids)
+            port_ids = kwargs.get("id", [])
+            if port_ids:
+                kwargs['id'] = list(set(port_ids) & set(ports_with_sg))
+            else:
+                kwargs['id'] = ports_with_sg
+        return super(Port, cls).get_objects(context, _pager, validate_filters,
+                                            **kwargs)
 
     # TODO(rossella_s): get rid of it once we switch the db model to using
     # custom types.
@@ -429,3 +455,11 @@ class Port(base.NeutronDbObject):
             models_v2.Port.network_id == subnet['network_id']
         )
         return [cls._load_object(context, db_obj) for db_obj in ports.all()]
+
+    @classmethod
+    def get_ports_ids_by_security_groups(cls, context, security_group_ids):
+        query = context.session.query(sg_models.SecurityGroupPortBinding)
+        query = query.filter(
+            sg_models.SecurityGroupPortBinding.security_group_id.in_(
+                security_group_ids))
+        return [port_binding['port_id'] for port_binding in query.all()]

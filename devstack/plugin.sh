@@ -9,6 +9,7 @@ source $LIBDIR/qos
 source $LIBDIR/ovs
 source $LIBDIR/segments
 source $LIBDIR/trunk
+source $LIBDIR/log
 
 Q_BUILD_OVS_FROM_GIT=$(trueorfalse False Q_BUILD_OVS_FROM_GIT)
 
@@ -36,9 +37,15 @@ if [[ "$1" == "stack" ]]; then
             if is_service_enabled q-trunk neutron-trunk; then
                 configure_trunk_extension
             fi
+            if is_service_enabled q-log neutron-log; then
+                configure_log
+            fi
             if is_service_enabled q-dns neutron-dns; then
                 configure_dns_extension
                 post_config_dns_extension
+                if is_service_enabled designate; then
+                    configure_dns_integration
+                fi
             fi
             if is_service_enabled neutron-segments; then
                 configure_segments_extension

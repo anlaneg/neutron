@@ -17,6 +17,7 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
 from neutron_lib import context as neutron_context
 from neutron_lib import exceptions
+from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from oslo_config import cfg
@@ -26,7 +27,6 @@ import oslo_messaging
 from neutron.common import constants as n_const
 from neutron.common import utils
 from neutron.db import api as db_api
-from neutron.extensions import l3
 
 
 LOG = logging.getLogger(__name__)
@@ -101,8 +101,7 @@ class L3RpcCallback(object):
         if utils.is_extension_supported(
                 self.l3plugin, constants.L3_AGENT_SCHEDULER_EXT_ALIAS):
             if cfg.CONF.router_auto_schedule:
-                self.l3plugin.auto_schedule_routers(context, host,
-                                                    router_ids=None)
+                self.l3plugin.auto_schedule_routers(context, host)
         return self.l3plugin.list_router_ids_on_host(context, host)
 
     @db_api.retry_db_errors
@@ -254,7 +253,7 @@ class L3RpcCallback(object):
                     self.l3plugin.update_floatingip_status(context,
                                                            floatingip_id,
                                                            status)
-                except l3.FloatingIPNotFound:
+                except l3_exc.FloatingIPNotFound:
                     LOG.debug("Floating IP: %s no longer present.",
                               floatingip_id)
             # Find all floating IPs known to have been the given router

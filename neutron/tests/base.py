@@ -98,6 +98,20 @@ def sanitize_log_path(path):
     return path
 
 
+def unstable_test(reason):
+    def decor(f):
+        @functools.wraps(f)
+        def inner(self, *args, **kwargs):
+            try:
+                return f(self, *args, **kwargs)
+            except Exception as e:
+                msg = ("%s was marked as unstable because of %s, "
+                       "failure was: %s") % (self.id(), reason, e)
+                raise self.skipTest(msg)
+        return inner
+    return decor
+
+
 class AttributeDict(dict):
 
     """
@@ -288,7 +302,7 @@ class BaseTestCase(DietTestCase):
         super(BaseTestCase, self).setUp()
 
         self.useFixture(lockutils.ExternalLockFixture())
-        self.useFixture(tools.AttributeMapMemento())
+        self.useFixture(fixture.APIDefinitionFixture())
 
         cfg.CONF.set_override('state_path', self.get_default_temp_dir().path)
 

@@ -39,18 +39,18 @@ class TestMetadataDriverRules(base.BaseTestCase):
 
     def test_metadata_nat_rules(self):
         rules = ('PREROUTING', '-d 169.254.169.254/32 -i qr-+ '
-                 '-p tcp -m tcp --dport 80 -j REDIRECT --to-ports 8775')
+                 '-p tcp -m tcp --dport 80 -j REDIRECT --to-ports 9697')
         self.assertEqual(
             [rules],
-            metadata_driver.MetadataDriver.metadata_nat_rules(8775))
+            metadata_driver.MetadataDriver.metadata_nat_rules(9697))
 
     def test_metadata_filter_rules(self):
         rules = [('INPUT', '-m mark --mark 0x1/%s -j ACCEPT' %
                   constants.ROUTER_MARK_MASK),
-                 ('INPUT', '-p tcp -m tcp --dport 8775 -j DROP')]
+                 ('INPUT', '-p tcp -m tcp --dport 9697 -j DROP')]
         self.assertEqual(
             rules,
-            metadata_driver.MetadataDriver.metadata_filter_rules(8775, '0x1'))
+            metadata_driver.MetadataDriver.metadata_filter_rules(9697, '0x1'))
 
     def test_metadata_mangle_rules(self):
         rule = ('PREROUTING', '-d 169.254.169.254/32 -i qr-+ '
@@ -60,6 +60,13 @@ class TestMetadataDriverRules(base.BaseTestCase):
         self.assertEqual(
             [rule],
             metadata_driver.MetadataDriver.metadata_mangle_rules('0x1'))
+
+    def test_metadata_checksum_rules(self):
+        rules = ('POSTROUTING', '-o qr-+ -p tcp -m tcp --sport 9697 '
+                 '-j CHECKSUM --checksum-fill')
+        self.assertEqual(
+            [rules],
+            metadata_driver.MetadataDriver.metadata_checksum_rules(9697))
 
 
 class TestMetadataDriverProcess(base.BaseTestCase):
@@ -154,6 +161,8 @@ class TestMetadataDriverProcess(base.BaseTestCase):
                 'haproxy',
                 '-f', cfg_file]
 
+            log_tag = ("haproxy-" + metadata_driver.METADATA_SERVICE_NAME +
+                       "-" + router_id)
             cfg_contents = metadata_driver._HAPROXY_CONFIG_TEMPLATE % {
                 'user': self.EUNAME,
                 'group': self.EGNAME,
@@ -162,7 +171,8 @@ class TestMetadataDriverProcess(base.BaseTestCase):
                 'res_type': 'Router',
                 'res_id': router_id,
                 'pidfile': self.PIDFILE,
-                'log_level': 'debug'}
+                'log_level': 'debug',
+                'log_tag': log_tag}
 
             mock_open.assert_has_calls([
                 mock.call(cfg_file, 'w'),
@@ -177,7 +187,7 @@ class TestMetadataDriverProcess(base.BaseTestCase):
 
     def test_create_config_file_wrong_user(self):
         with mock.patch('pwd.getpwnam', side_effect=KeyError):
-            config = metadata_driver.HaproxyConfigurator(mock.ANY, mock.ANY,
+            config = metadata_driver.HaproxyConfigurator(_uuid(), mock.ANY,
                                                          mock.ANY, mock.ANY,
                                                          self.EUNAME,
                                                          self.EGNAME,
@@ -189,7 +199,7 @@ class TestMetadataDriverProcess(base.BaseTestCase):
         with mock.patch('grp.getgrnam', side_effect=KeyError),\
                 mock.patch('pwd.getpwnam',
                            return_value=test_utils.FakeUser(self.EUNAME)):
-            config = metadata_driver.HaproxyConfigurator(mock.ANY, mock.ANY,
+            config = metadata_driver.HaproxyConfigurator(_uuid(), mock.ANY,
                                                          mock.ANY, mock.ANY,
                                                          self.EUNAME,
                                                          self.EGNAME,

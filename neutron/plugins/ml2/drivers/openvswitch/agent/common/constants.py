@@ -71,6 +71,11 @@ OVS_FIREWALL_TABLES = (
     RULES_INGRESS_TABLE,
 )
 
+# Tables for parties interacting with ovs firewall
+ACCEPTED_EGRESS_TRAFFIC_TABLE = 91
+ACCEPTED_INGRESS_TRAFFIC_TABLE = 92
+DROPPED_TRAFFIC_TABLE = 93
+
 ## Tunnel bridge (tun_br)
 
 # Various tables for tunneling flows
@@ -131,6 +136,8 @@ OVS_DATAPATH_SYSTEM = 'system'
 OVS_DATAPATH_NETDEV = 'netdev'
 OVS_DPDK_VHOST_USER = 'dpdkvhostuser'
 OVS_DPDK_VHOST_USER_CLIENT = 'dpdkvhostuserclient'
+
+OVS_DPDK_PORT_TYPES = [OVS_DPDK_VHOST_USER, OVS_DPDK_VHOST_USER_CLIENT]
 
 # default ovs vhost-user socket location
 VHOST_USER_SOCKET_DIR = '/var/run/openvswitch'

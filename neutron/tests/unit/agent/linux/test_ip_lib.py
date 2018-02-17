@@ -936,10 +936,20 @@ class TestIpAddrCommand(TestIPCmdBase):
                               'global'))
 
     def test_get_devices_with_ip(self):
+        # This can only verify that get_devices_with_ip() returns a dict
+        # with the correct entry, it doesn't actually test that it only
+        # returns items filtered by the arguments since it isn't calling
+        # /sbin/ip at all.
         self.parent._run.return_value = ADDR_SAMPLE3
-        devices = self.addr_cmd.get_devices_with_ip('172.16.77.240/24')
+        devices = self.addr_cmd.get_devices_with_ip(to='172.16.77.240/24')
         self.assertEqual(1, len(devices))
-        self.assertEqual('eth0', devices[0]['name'])
+        expected = {'cidr': '172.16.77.240/24',
+                    'dadfailed': False,
+                    'dynamic': False,
+                    'name': 'eth0',
+                    'scope': 'global',
+                    'tentative': False}
+        self.assertEqual(expected, devices[0])
 
 
 class TestIpRouteCommand(TestIPCmdBase):
@@ -1333,6 +1343,12 @@ class TestDeviceExists(base.BaseTestCase):
             ip_lib_mock.link.set_up.side_effect = RuntimeError
             self.assertFalse(ip_lib.ensure_device_is_ready("eth0"))
 
+    def test_ensure_device_is_ready_no_link_address(self):
+        with mock.patch.object(ip_lib.IPDevice, '_execute') as _execute:
+            # Use lo, it has no MAC address
+            _execute.return_value = LINK_SAMPLE[0]
+            self.assertFalse(ip_lib.ensure_device_is_ready("lo"))
+
 
 class TestGetRoutingTable(base.BaseTestCase):
     ip_db_interfaces = {
@@ -1688,8 +1704,12 @@ class TestArpPing(TestIPCmdBase):
         self.assertTrue(spawn_n.called)
         mIPWrapper.assert_has_calls([
             mock.call(namespace=mock.sentinel.ns_name),
-            mock.call().netns.execute(mock.ANY, extra_ok_codes=mock.ANY)
-        ] * ARPING_COUNT)
+            mock.call().netns.execute(mock.ANY, extra_ok_codes=[1]),
+            mock.call().netns.execute(mock.ANY, extra_ok_codes=[1]),
+            mock.call().netns.execute(mock.ANY, extra_ok_codes=[1, 2]),
+            mock.call().netns.execute(mock.ANY, extra_ok_codes=[1, 2]),
+            mock.call().netns.execute(mock.ANY, extra_ok_codes=[1, 2]),
+            mock.call().netns.execute(mock.ANY, extra_ok_codes=[1, 2])])
 
         ip_wrapper = mIPWrapper(namespace=mock.sentinel.ns_name)
 
@@ -1701,7 +1721,7 @@ class TestArpPing(TestIPCmdBase):
                           '-w', mock.ANY,
                           address]
             ip_wrapper.netns.execute.assert_any_call(arping_cmd,
-                                                     extra_ok_codes=[1])
+                                                     extra_ok_codes=mock.ANY)
 
     @mock.patch.object(ip_lib, 'IPWrapper')
     @mock.patch('eventlet.spawn_n')
@@ -1711,7 +1731,8 @@ class TestArpPing(TestIPCmdBase):
         ip_wrapper.netns.execute.side_effect = RuntimeError
         ARPING_COUNT = 3
         address = '20.0.0.1'
-        with mock.patch.object(ip_lib, 'device_exists', return_value=False):
+        with mock.patch.object(ip_lib, 'device_exists_with_ips_and_mac',
+                               return_value=False):
             ip_lib.send_ip_addr_adv_notif(mock.sentinel.ns_name,
                                           mock.sentinel.iface_name,
                                           address,
@@ -1720,7 +1741,7 @@ class TestArpPing(TestIPCmdBase):
         # should return early with a single call when ENODEV
         mIPWrapper.assert_has_calls([
             mock.call(namespace=mock.sentinel.ns_name),
-            mock.call().netns.execute(mock.ANY, extra_ok_codes=mock.ANY)
+            mock.call().netns.execute(mock.ANY, extra_ok_codes=[1])
         ] * 1)
 
     @mock.patch('eventlet.spawn_n')
@@ -1749,3 +1770,28 @@ class TestSetIpNonlocalBindForHaNamespace(base.BaseTestCase):
         """Make sure message is formatted correctly."""
         with mock.patch.object(ip_lib, 'set_ip_nonlocal_bind', return_value=1):
             ip_lib.set_ip_nonlocal_bind_for_namespace('foo')
+
+
+class TestSysctl(base.BaseTestCase):
+    def setUp(self):
+        super(TestSysctl, self).setUp()
+        self.execute_p = mock.patch.object(ip_lib.IpNetnsCommand, 'execute')
+        self.execute = self.execute_p.start()
+
+    def test_disable_ipv6_when_ipv6_globally_enabled(self):
+        dev = ip_lib.IPDevice('tap0', 'ns1')
+        with mock.patch.object(ip_lib.ipv6_utils,
+                               'is_enabled_and_bind_by_default',
+                               return_value=True):
+            dev.disable_ipv6()
+            self.execute.assert_called_once_with(
+                ['sysctl', '-w', 'net.ipv6.conf.tap0.disable_ipv6=1'],
+                log_fail_as_error=True, run_as_root=True)
+
+    def test_disable_ipv6_when_ipv6_globally_disabled(self):
+        dev = ip_lib.IPDevice('tap0', 'ns1')
+        with mock.patch.object(ip_lib.ipv6_utils,
+                               'is_enabled_and_bind_by_default',
+                               return_value=False):
+            dev.disable_ipv6()
+            self.assertFalse(self.execute.called)

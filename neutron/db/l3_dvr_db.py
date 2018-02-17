@@ -14,6 +14,8 @@
 #    under the License.
 import collections
 
+import netaddr
+from neutron_lib.api.definitions import l3 as l3_apidef
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api import validators
 from neutron_lib.callbacks import events
@@ -22,6 +24,7 @@ from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as const
 from neutron_lib import exceptions as n_exc
+from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from oslo_config import cfg
@@ -33,32 +36,22 @@ import six
 from neutron._i18n import _
 from neutron.common import constants as l3_const
 from neutron.common import utils as n_utils
+from neutron.conf.db import l3_dvr_db
 from neutron.db import api as db_api
 from neutron.db import l3_attrs_db
 from neutron.db import l3_db
 from neutron.db.models import allowed_address_pair as aap_models
-from neutron.db.models import l3 as l3_models
 from neutron.db import models_v2
-from neutron.extensions import l3
 from neutron.ipam import utils as ipam_utils
 from neutron.objects import agent as ag_obj
+from neutron.objects import base as base_obj
 from neutron.objects import l3agent as rb_obj
 from neutron.objects import router as l3_obj
 from neutron.plugins.common import utils as p_utils
 
 
 LOG = logging.getLogger(__name__)
-router_distributed_opts = [
-    cfg.BoolOpt('router_distributed',
-                default=False,
-                help=_("System-wide flag to determine the type of router "
-                       "that tenants can create. Only admin can override.")),
-    cfg.BoolOpt('enable_dvr',
-                default=True,
-                help=_("Determine if setup is configured for DVR. If False, "
-                       "DVR API extension will be disabled.")),
-]
-cfg.CONF.register_opts(router_distributed_opts)
+l3_dvr_db.register_db_l3_dvr_opts()
 
 
 @registry.has_registry_receivers
@@ -110,7 +103,7 @@ class DVRResourceOperationHandler(object):
             # NOTE(armax): preserve old check's behavior
             if len(e.errors) == 1:
                 raise e.errors[0].error
-            raise l3.RouterInUse(router_id=router_db['id'], reason=e)
+            raise l3_exc.RouterInUse(router_id=router_db['id'], reason=e)
         return True
 
     @registry.receives(resources.ROUTER, [events.PRECOMMIT_UPDATE])
@@ -156,7 +149,8 @@ class DVRResourceOperationHandler(object):
                                              context, router_id, router,
                                              request_attrs, router_db,
                                              **kwargs):
-        if router.get(l3.EXTERNAL_GW_INFO) and not router['distributed']:
+        if (router.get(l3_apidef.EXTERNAL_GW_INFO) and
+                not router['distributed']):
             old_router = kwargs['old_router']
             if old_router and old_router['distributed']:
                 self.delete_csnat_router_interface_ports(
@@ -169,7 +163,8 @@ class DVRResourceOperationHandler(object):
                                              context, router_id, router,
                                              request_attrs, router_db,
                                              **kwargs):
-        if not router.get(l3.EXTERNAL_GW_INFO) or not router['distributed']:
+        if (not router.get(l3_apidef.EXTERNAL_GW_INFO) or
+                not router['distributed']):
             # we don't care if it's not distributed or not attached to an
             # external network
             return
@@ -178,7 +173,7 @@ class DVRResourceOperationHandler(object):
             # gateway attachment
             old_router = kwargs['old_router']
             do_create = (not old_router['distributed'] or
-                         not old_router.get(l3.EXTERNAL_GW_INFO))
+                         not old_router.get(l3_apidef.EXTERNAL_GW_INFO))
             if not do_create:
                 return
         if not self._create_snat_intf_ports_if_not_exists(
@@ -979,11 +974,11 @@ class _DVRAgentInterfaceMixin(object):
             (port_dict['status'] == const.PORT_STATUS_ACTIVE))
         if not port_valid_state:
             return
-        query = context.session.query(l3_models.FloatingIP).filter(
-            l3_models.FloatingIP.fixed_ip_address == port_addr_pair_ip)
-        fip = query.first()
+        fips = l3_obj.FloatingIP.get_objects(
+            context, _pager=base_obj.Pager(limit=1),
+            fixed_ip_address=netaddr.IPAddress(port_addr_pair_ip))
         return self._core_plugin.get_port(
-            context, fip.fixed_port_id) if fip else None
+            context, fips[0].fixed_port_id) if fips else None
 
 
 class L3_NAT_with_dvr_db_mixin(_DVRAgentInterfaceMixin,
@@ -1030,7 +1025,7 @@ class L3_NAT_with_dvr_db_mixin(_DVRAgentInterfaceMixin,
         try:
             # using admin context as router may belong to admin tenant
             router = self._get_router(context.elevated(), router_id)
-        except l3.RouterNotFound:
+        except l3_exc.RouterNotFound:
             LOG.warning("Router %s was not found. "
                         "Skipping agent notification.",
                         router_id)

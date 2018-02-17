@@ -50,6 +50,16 @@ class NetworkQosBindingNotFound(e.NotFound):
                 "could not be found.")
 
 
+class FloatingIPQosBindingNotFound(e.NotFound):
+    message = _("QoS binding for floating IP %(fip_id)s and policy "
+                "%(policy_id)s could not be found.")
+
+
+class FloatingIPQosBindingError(e.NeutronException):
+    message = _("QoS binding for floating IP %(fip_id)s and policy "
+                "%(policy_id)s could not be created: %(db_error)s.")
+
+
 class NetworkQosBindingError(e.NeutronException):
     message = _("QoS binding for network %(net_id)s and policy %(policy_id)s "
                 "could not be created: %(db_error)s.")
@@ -352,3 +362,16 @@ class TenantQuotaNotFound(e.NotFound):
 
 class TenantIdProjectIdFilterConflict(e.BadRequest):
     message = _("Both tenant_id and project_id passed as filters.")
+
+
+class MultipleFilterIDForIPFound(e.Conflict):
+    message = _("Multiple filter IDs for IP %(ip)s found.")
+
+
+class FilterIDForIPNotFound(e.NotFound):
+    message = _("Filter ID for IP %(ip)s could not be found.")
+
+
+class FailedToAddQdiscToDevice(e.NeutronException):
+    message = _("Failed to add %(direction)s qdisc "
+                "to device %(device)s.")

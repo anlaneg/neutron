@@ -865,12 +865,16 @@ class TestOvsNeutronAgent(object):
                 mock.patch.object(self.agent.int_br,
                                   'get_vifs_by_ids',
                                   return_value={}),\
+                mock.patch.object(self.agent.ext_manager,
+                                  "delete_port") as ext_mgr_delete_port,\
                 mock.patch.object(self.agent,
                                   'treat_vif_port') as treat_vif_port:
             skip_devs = self.agent.treat_devices_added_or_updated([], False)
             # The function should return False for resync and no device
             # processed
             self.assertEqual((['the_skipped_one'], [], set()), skip_devs)
+            ext_mgr_delete_port.assert_called_once_with(
+                self.agent.context, {'port_id': 'the_skipped_one'})
             self.assertFalse(treat_vif_port.called)
 
     def test_treat_devices_added_failed_devices(self):
@@ -967,6 +971,35 @@ class TestOvsNeutronAgent(object):
         with m_delete as delete, m_rpc, m_unbound:
             self.agent.treat_devices_removed([port_id])
             delete.assert_called_with(mock.ANY, {'port_id': port_id})
+
+    def test_treat_vif_port_shut_down_port(self):
+        details = mock.MagicMock()
+        vif_port = type('vif_port', (object,), {
+            "vif_id": "12",
+            "iface-id": "407a79e0-e0be-4b7d-92a6-513b2161011b",
+            "vif_mac": "fa:16:3e:68:46:7b",
+            "port_name": "qr-407a79e0-e0",
+            "ofport": -1,
+            "bridge_name": "br-int"})
+        with mock.patch.object(
+                self.agent.plugin_rpc, 'update_device_down'
+        ) as update_device_down, mock.patch.object(
+            self.agent, "port_dead"
+        ) as port_dead:
+            port_needs_binding = self.agent.treat_vif_port(
+                vif_port, details['port_id'],
+                details['network_id'],
+                details['network_type'],
+                details['physical_network'],
+                details['segmentation_id'],
+                False,
+                details['fixed_ips'],
+                details['device_owner'], False)
+        self.assertFalse(port_needs_binding)
+        port_dead.assert_called_once_with(vif_port)
+        update_device_down.assert_called_once_with(
+            self.agent.context, details['port_id'], self.agent.agent_id,
+            self.agent.conf.host)
 
     def test_bind_port_with_missing_network(self):
         vif_port = mock.Mock()
@@ -1661,7 +1694,7 @@ class TestOvsNeutronAgent(object):
             add_tunnel_port_fn.assert_called_once_with(
                 'gre-1', remote_ip, self.agent.local_ip, n_const.TYPE_GRE,
                 self.agent.vxlan_udp_port, self.agent.dont_fragment,
-                self.agent.tunnel_csum)
+                self.agent.tunnel_csum, self.agent.tos)
             log_error_fn.assert_called_once_with(
                 _("Failed to set-up %(type)s tunnel port to %(ip)s"),
                 {'type': n_const.TYPE_GRE, 'ip': remote_ip})
@@ -1706,7 +1739,7 @@ class TestOvsNeutronAgent(object):
             add_tunnel_port_fn.assert_called_once_with(
                 'gre-1', remote_ip, self.agent.local_ip, n_const.TYPE_GRE,
                 self.agent.vxlan_udp_port, self.agent.dont_fragment,
-                self.agent.tunnel_csum)
+                self.agent.tunnel_csum, self.agent.tos)
             log_error_fn.assert_called_once_with(
                 _("Failed to set-up %(type)s tunnel port to %(ip)s"),
                 {'type': n_const.TYPE_GRE, 'ip': remote_ip})
@@ -1727,7 +1760,27 @@ class TestOvsNeutronAgent(object):
             add_tunnel_port_fn.assert_called_once_with(
                 'gre-1', remote_ip, self.agent.local_ip, n_const.TYPE_GRE,
                 self.agent.vxlan_udp_port, self.agent.dont_fragment,
-                self.agent.tunnel_csum)
+                self.agent.tunnel_csum, self.agent.tos)
+            log_error_fn.assert_called_once_with(
+                _("Failed to set-up %(type)s tunnel port to %(ip)s"),
+                {'type': n_const.TYPE_GRE, 'ip': remote_ip})
+            self.assertEqual(0, ofport)
+
+    def test_setup_tunnel_port_error_negative_tos_inherit(self):
+        remote_ip = '1.2.3.4'
+        with mock.patch.object(
+            self.agent.tun_br,
+            'add_tunnel_port',
+            return_value=ovs_lib.INVALID_OFPORT) as add_tunnel_port_fn,\
+                mock.patch.object(self.mod_agent.LOG, 'error') as log_error_fn:
+            self.agent.tos = 'inherit'
+            self.agent.local_ip = '2.3.4.5'
+            ofport = self.agent._setup_tunnel_port(
+                self.agent.tun_br, 'gre-1', remote_ip, n_const.TYPE_GRE)
+            add_tunnel_port_fn.assert_called_once_with(
+                'gre-1', remote_ip, self.agent.local_ip, n_const.TYPE_GRE,
+                self.agent.vxlan_udp_port, self.agent.dont_fragment,
+                self.agent.tunnel_csum, self.agent.tos)
             log_error_fn.assert_called_once_with(
                 _("Failed to set-up %(type)s tunnel port to %(ip)s"),
                 {'type': n_const.TYPE_GRE, 'ip': remote_ip})

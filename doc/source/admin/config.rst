@@ -20,9 +20,11 @@ Configuration
    config-ipam
    config-ipv6
    config-lbaas
+   config-logging
    config-macvtap
    config-mtu
    config-ovs-dpdk
+   config-ovs-offload
    config-ovsfwdriver
    config-qos
    config-rbac

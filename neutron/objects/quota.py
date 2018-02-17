@@ -12,18 +12,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import fields as obj_fields
 import sqlalchemy as sa
 from sqlalchemy import sql
 
-from neutron.db import api as db_api
 from neutron.db.quota import models
 from neutron.objects import base
 from neutron.objects import common_types
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class ResourceDelta(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -41,7 +39,7 @@ class ResourceDelta(base.NeutronDbObject):
     }
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class Reservation(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -61,7 +59,7 @@ class Reservation(base.NeutronDbObject):
 
     def create(self):
         deltas = self.resource_deltas
-        with db_api.autonested_transaction(self.obj_context.session):
+        with self.db_context_writer(self.obj_context):
             super(Reservation, self).create()
             if deltas:
                 for delta in deltas:
@@ -108,7 +106,7 @@ class Reservation(base.NeutronDbObject):
                     for (resource, exp, total_reserved) in resv_query)
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class Quota(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -123,7 +121,7 @@ class Quota(base.NeutronDbObject):
     }
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class QuotaUsage(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'

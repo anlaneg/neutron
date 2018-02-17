@@ -16,10 +16,10 @@ import copy
 
 import netaddr
 from neutron_lib import constants as lib_constants
+from neutron_lib.services.qos import constants as qos_consts
 from oslo_utils import uuidutils
 from six import moves
 
-from neutron.common import constants as n_const
 from neutron.common import ipv6_utils
 
 _uuid = uuidutils.generate_uuid
@@ -111,12 +111,15 @@ def prepare_router_data(ip_version=4, enable_snat=None, num_internal_ports=1,
         'gw_port': ex_gw_port}
 
     if enable_floating_ip:
-        router[lib_constants.FLOATINGIP_KEY] = [{
-            'id': _uuid(),
-            'port_id': _uuid(),
-            'status': 'DOWN',
-            'floating_ip_address': '19.4.4.2',
-            'fixed_ip_address': '10.0.0.1'}]
+        fip = {'id': _uuid(),
+               'port_id': _uuid(),
+               'status': 'DOWN',
+               'floating_ip_address': '19.4.4.2',
+               'fixed_ip_address': '10.0.0.1'}
+        qos_policy_id = kwargs.get(qos_consts.QOS_POLICY_ID)
+        if qos_policy_id:
+            fip[qos_consts.QOS_POLICY_ID] = qos_policy_id
+        router[lib_constants.FLOATINGIP_KEY] = [fip]
 
     router_append_interface(router, count=num_internal_ports,
                             ip_version=ip_version, dual_stack=dual_stack)
@@ -285,7 +288,7 @@ def router_append_pd_enabled_subnet(router, count=1):
                                'subnet_id': subnet_id}],
                 'mac_address': str(mac_address),
                 'subnets': [{'id': subnet_id,
-                             'cidr': n_const.PROVISIONAL_IPV6_PD_PREFIX,
+                             'cidr': lib_constants.PROVISIONAL_IPV6_PD_PREFIX,
                              'gateway_ip': '::1',
                              'ipv6_ra_mode': lib_constants.IPV6_SLAAC,
                              'subnetpool_id': lib_constants.IPV6_PD_POOL_ID}]}
@@ -299,7 +302,7 @@ def get_unassigned_pd_interfaces(router):
     for intf in router[lib_constants.INTERFACE_KEY]:
         for subnet in intf['subnets']:
             if (ipv6_utils.is_ipv6_pd_enabled(subnet) and
-                subnet['cidr'] == n_const.PROVISIONAL_IPV6_PD_PREFIX):
+                subnet['cidr'] == lib_constants.PROVISIONAL_IPV6_PD_PREFIX):
                 pd_intfs.append(intf)
     return pd_intfs
 
@@ -309,7 +312,7 @@ def assign_prefix_for_pd_interfaces(router):
     for ifno, intf in enumerate(router[lib_constants.INTERFACE_KEY]):
         for subnet in intf['subnets']:
             if (ipv6_utils.is_ipv6_pd_enabled(subnet) and
-                subnet['cidr'] == n_const.PROVISIONAL_IPV6_PD_PREFIX):
+                subnet['cidr'] == lib_constants.PROVISIONAL_IPV6_PD_PREFIX):
                 subnet['cidr'] = "2001:db8:%d::/64" % ifno
                 pd_intfs.append(intf)
     return pd_intfs

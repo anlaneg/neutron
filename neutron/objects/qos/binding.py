@@ -13,14 +13,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_versionedobjects import base as obj_base
 
 from neutron.db.qos import models as qos_db_model
 from neutron.objects import base
 from neutron.objects import common_types
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class QosPolicyPortBinding(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -36,7 +35,7 @@ class QosPolicyPortBinding(base.NeutronDbObject):
     fields_no_update = ['policy_id', 'port_id']
 
 
-@obj_base.VersionedObjectRegistry.register
+@base.NeutronObjectRegistry.register
 class QosPolicyNetworkBinding(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -50,3 +49,19 @@ class QosPolicyNetworkBinding(base.NeutronDbObject):
 
     primary_keys = ['network_id']
     fields_no_update = ['policy_id', 'network_id']
+
+
+@base.NeutronObjectRegistry.register
+class QosPolicyFloatingIPBinding(base.NeutronDbObject):
+    # Version 1.0: Initial version
+    VERSION = '1.0'
+
+    db_model = qos_db_model.QosFIPPolicyBinding
+
+    fields = {
+        'policy_id': common_types.UUIDField(),
+        'fip_id': common_types.UUIDField()
+    }
+
+    primary_keys = ['policy_id', 'fip_id']
+    fields_no_update = ['policy_id', 'fip_id']

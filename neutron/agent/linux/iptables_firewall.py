@@ -634,15 +634,17 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         return iptables_rules
 
     def _protocol_arg(self, protocol, is_port):
-        if not protocol:
-            return []
-        if protocol == 'icmpv6':
-            protocol = 'ipv6-icmp'
-        iptables_rule = ['-p', protocol]
+        iptables_rule = []
+        rule_protocol = n_const.IPTABLES_PROTOCOL_NAME_MAP.get(protocol,
+                                                               protocol)
+        # protocol zero is a special case and requires no '-p'
+        if rule_protocol:
+            iptables_rule = ['-p', rule_protocol]
 
-        if (is_port and protocol in constants.IPTABLES_PROTOCOL_MAP):
-            # iptables adds '-m protocol' when the port number is specified
-            iptables_rule += ['-m', constants.IPTABLES_PROTOCOL_MAP[protocol]]
+            if (is_port and rule_protocol in constants.IPTABLES_PROTOCOL_MAP):
+                # iptables adds '-m protocol' when the port number is specified
+                iptables_rule += ['-m',
+                    constants.IPTABLES_PROTOCOL_MAP[rule_protocol]]
         return iptables_rule
 
     def _port_arg(self, direction, protocol, port_range_min, port_range_max):
@@ -650,6 +652,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         if port_range_min is None:
             return args
 
+        protocol = n_const.IPTABLES_PROTOCOL_NAME_MAP.get(protocol, protocol)
         if protocol in ['icmp', 'ipv6-icmp']:
             protocol_type = 'icmpv6' if protocol == 'ipv6-icmp' else 'icmp'
             # Note(xuhanp): port_range_min/port_range_max represent

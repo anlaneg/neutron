@@ -208,6 +208,11 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         self.vxlan_udp_port = agent_conf.vxlan_udp_port
         self.dont_fragment = agent_conf.dont_fragment
         self.tunnel_csum = agent_conf.tunnel_csum
+        self.tos = ('inherit'
+                    if agent_conf.dscp_inherit
+                    else (int(agent_conf.dscp) << 2
+                          if agent_conf.dscp
+                          else None))
         self.tun_br = None
         self.patch_int_ofport = constants.OFPORT_INVALID
         self.patch_tun_ofport = constants.OFPORT_INVALID
@@ -1546,6 +1551,9 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                          "putting on the dead VLAN", vif_port.vif_id)
 
                 self.port_dead(vif_port)
+                self.plugin_rpc.update_device_down(
+                    self.context, port_id, self.agent_id,
+                    self.conf.host)
                 port_needs_binding = False
         else:
             LOG.debug("No VIF port for port %s defined on agent.", port_id)
@@ -1566,7 +1574,6 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                       "local_ip=%(lip)s remote_ip=%(rip)s",
                       {'lip': self.local_ip, 'rip': remote_ip})
             return 0
-        
         # 添加tunnel口
         ofport = br.add_tunnel_port(port_name,#按口名称
                                     remote_ip,#远端ip
@@ -1574,8 +1581,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                     tunnel_type,#隧道类型
                                     self.vxlan_udp_port,#vxlan udp端口号
                                     self.dont_fragment,#是否不分片
-                                    self.tunnel_csum)#是否要求重算udp checksum
-        
+                                    self.tunnel_csum,#是否要求重算udp checksum
+                                    self.tos)
         #创建失败处理
         if ofport == ovs_lib.INVALID_OFPORT:
             LOG.error("Failed to set-up %(type)s tunnel port to %(ip)s",
@@ -1655,6 +1662,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 # The port disappeared and cannot be processed
                 LOG.info("Port %s was not found on the integration bridge "
                          "and will therefore not be processed", device)
+                self.ext_manager.delete_port(self.context, {'port_id': device})
                 #记住哪些跳过的设备
                 skipped_devices.append(device)
                 continue

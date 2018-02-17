@@ -258,6 +258,14 @@ class L3NATAgent(ha.AgentMixin,
         consumers = [[topics.NETWORK, topics.UPDATE]]
         agent_rpc.create_consumers([self], topics.AGENT, consumers)
 
+        # We set HA network port status to DOWN to let l2 agent update it
+        # to ACTIVE after wiring. This allows us to spawn keepalived only
+        # when l2 agent finished wiring the port.
+        try:
+            self.plugin_rpc.update_all_ha_network_port_statuses(self.context)
+        except Exception:
+            LOG.exception('update_all_ha_network_port_statuses failed')
+
     def _check_config_params(self):
         """Check items in configuration files.
 
@@ -328,8 +336,14 @@ class L3NATAgent(ha.AgentMixin,
             kwargs['host'] = self.host
 
         if router.get('distributed') and router.get('ha'):
+            # if the router does not contain information about the HA interface
+            # this means that this DVR+HA router needs to host only the edge
+            # side of it, typically because it's landing on a node that needs
+            # to provision a router namespace because of a DVR service port
+            # (e.g. DHCP).
             #创建分布式ha路由器
-            if self.conf.agent_mode == lib_const.L3_AGENT_MODE_DVR_SNAT:
+            if (self.conf.agent_mode == lib_const.L3_AGENT_MODE_DVR_SNAT
+                    and router.get(lib_const.HA_INTERFACE_KEY) is not None):
                 kwargs['state_change_callback'] = self.enqueue_state_change
                 return dvr_edge_ha_router.DvrEdgeHaRouter(*args, **kwargs) #ha功能的snat路由器
 
@@ -506,6 +520,13 @@ class L3NATAgent(ha.AgentMixin,
         self.l3_ext_manager.add_router(self.context, router) #各扩展处理router_add
 
     def _process_updated_router(self, router):
+        is_dvr_only_agent = (self.conf.agent_mode in
+                             [lib_const.L3_AGENT_MODE_DVR,
+                              l3_constants.L3_AGENT_MODE_DVR_NO_EXTERNAL])
+        # For HA routers check that DB state matches actual state
+        if router.get('ha') and not is_dvr_only_agent:
+            self.check_ha_state_for_router(
+                router['id'], router.get(l3_constants.HA_ROUTER_STATE_KEY))
         ri = self.router_info[router['id']]
         ri.router = router
         registry.notify(resources.ROUTER, events.BEFORE_UPDATE,
@@ -516,6 +537,14 @@ class L3NATAgent(ha.AgentMixin,
 
     def _resync_router(self, router_update,
                        priority=queue.PRIORITY_SYNC_ROUTERS_TASK):
+        # Don't keep trying to resync if it's failing
+        if router_update.hit_retry_limit():
+            LOG.warning("Hit retry limit with router update for %s, action %s",
+                        router_update.id, router_update.action)
+            if router_update.action != queue.DELETE_ROUTER:
+                LOG.debug("Deleting router %s", router_update.id)
+                self._safe_router_removed(router_update.id)
+            return
         router_update.timestamp = timeutils.utcnow()
         router_update.priority = priority
         router_update.router = None  # Force the agent to resync the router
@@ -623,15 +652,8 @@ class L3NATAgent(ha.AgentMixin,
         chunk = []
         is_snat_agent = (self.conf.agent_mode ==
                          lib_const.L3_AGENT_MODE_DVR_SNAT)
-        is_dvr_only_agent = (self.conf.agent_mode in
-                             [lib_const.L3_AGENT_MODE_DVR,
-                              l3_constants.L3_AGENT_MODE_DVR_NO_EXTERNAL])
         try:
             router_ids = self.plugin_rpc.get_router_ids(context)
-            # We set HA network port status to DOWN to let l2 agent update it
-            # to ACTIVE after wiring. This allows us to spawn keepalived only
-            # when l2 agent finished wiring the port.
-            self.plugin_rpc.update_all_ha_network_port_statuses(context)
             # fetch routers by chunks to reduce the load on server and to
             # start router processing earlier
             for i in range(0, len(router_ids), self.sync_routers_chunk_size):
@@ -649,10 +671,6 @@ class L3NATAgent(ha.AgentMixin,
                             ns_manager.keep_ext_net(ext_net_id)
                         elif is_snat_agent and not r.get('ha'):
                             ns_manager.ensure_snat_cleanup(r['id'])
-                    # For HA routers check that DB state matches actual state
-                    if r.get('ha') and not is_dvr_only_agent:
-                        self.check_ha_state_for_router(
-                            r['id'], r.get(l3_constants.HA_ROUTER_STATE_KEY))
                     update = queue.RouterUpdate(
                         r['id'],
                         queue.PRIORITY_SYNC_ROUTERS_TASK,
