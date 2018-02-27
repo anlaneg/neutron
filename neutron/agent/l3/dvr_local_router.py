@@ -66,7 +66,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
             #对dvr来说，所有floating_ip来源于fip路由器，故没有fip就不提供floating-ip功能
             return []
 
-        if fip.get(n_const.DVR_SNAT_BOUND):
+        if fip.get(lib_constants.DVR_SNAT_BOUND):
             return []
 
         fixed_ip = fip['fixed_ip_address']
@@ -109,7 +109,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
 
     def floating_ip_added_dist(self, fip, fip_cidr):
         """Add floating IP to respective namespace based on agent mode."""
-        if fip.get(n_const.DVR_SNAT_BOUND):
+        if fip.get(lib_constants.DVR_SNAT_BOUND):
             floating_ip_status = self.add_centralized_floatingip(fip, fip_cidr)
             if floating_ip_status == lib_constants.FLOATINGIP_STATUS_ACTIVE:
                 self.centralized_floatingips_set.add(fip_cidr)
@@ -613,7 +613,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
 
     def process_external(self):
         if self.agent_conf.agent_mode != (
-            n_const.L3_AGENT_MODE_DVR_NO_EXTERNAL):
+            lib_constants.L3_AGENT_MODE_DVR_NO_EXTERNAL):
             ex_gw_port = self.get_ex_gw_port()
             if ex_gw_port:
                 #存在gateway,说明分布式路由器可以出外网了

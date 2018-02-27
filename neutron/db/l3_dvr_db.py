@@ -677,7 +677,7 @@ class _DVRAgentInterfaceMixin(object):
         agent_mode = self._get_agent_mode(agent)
         if (agent_mode in [const.L3_AGENT_MODE_LEGACY,
                            const.L3_AGENT_MODE_DVR] and
-                floating_ip.get(l3_const.DVR_SNAT_BOUND)):
+                floating_ip.get(const.DVR_SNAT_BOUND)):
             return True
 
         # Skip if it is bound, but not to the given host
@@ -726,29 +726,48 @@ class _DVRAgentInterfaceMixin(object):
                 # All unbound ports with floatingip irrespective of
                 # the device owner should be included as valid ports
                 # and updated.
-                port_host = port[portbindings.HOST_ID]
-                if (port_host == host or port_in_migration or
+                if (port_in_migration or
                     self._is_unbound_port(port)):
                     port_dict.update({port['id']: port})
-                if port_host and port_host != host:
-                    # Consider the ports where the portbinding host and
-                    # request host does not match.
+                    continue
+                port_host = port[portbindings.HOST_ID]
+                if port_host:
                     l3_agent_on_host = self.get_l3_agents(
                         context,
                         filters={'host': [port_host]})
+                    l3_agent_mode = ''
                     if len(l3_agent_on_host):
                         l3_agent_mode = self._get_agent_mode(
                             l3_agent_on_host[0])
+                    requesting_agent_mode = self._get_agent_mode(agent)
+                    # Consider the ports where the portbinding host and
+                    # request host match.
+                    if port_host == host:
+                        # Check for agent type before adding the port_dict.
+                        # For VMs that are hosted on the dvr_no_external
+                        # agent and if the request is coming from the same
+                        # agent on re-syncs then we need to add the appropriate
+                        # port['agent'] before updating the dict.
+                        if (l3_agent_mode == (
+                            const.L3_AGENT_MODE_DVR_NO_EXTERNAL) and
+                            requesting_agent_mode == (
+                                const.L3_AGENT_MODE_DVR_NO_EXTERNAL)):
+                            port['agent'] = (
+                                const.L3_AGENT_MODE_DVR_NO_EXTERNAL)
+
+                        port_dict.update({port['id']: port})
+                    # Consider the ports where the portbinding host and
+                    # request host does not match.
+                    else:
                         # If the agent requesting is dvr_snat but
                         # the portbinding host resides in dvr_no_external
                         # agent then include the port.
-                        requesting_agent_mode = self._get_agent_mode(agent)
                         if (l3_agent_mode == (
-                            l3_const.L3_AGENT_MODE_DVR_NO_EXTERNAL) and
+                            const.L3_AGENT_MODE_DVR_NO_EXTERNAL) and
                             requesting_agent_mode == (
-                            const.L3_AGENT_MODE_DVR_SNAT)):
+                                const.L3_AGENT_MODE_DVR_SNAT)):
                             port['agent'] = (
-                                l3_const.L3_AGENT_MODE_DVR_NO_EXTERNAL)
+                                const.L3_AGENT_MODE_DVR_NO_EXTERNAL)
                             port_dict.update({port['id']: port})
             # Add the port binding host to the floatingip dictionary
             for fip in floating_ips:
@@ -765,7 +784,7 @@ class _DVRAgentInterfaceMixin(object):
                                 context, fip['port_id'], port=vm_port))
                         vm_port_agent_mode = vm_port.get('agent', None)
                         if vm_port_agent_mode != (
-                            l3_const.L3_AGENT_MODE_DVR_NO_EXTERNAL):
+                            const.L3_AGENT_MODE_DVR_NO_EXTERNAL):
                             # For floatingip configured on ports that do not
                             # reside on a 'dvr_no_external' agent, add the
                             # fip host binding, else it will be created
@@ -775,7 +794,7 @@ class _DVRAgentInterfaceMixin(object):
                     # for the private ports that are associated with
                     # floating ip.
                     if fip['host'] == l3_const.FLOATING_IP_HOST_NEEDS_BINDING:
-                        fip[l3_const.DVR_SNAT_BOUND] = True
+                        fip[const.DVR_SNAT_BOUND] = True
         routers_dict = self._process_routers(context, routers, agent)
         self._process_floating_ips_dvr(context, routers_dict,
                                        floating_ips, host, agent)
@@ -854,7 +873,7 @@ class _DVRAgentInterfaceMixin(object):
         l3_agent_db = self._get_agent_by_type_and_host(
             context, const.AGENT_TYPE_L3, host)#取指定主机上的l3-agent配置
         l3_agent_mode = self._get_agent_mode(l3_agent_db)
-        if l3_agent_mode == l3_const.L3_AGENT_MODE_DVR_NO_EXTERNAL:
+        if l3_agent_mode == const.L3_AGENT_MODE_DVR_NO_EXTERNAL:
             return
         if l3_agent_db:
             LOG.debug("Agent ID exists: %s", l3_agent_db['id'])
@@ -1039,7 +1058,7 @@ class L3_NAT_with_dvr_db_mixin(_DVRAgentInterfaceMixin,
                 l3_agent_on_host = self.get_dvr_agent_on_host(
                     context, host)
                 agent_mode = self._get_agent_mode(l3_agent_on_host[0])
-                if agent_mode == l3_const.L3_AGENT_MODE_DVR_NO_EXTERNAL:
+                if agent_mode == const.L3_AGENT_MODE_DVR_NO_EXTERNAL:
                     # If the agent hosting the fixed port is in
                     # 'dvr_no_external' mode, then set the host to None,
                     # since we would be centralizing the floatingip for

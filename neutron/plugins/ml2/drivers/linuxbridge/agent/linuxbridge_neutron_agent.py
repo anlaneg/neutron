@@ -251,13 +251,13 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
             if self.ensure_bridge(bridge_name, interface):
                 return interface
 
-    def ensure_vxlan_bridge(self, network_id, segmentation_id):
+    def ensure_vxlan_bridge(self, network_id, segmentation_id, mtu):
         """Create a vxlan and bridge unless they already exist."""
-        interface = self.ensure_vxlan(segmentation_id)
+        interface = self.ensure_vxlan(segmentation_id, mtu)
         if not interface:
             LOG.error("Failed creating vxlan interface for "
                       "%(segmentation_id)s",
-                      {segmentation_id: segmentation_id})
+                      {'segmentation_id': segmentation_id})
             return
         bridge_name = self.get_bridge_name(network_id)
         self.ensure_bridge(bridge_name, interface, update_interface=False)
@@ -316,7 +316,7 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
             LOG.debug("Done creating subinterface %s", interface)
         return interface
 
-    def ensure_vxlan(self, segmentation_id):
+    def ensure_vxlan(self, segmentation_id, mtu=None):
         """Create a vxlan unless it already exists."""
         interface = self.get_vxlan_device_name(segmentation_id)
         if not ip_lib.device_exists(interface):
@@ -346,8 +346,25 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
                 args['proxy'] = cfg.CONF.VXLAN.arp_responder
 
             try:
+                if mtu:
+                    phys_dev_mtu = ip_lib.get_device_mtu(self.local_int)
+                    max_mtu = phys_dev_mtu - constants.VXLAN_ENCAP_OVERHEAD
+                    if mtu > max_mtu:
+                        LOG.error("Provided MTU value %(mtu)s for VNI "
+                                  "%(segmentation_id)s is too high. "
+                                  "According to physical device %(dev)s "
+                                  "MTU=%(phys_mtu)s maximum available "
+                                  "MTU is %(max_mtu)s",
+                                  {'mtu': mtu,
+                                   'segmentation_id': segmentation_id,
+                                   'dev': self.local_int,
+                                   'phys_mtu': phys_dev_mtu,
+                                   'max_mtu': max_mtu})
+                        return None
                 int_vxlan = self.ip.add_vxlan(interface, segmentation_id,
                                               **args)
+                if mtu:
+                    int_vxlan.link.set_mtu(mtu)
             except RuntimeError:
                 with excutils.save_and_reraise_exception() as ctxt:
                     # perform this check after an attempt rather than before
@@ -469,13 +486,14 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
     def ensure_physical_in_bridge(self, network_id,
                                   network_type,
                                   physical_network,
-                                  segmentation_id):
+                                  segmentation_id,
+                                  mtu):
         if network_type == constants.TYPE_VXLAN:
             if self.vxlan_mode == lconst.VXLAN_NONE:
                 LOG.error("Unable to add vxlan interface for network %s",
                           network_id)
                 return
-            return self.ensure_vxlan_bridge(network_id, segmentation_id)
+            return self.ensure_vxlan_bridge(network_id, segmentation_id, mtu)
 
         # NOTE(nick-ma-z): Obtain mappings of physical bridge and interfaces
         physical_bridge = self.bridge_mappings.get(physical_network)
@@ -534,7 +552,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
         elif not self.ensure_physical_in_bridge(network_id,
                                                 network_type,
                                                 physical_network,
-                                                segmentation_id):
+                                                segmentation_id,
+                                                mtu):
             return False
         if mtu:  # <-None with device_details from older neutron servers.
             # we ensure the MTU here because libvirt does not set the

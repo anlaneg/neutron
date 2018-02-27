@@ -14,6 +14,7 @@
 #    under the License.
 
 import collections
+import copy
 
 import netaddr
 from neutron_lib import constants as lib_const
@@ -91,7 +92,7 @@ class SecurityGroup(object):
         """
         self.raw_rules = []
         self.remote_rules = []
-        for rule in rules:
+        for rule in copy.deepcopy(rules):
             protocol = rule.get('protocol')
             if protocol is not None:
                 if protocol.isdigit():
@@ -235,8 +236,8 @@ class ConjIdMap(object):
         as there are 4 priority levels (see rules.flow_priority_offset)
         and 2 conjunction IDs are needed per priority.
         """
-        if direction not in [firewall.EGRESS_DIRECTION,
-                             firewall.INGRESS_DIRECTION]:
+        if direction not in [lib_const.EGRESS_DIRECTION,
+                             lib_const.INGRESS_DIRECTION]:
             raise ValueError("Invalid direction '%s'" % direction)
         if ethertype not in [lib_const.IPv4, lib_const.IPv6]:
             raise ValueError("Invalid ethertype '%s'" % ethertype)
@@ -498,18 +499,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
         if not firewall.port_sec_enabled(port):
             self._initialize_egress_no_port_security(port['device'])
             return
-        old_of_port = self.get_ofport(port)
-        # Make sure delete old allowed_address_pair MACs because
-        # allowed_address_pair MACs will be updated in
-        # self.get_or_create_ofport(port)
-        if old_of_port:
-            LOG.error("Initializing port %s that was already "
-                      "initialized.",
-                      port['device'])
-            self.delete_all_port_flows(old_of_port)
-        of_port = self.get_or_create_ofport(port)
-        self.initialize_port_flows(of_port)
-        self.add_flows_from_rules(of_port)
+        self._set_port_filters(port, old_port_expected=False)
 
     def update_port_filter(self, port):
         """Update rules for given port
@@ -529,17 +519,26 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                 LOG.debug(e)
             else:
                 self.prepare_port_filter(port)
-            return
-        old_of_port = self.get_ofport(port)
+                return
         try:
-            of_port = self.get_or_create_ofport(port)
+            self._set_port_filters(port, old_port_expected=True)
         except exceptions.OVSFWPortNotFound as not_found_error:
             LOG.info("port %(port_id)s does not exist in ovsdb: %(err)s.",
                      {'port_id': port['device'],
                       'err': not_found_error})
-            return
+
+    def _set_port_filters(self, port, old_port_expected):
+        old_of_port = self.get_ofport(port)
+        # Make sure delete old allowed_address_pair MACs because
+        # allowed_address_pair MACs will be updated in
+        # self.get_or_create_ofport(port)
+        if old_of_port:
+            if not old_port_expected:
+                LOG.info("Initializing port %s that was already "
+                         "initialized.", port['device'])
+            self.delete_all_port_flows(old_of_port)
         # TODO(jlibosva): Handle firewall blink
-        self.delete_all_port_flows(old_of_port)
+        of_port = self.get_or_create_ofport(port)
         self.initialize_port_flows(of_port)
         self.add_flows_from_rules(of_port)
 

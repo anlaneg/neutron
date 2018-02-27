@@ -10,13 +10,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""
-TODO(hongbin): This module should be deleted once neutron-lib containing
-https://review.openstack.org/#/c/525284/ change is released.
-"""
-
 # The alias of the extension.
-ALIAS = 'ip-substring-filtering'
+ALIAS = 'port-security-groups-filtering'
 
 # Whether or not this extension is simply signaling behavior to the user
 # or it actively modifies the attribute map.
@@ -31,13 +26,13 @@ IS_SHIM_EXTENSION = True
 IS_STANDARD_ATTR_EXTENSION = False
 
 # The name of the extension.
-NAME = 'IP address substring filtering'
+NAME = 'Port filtering on security groups'
 
 # The description of the extension.
-DESCRIPTION = "Provides IP address substring filtering when listing ports"
+DESCRIPTION = "Provides security groups filtering when listing ports"
 
 # A timestamp of when the extension was introduced.
-UPDATED_TIMESTAMP = "2017-11-28T09:00:00-00:00"
+UPDATED_TIMESTAMP = "2018-01-09T09:00:00-00:00"
 
 # The resource attribute map for the extension.
 RESOURCE_ATTRIBUTE_MAP = {
