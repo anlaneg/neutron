@@ -393,7 +393,7 @@ class OVSBridge(BaseOVS):
                           self.br_name)
             raise RuntimeError('No datapath_id on bridge %s' % self.br_name)
 
-    def do_action_flows(self, action, kwargs_list):
+    def do_action_flows(self, action, kwargs_list, use_bundle=False):
         # we can't mix strict and non-strict, so we'll use the first kw
         # and check against other kw being different
         strict = kwargs_list[0].get('strict', False)
@@ -427,7 +427,7 @@ class OVSBridge(BaseOVS):
                     msg = "cannot use 'strict' with 'add' action"
                     raise exceptions.InvalidInput(error_message=msg)
 
-        strict_param = ["--strict"] if strict else []
+        extra_param = ["--strict"] if strict else []
 
         if action == 'del' and {} in kwargs_list:
             # the 'del' case simplifies itself if kwargs_list has at least
@@ -437,7 +437,9 @@ class OVSBridge(BaseOVS):
         else:
             flow_strs = [_build_flow_expr_str(kw, action, strict)
                          for kw in kwargs_list]
-            self.run_ofctl('%s-flows' % action, strict_param + ['-'],
+            if use_bundle:
+                extra_param.append('--bundle')
+            self.run_ofctl('%s-flows' % action, extra_param + ['-'],
                            '\n'.join(flow_strs))
 
     #添加流
@@ -949,12 +951,14 @@ class DeferredOVSBridge(object):
     ALLOWED_PASSTHROUGHS = 'add_port', 'add_tunnel_port', 'delete_port'
 
     def __init__(self, br, full_ordered=False,
-                 order=('add', 'mod', 'del')):
+                 order=('add', 'mod', 'del'), use_bundle=False):
         '''Constructor.
 
         :param br: wrapped bridge
         :param full_ordered: Optional, disable flow reordering (slower)
         :param order: Optional, define in which order flow are applied
+        :param use_bundle: Optional, a bool whether --bundle should be passed
+                           to all ofctl commands. Default is set to False.
         '''
 
         self.br = br
@@ -963,6 +967,7 @@ class DeferredOVSBridge(object):
         if not self.full_ordered:
             self.weights = dict((y, x) for x, y in enumerate(self.order))
         self.action_flow_tuples = []
+        self.use_bundle = use_bundle
 
     def __getattr__(self, name):
         if name in self.ALLOWED_PASSTHROUGHS:
@@ -992,7 +997,7 @@ class DeferredOVSBridge(object):
         itemgetter_1 = operator.itemgetter(1)
         for action, action_flow_list in grouped:
             flows = list(map(itemgetter_1, action_flow_list))
-            self.br.do_action_flows(action, flows)
+            self.br.do_action_flows(action, flows, self.use_bundle)
 
     def __enter__(self):
         return self

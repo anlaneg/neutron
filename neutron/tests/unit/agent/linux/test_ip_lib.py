@@ -842,60 +842,94 @@ class TestIpAddrCommand(TestIPCmdBase):
         self.command = 'addr'
         self.addr_cmd = ip_lib.IpAddrCommand(self.parent)
 
-    def test_add_address(self):
+    @mock.patch.object(priv_lib, 'add_ip_address')
+    def test_add_address(self, add):
         self.addr_cmd.add('192.168.45.100/24')
-        self._assert_sudo([4],
-                          ('add', '192.168.45.100/24',
-                           'scope', 'global',
-                           'dev', 'tap0',
-                           'brd', '192.168.45.255'))
+        add.assert_called_once_with(
+            4,
+            '192.168.45.100',
+            24,
+            self.parent.name,
+            self.addr_cmd._parent.namespace,
+            'global',
+            '192.168.45.255')
 
-    def test_add_address_scoped(self):
+    @mock.patch.object(priv_lib, 'add_ip_address')
+    def test_add_address_scoped(self, add):
         self.addr_cmd.add('192.168.45.100/24', scope='link')
-        self._assert_sudo([4],
-                          ('add', '192.168.45.100/24',
-                           'scope', 'link',
-                           'dev', 'tap0',
-                           'brd', '192.168.45.255'))
+        add.assert_called_once_with(
+            4,
+            '192.168.45.100',
+            24,
+            self.parent.name,
+            self.addr_cmd._parent.namespace,
+            'link',
+            '192.168.45.255')
 
-    def test_add_address_no_broadcast(self):
+    @mock.patch.object(priv_lib, 'add_ip_address')
+    def test_add_address_no_broadcast(self, add):
         self.addr_cmd.add('192.168.45.100/24', add_broadcast=False)
-        self._assert_sudo([4],
-                          ('add', '192.168.45.100/24',
-                           'scope', 'global',
-                           'dev', 'tap0'))
+        add.assert_called_once_with(
+            4,
+            '192.168.45.100',
+            24,
+            self.parent.name,
+            self.addr_cmd._parent.namespace,
+            'global',
+            None)
 
-    def test_del_address(self):
+    @mock.patch.object(priv_lib, 'delete_ip_address')
+    def test_del_address(self, delete):
         self.addr_cmd.delete('192.168.45.100/24')
-        self._assert_sudo([4],
-                          ('del', '192.168.45.100/24', 'dev', 'tap0'))
+        delete.assert_called_once_with(
+            4,
+            '192.168.45.100',
+            24,
+            self.parent.name,
+            self.addr_cmd._parent.namespace)
 
-    def test_flush(self):
+    @mock.patch.object(priv_lib, 'flush_ip_addresses')
+    def test_flush(self, flush):
         self.addr_cmd.flush(6)
-        self._assert_sudo([6], ('flush', 'tap0'))
+        flush.assert_called_once_with(
+            6, self.parent.name, self.addr_cmd._parent.namespace)
 
     def test_list(self):
-        expected = [
+        expected_brd = [
+            dict(name='eth0', scope='global', tentative=False, dadfailed=False,
+                 dynamic=False, cidr='172.16.77.240/24',
+                 broadcast='172.16.77.255')]
+        expected_no_brd = [
+            dict(name='eth0', scope='global', tentative=False, dadfailed=False,
+                 dynamic=False, cidr='172.16.77.240/24', broadcast=None)]
+        expected_ipv6 = [
             dict(name='eth0', scope='global', dadfailed=False, tentative=False,
-                 dynamic=False, cidr='172.16.77.240/24'),
-            dict(name='eth0', scope='global', dadfailed=False, tentative=False,
-                 dynamic=True, cidr='2001:470:9:1224:5595:dd51:6ba2:e788/64'),
+                 dynamic=True, cidr='2001:470:9:1224:5595:dd51:6ba2:e788/64',
+                 broadcast=None),
             dict(name='eth0', scope='link', dadfailed=False, tentative=True,
-                 dynamic=False, cidr='fe80::3023:39ff:febc:22ae/64'),
+                 dynamic=False, cidr='fe80::3023:39ff:febc:22ae/64',
+                 broadcast=None),
             dict(name='eth0', scope='link', dadfailed=True, tentative=True,
-                 dynamic=False, cidr='fe80::3023:39ff:febc:22af/64'),
+                 dynamic=False, cidr='fe80::3023:39ff:febc:22af/64',
+                 broadcast=None),
             dict(name='eth0', scope='global', dadfailed=False, tentative=False,
-                 dynamic=True, cidr='2001:470:9:1224:fd91:272:581e:3a32/64'),
+                 dynamic=True, cidr='2001:470:9:1224:fd91:272:581e:3a32/64',
+                 broadcast=None),
             dict(name='eth0', scope='global', dadfailed=False, tentative=False,
-                 dynamic=True, cidr='2001:470:9:1224:4508:b885:5fb:740b/64'),
+                 dynamic=True, cidr='2001:470:9:1224:4508:b885:5fb:740b/64',
+                 broadcast=None),
             dict(name='eth0', scope='global', dadfailed=False, tentative=False,
-                 dynamic=True, cidr='2001:470:9:1224:dfcc:aaff:feb9:76ce/64'),
+                 dynamic=True, cidr='2001:470:9:1224:dfcc:aaff:feb9:76ce/64',
+                 broadcast=None),
             dict(name='eth0', scope='link', dadfailed=False, tentative=False,
-                 dynamic=False, cidr='fe80::dfcc:aaff:feb9:76ce/64')]
+                 dynamic=False, cidr='fe80::dfcc:aaff:feb9:76ce/64',
+                 broadcast=None)]
 
-        test_cases = [ADDR_SAMPLE, ADDR_SAMPLE2]
+        cases = [
+            (ADDR_SAMPLE, expected_brd + expected_ipv6),
+            (ADDR_SAMPLE2, expected_no_brd + expected_ipv6)]
 
-        for test_case in test_cases:
+        for test_case, expected in cases:
             self.parent._run = mock.Mock(return_value=test_case)
             self.assertEqual(expected, self.addr_cmd.list())
             self._assert_call([], ('show', 'tap0'))
@@ -921,17 +955,24 @@ class TestIpAddrCommand(TestIPCmdBase):
                                                    wait_time=1)
 
     def test_list_filtered(self):
-        expected = [
+        expected_brd = [
             dict(name='eth0', scope='global', tentative=False, dadfailed=False,
-                 dynamic=False, cidr='172.16.77.240/24')]
+                 dynamic=False, cidr='172.16.77.240/24',
+                 broadcast='172.16.77.255')]
+        expected_no_brd = [
+            dict(name='eth0', scope='global', tentative=False, dadfailed=False,
+                 dynamic=False, cidr='172.16.77.240/24', broadcast=None)]
 
-        test_cases = [ADDR_SAMPLE, ADDR_SAMPLE2]
+        cases = [
+            (ADDR_SAMPLE, expected_brd), (ADDR_SAMPLE2, expected_no_brd)]
 
-        for test_case in test_cases:
+        for test_case, expected in cases:
             output = '\n'.join(test_case.split('\n')[0:4])
             self.parent._run.return_value = output
-            self.assertEqual(self.addr_cmd.list('global',
-                             filters=['permanent']), expected)
+            self.assertEqual(
+                expected,
+                self.addr_cmd.list(
+                    'global', filters=['permanent']))
             self._assert_call([], ('show', 'tap0', 'permanent', 'scope',
                               'global'))
 
@@ -944,6 +985,7 @@ class TestIpAddrCommand(TestIPCmdBase):
         devices = self.addr_cmd.get_devices_with_ip(to='172.16.77.240/24')
         self.assertEqual(1, len(devices))
         expected = {'cidr': '172.16.77.240/24',
+                    'broadcast': '172.16.77.255',
                     'dadfailed': False,
                     'dynamic': False,
                     'name': 'eth0',
@@ -1666,7 +1708,7 @@ class TestIpNeighCommand(TestIPCmdBase):
             family=2,
             ifindex=1)
 
-    @mock.patch.object(priv_lib, '_run_iproute')
+    @mock.patch.object(priv_lib, '_run_iproute_neigh')
     def test_delete_entry_not_exist(self, mock_run_iproute):
         # trying to delete a non-existent entry shouldn't raise an error
         mock_run_iproute.side_effect = NetlinkError(errno.ENOENT, None)

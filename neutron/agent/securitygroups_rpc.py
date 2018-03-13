@@ -17,13 +17,11 @@
 
 import functools
 
-from debtcollector import moves
 from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging
 
 from neutron.agent import firewall
-from neutron.api.rpc.handlers import securitygroups_rpc
 from neutron.conf.agent import securitygroups_rpc as sc_cfg
 
 
@@ -59,6 +57,20 @@ class SecurityGroupAgentRpc(object):
         self.context = context
         self.plugin_rpc = plugin_rpc
         self.init_firewall(defer_refresh_firewall, integration_bridge)
+
+    def _get_trusted_devices(self, device_ids, devices):
+        trusted_devices = []
+        # Devices which are already added in firewall ports should
+        # not be treated as trusted devices but as regular ports
+        all_devices = devices.copy()
+        all_devices.update(self.firewall.ports)
+        device_names = [
+            dev['device'] for dev in all_devices.values()]
+        for device_id in device_ids:
+            if (device_id not in all_devices.keys() and
+                    device_id not in device_names):
+                trusted_devices.append(device_id)
+        return trusted_devices
 
     def init_firewall(self, defer_refresh_firewall=False,
                       integration_bridge=None):
@@ -129,7 +141,7 @@ class SecurityGroupAgentRpc(object):
         else:
             devices = self.plugin_rpc.security_group_rules_for_devices(
                 self.context, list(device_ids))
-        trusted_devices = list(set(device_ids) - set(devices.keys()))
+        trusted_devices = self._get_trusted_devices(device_ids, devices)
 
         with self.firewall.defer_apply():
             if self.use_enhanced_rpc:
@@ -256,26 +268,3 @@ class SecurityGroupAgentRpc(object):
                 LOG.debug("Refreshing firewall for %d devices",
                           len(updated_devices))
                 self.refresh_firewall(updated_devices)
-
-
-# TODO(armax): For bw compat with external dependencies; to be dropped in P.
-# NOTE(dasm): Should be already removed, but didn't have  DeprecationWarning.
-SG_RPC_VERSION = moves.moved_function(
-    securitygroups_rpc.SecurityGroupAgentRpcApiMixin.SG_RPC_VERSION,
-    'SG_RPC_VERSION', __name__, version='Liberty', removal_version='Pike'
-)
-SecurityGroupServerRpcApi = moves.moved_class(
-    securitygroups_rpc.SecurityGroupServerRpcApi,
-    'SecurityGroupServerRpcApi', old_module_name=__name__, version='Liberty',
-    removal_version='Pike'
-)
-SecurityGroupAgentRpcApiMixin = moves.moved_class(
-    securitygroups_rpc.SecurityGroupAgentRpcApiMixin,
-    'SecurityGroupAgentRpcApiMixin', old_module_name=__name__,
-    version='Liberty', removal_version='Pike'
-)
-SecurityGroupAgentRpcCallbackMixin = moves.moved_class(
-    securitygroups_rpc.SecurityGroupAgentRpcCallbackMixin,
-    'SecurityGroupAgentRpcCallbackMixin', old_module_name=__name__,
-    version='Liberty', removal_version='Pike'
-)
