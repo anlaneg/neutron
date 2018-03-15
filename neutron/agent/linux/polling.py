@@ -43,6 +43,7 @@ def get_polling_manager(minimize_polling=False,
             pm.stop()
 
 
+#监控ovsdb
 class InterfacePollingMinimizer(base_polling.BasePollingManager):
     """Monitors ovsdb to determine when polling is required."""
 

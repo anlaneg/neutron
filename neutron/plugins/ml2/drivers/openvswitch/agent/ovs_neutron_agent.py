@@ -164,7 +164,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         host = self.conf.host
         self.agent_id = 'ovs-agent-%s' % host
 
-        #依据配置获知，是否启用了隧道
+        #依据配置获知，是否启用了隧道(如果设置了隧道类型就可以了隧道）
         self.enable_tunneling = bool(self.tunnel_types)
 
         # Validate agent configurations
@@ -2187,8 +2187,9 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     # case resync would be needed, and then clear
                     # self.updated_ports. As the greenthread should not yield
                     # between these two statements, this will be thread-safe
+                    #收到port update事件的port
                     updated_ports_copy = self.updated_ports
-                    self.updated_ports = set()
+                    self.updated_ports = set() #将此置为空
                     (port_info, ancillary_port_info, consecutive_resyncs,
                      ports_not_ready_yet) = (self.process_port_info(
                             start, polling_manager, sync, ovs_restarted,
@@ -2266,11 +2267,13 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             self.rpc_loop(polling_manager=pm)
 
     def _handle_sigterm(self, signum, frame):
+        #标记收到terminal信号
         self.catch_sigterm = True
         if self.quitting_rpc_timeout:
             LOG.info(
                 'SIGTERM received, capping RPC timeout by %d seconds.',
                 self.quitting_rpc_timeout)
+            #设置超时时间
             self.set_rpc_timeout(self.quitting_rpc_timeout)
 
     def _handle_sighup(self, signum, frame):
@@ -2340,6 +2343,7 @@ def prepare_xen_compute():
 
 def main(bridge_classes):
     prepare_xen_compute()
+    #注册回调，确保在Agent启动后进行处理
     ovs_capabilities.register()
     ext_manager.register_opts(cfg.CONF)
 

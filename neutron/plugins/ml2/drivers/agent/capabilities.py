@@ -17,6 +17,7 @@ from neutron_lib.callbacks import registry
 
 def notify_init_event(agent_type, agent):
     """Notify init event for the specified agent."""
+    #对外触发事件AFTER_INIT
     registry.publish(agent_type, events.AFTER_INIT, agent)
 
 
@@ -26,4 +27,5 @@ def register(callback, agent_type):
     :param agent_type: an agent type as defined in neutron_lib.constants.
     :param callback: a callback that can process the agent init event.
     """
+    #注册对AFTER_INIT事件的处理
     registry.subscribe(callback, agent_type, events.AFTER_INIT)
