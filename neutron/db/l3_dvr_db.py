@@ -107,42 +107,46 @@ class DVRResourceOperationHandler(object):
         return True
 
     @registry.receives(resources.ROUTER, [events.PRECOMMIT_UPDATE])
-    def _handle_distributed_migration(self, resource, event, trigger, context,
-                                      router_id, router, router_db, old_router,
-                                      **kwargs):
+    def _handle_distributed_migration(self, resource, event,
+                                      trigger, payload=None):
         """Event handler for router update migration to distributed."""
-        if not self._validate_router_migration(context, router_db, router):
+        if not self._validate_router_migration(
+                payload.context, payload.desired_state,
+                payload.request_body):
             return
 
         migrating_to_distributed = (
-            not router_db.extra_attributes.distributed and
-            router.get('distributed') is True)
+            not payload.desired_state.extra_attributes.distributed and
+            payload.request_body.get('distributed') is True)
 
         if migrating_to_distributed:
-            if old_router['ha']:
+            if payload.states[0]['ha']:
                 old_owner = const.DEVICE_OWNER_HA_REPLICATED_INT
             else:
                 old_owner = const.DEVICE_OWNER_ROUTER_INTF
             self.l3plugin._migrate_router_ports(
-                context, router_db,
+                payload.context, payload.desired_state,
                 old_owner=old_owner,
                 new_owner=const.DEVICE_OWNER_DVR_INTERFACE)
         else:
-            if router.get('ha'):
+            if payload.request_body.get('ha'):
                 new_owner = const.DEVICE_OWNER_HA_REPLICATED_INT
             else:
                 new_owner = const.DEVICE_OWNER_ROUTER_INTF
             self.l3plugin._migrate_router_ports(
-                context, router_db,
+                payload.context, payload.desired_state,
                 old_owner=const.DEVICE_OWNER_DVR_INTERFACE,
                 new_owner=new_owner)
 
         cur_agents = self.l3plugin.list_l3_agents_hosting_router(
-            context, router_db['id'])['agents']
+            payload.context, payload.resource_id)['agents']
         for agent in cur_agents:
-            self.l3plugin._unbind_router(context, router_db['id'], agent['id'])
+            self.l3plugin._unbind_router(
+                payload.context, payload.resource_id,
+                agent['id'])
         self.l3plugin.set_extra_attr_value(
-            context, router_db, 'distributed', migrating_to_distributed)
+            payload.context, payload.desired_state,
+            'distributed', migrating_to_distributed)
 
     @registry.receives(resources.ROUTER, [events.AFTER_UPDATE])
     def _delete_snat_interfaces_after_change(self, resource, event, trigger,
@@ -903,7 +907,7 @@ class _DVRAgentInterfaceMixin(object):
                 return f_port
 
     def _generate_arp_table_and_notify_agent(
-        self, context, fixed_ip, mac_address, notifier):
+        self, context, fixed_ip, mac_address, notifier, nud_state='permanent'):
         """Generates the arp table entry and notifies the l3 agent."""
         ip_address = fixed_ip['ip_address']
         subnet = fixed_ip['subnet_id']
@@ -915,7 +919,8 @@ class _DVRAgentInterfaceMixin(object):
             return
         arp_table = {'ip_address': ip_address,
                      'mac_address': mac_address,
-                     'subnet_id': subnet}
+                     'subnet_id': subnet,
+                     'nud_state': nud_state}
         notifier(context, router_id, arp_table)
 
     def _get_subnet_id_for_given_fixed_ip(
@@ -959,11 +964,14 @@ class _DVRAgentInterfaceMixin(object):
             return
         allowed_address_pair_fixed_ips = (
             self._get_allowed_address_pair_fixed_ips(context, port_dict))
-        changed_fixed_ips = fixed_ips + allowed_address_pair_fixed_ips
-        for fixed_ip in changed_fixed_ips:
+        for fixed_ip in fixed_ips:
             self._generate_arp_table_and_notify_agent(
                 context, fixed_ip, port_dict['mac_address'],
                 self.l3_rpc_notifier.add_arp_entry)
+        for fixed_ip in allowed_address_pair_fixed_ips:
+            self._generate_arp_table_and_notify_agent(
+                context, fixed_ip, port_dict['mac_address'],
+                self.l3_rpc_notifier.add_arp_entry, nud_state='reachable')
 
     def delete_arp_entry_for_dvr_service_port(
         self, context, port_dict, fixed_ips_to_delete=None):

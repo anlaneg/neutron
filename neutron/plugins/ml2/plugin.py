@@ -15,6 +15,7 @@
 #    under the License.
 
 from eventlet import greenthread
+from neutron_lib.agent import topics
 from neutron_lib.api.definitions import allowedaddresspairs as addr_apidef
 from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
@@ -25,6 +26,7 @@ from neutron_lib.api.definitions import port_security as psec
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import subnet as subnet_def
 from neutron_lib.api.definitions import vlantransparent as vlan_apidef
+from neutron_lib.api import extensions
 from neutron_lib.api import validators
 from neutron_lib.api.validators import availability_zone as az_validator
 from neutron_lib.callbacks import events
@@ -61,7 +63,6 @@ from neutron.api.rpc.handlers import resources_rpc
 from neutron.api.rpc.handlers import securitygroups_rpc
 from neutron.common import constants as n_const
 from neutron.common import rpc as n_rpc
-from neutron.common import topics
 from neutron.common import utils
 from neutron.db import _model_query as model_query
 from neutron.db import _resource_extend as resource_extend
@@ -838,7 +839,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             self.type_manager.extend_network_dict_provider(context, result)
 
             # Update the transparent vlan if configured
-            if utils.is_extension_supported(self, 'vlan-transparent'):
+            if extensions.is_extension_supported(self, 'vlan-transparent'):
                 vlt = vlan_apidef.get_vlan_transparent(net_data)
                 net_db['vlan_transparent'] = vlt
                 result['vlan_transparent'] = vlt
@@ -932,11 +933,12 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             self.type_manager.extend_network_dict_provider(
                 context, updated_network)
 
-            kwargs = {'context': context, 'network': updated_network,
-                      'original_network': original_network,
-                      'request': net_data}
-            registry.notify(
-                resources.NETWORK, events.PRECOMMIT_UPDATE, self, **kwargs)
+            registry.publish(resources.NETWORK, events.PRECOMMIT_UPDATE, self,
+                             payload=events.DBEventPayload(
+                                 context, request_body=net_data,
+                                 states=(original_network,),
+                                 resource_id=id,
+                                 desired_state=updated_network))
 
             # TODO(QoS): Move out to the extension framework somehow.
             need_network_update_notify |= (
@@ -1322,7 +1324,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             raise psec_exc.PortSecurityAndIPRequiredForSecurityGroups()
         elif (not
           self._check_update_deletes_security_groups(port)):
-            if not utils.is_extension_supported(self, 'security-group'):
+            if not extensions.is_extension_supported(self, 'security-group'):
                 return
             # Update did not have security groups passed in. Check
             # that port does not have any security groups already on it.
@@ -1396,13 +1398,11 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             need_port_update_notify |= self._process_port_binding(
                 mech_context, attrs)
 
-            kwargs = {
-                'context': context,
-                'port': updated_port,
-                'original_port': original_port,
-            }
-            registry.notify(
-                resources.PORT, events.PRECOMMIT_UPDATE, self, **kwargs)
+            registry.publish(
+                resources.PORT, events.PRECOMMIT_UPDATE, self,
+                payload=events.DBEventPayload(
+                    context, request_body=attrs, states=(original_port,),
+                    resource_id=id, desired_state=updated_port))
 
             # For DVR router interface ports we need to retrieve the
             # DVRPortbinding context instead of the normal port context.

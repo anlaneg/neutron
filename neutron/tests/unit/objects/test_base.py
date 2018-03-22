@@ -91,6 +91,30 @@ class FakeSmallNeutronObject(base.NeutronDbObject):
 
 
 @base.NeutronObjectRegistry.register_if(False)
+class FakeSmallNeutronObjectNewEngineFacade(base.NeutronDbObject):
+    # Version 1.0: Initial version
+    VERSION = '1.0'
+
+    db_model = ObjectFieldsModel
+
+    new_facade = True
+
+    primary_keys = ['field1']
+
+    foreign_keys = {
+        'FakeNeutronObjectCompositePrimaryKeyWithId': {'field1': 'id'},
+        'FakeNeutronDbObject': {'field2': 'id'},
+        'FakeNeutronObjectUniqueKey': {'field3': 'id'},
+    }
+
+    fields = {
+        'field1': common_types.UUIDField(),
+        'field2': common_types.UUIDField(),
+        'field3': common_types.UUIDField(),
+    }
+
+
+@base.NeutronObjectRegistry.register_if(False)
 class FakeSmallNeutronObjectWithMultipleParents(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
@@ -695,6 +719,22 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
         mock.patch.object(self.context.session, 'refresh').start()
         mock.patch.object(self.context.session, 'expunge').start()
 
+        # don't validate expunge in tests that don't touch database and use
+        # new reader engine facade
+        self.reader_facade_mock = mock.patch.object(
+            self._test_class, 'db_context_reader').start()
+        mock.patch.object(self.reader_facade_mock.return_value.session,
+                          'expunge').start()
+
+        # don't validate refresh and expunge in tests that don't touch database
+        # and use new writer engine facade
+        self.writer_facade_mock = mock.patch.object(
+            self._test_class, 'db_context_writer').start()
+        mock.patch.object(self.writer_facade_mock.return_value.session,
+                          'expunge').start()
+        mock.patch.object(self.writer_facade_mock.return_value.session,
+                          'refresh').start()
+
         self.get_objects_mock = mock.patch.object(
             obj_db_api, 'get_objects',
             side_effect=self.fake_get_objects).start()
@@ -1237,6 +1277,11 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
 class BaseDbObjectNonStandardPrimaryKeyTestCase(BaseObjectIfaceTestCase):
 
     _test_class = FakeNeutronObjectNonStandardPrimaryKey
+
+
+class BaseDbObjectNewEngineFacade(BaseObjectIfaceTestCase):
+
+    _test_class = FakeSmallNeutronObjectNewEngineFacade
 
 
 class BaseDbObjectCompositePrimaryKeyTestCase(BaseObjectIfaceTestCase):

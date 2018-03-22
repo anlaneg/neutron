@@ -12,6 +12,8 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+from neutron_lib.agent import topics
+from neutron_lib.api import extensions
 from neutron_lib import constants
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
@@ -19,8 +21,6 @@ from oslo_log import log as logging
 import oslo_messaging
 
 from neutron.common import rpc as n_rpc
-from neutron.common import topics
-from neutron.common import utils
 from neutron.db import agentschedulers_db
 
 LOG = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ class MeteringAgentNotifyAPI(object):
     def _notification(self, context, method, routers):
         """Notify all the agents that are hosting the routers."""
         plugin = directory.get_plugin(plugin_constants.L3)
-        if utils.is_extension_supported(
+        if extensions.is_extension_supported(
             plugin, constants.L3_AGENT_SCHEDULER_EXT_ALIAS):
             self._agent_notification(context, method, routers)
         else:

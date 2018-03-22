@@ -112,6 +112,14 @@ def unstable_test(reason):
     return decor
 
 
+def get_rootwrap_cmd():
+    return os.environ.get('OS_ROOTWRAP_CMD', SUDO_CMD)
+
+
+def get_rootwrap_daemon_cmd():
+    return os.environ.get('OS_ROOTWRAP_DAEMON_CMD')
+
+
 class AttributeDict(dict):
 
     """
@@ -384,9 +392,6 @@ class BaseTestCase(DietTestCase):
         self.messaging_conf.response_timeout = 0
         self.useFixture(self.messaging_conf)
 
-        self.addCleanup(n_rpc.clear_extra_exmods)
-        n_rpc.add_extra_exmods('neutron.test')
-
         self.addCleanup(n_rpc.cleanup)
         n_rpc.init(CONF)
 
@@ -427,10 +432,9 @@ class BaseTestCase(DietTestCase):
     def setup_rootwrap(self):
         agent_config.register_root_helper(cfg.CONF)
         self.config(group='AGENT',
-                    root_helper=os.environ.get('OS_ROOTWRAP_CMD', SUDO_CMD))
+                    root_helper=get_rootwrap_cmd())
         self.config(group='AGENT',
-                    root_helper_daemon=os.environ.get(
-                        'OS_ROOTWRAP_DAEMON_CMD'))
+                    root_helper_daemon=get_rootwrap_daemon_cmd())
 
 
 class PluginFixture(fixtures.Fixture):

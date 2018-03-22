@@ -15,6 +15,7 @@
 
 import sys
 
+import netaddr
 from neutron_lib import constants as n_const
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -202,7 +203,9 @@ class OVSDVRNeutronAgent(object):
                 LOG.debug("L2 Agent DVR: Received response for "
                           "get_dvr_mac_address_by_host() from "
                           "plugin: %r", details)
-                self.dvr_mac_address = details['mac_address']
+                self.dvr_mac_address = (
+                    netaddr.EUI(details['mac_address'],
+                    dialect=netaddr.mac_unix_expanded))
                 return
 
     def setup_dvr_flows_on_integ_br(self):
@@ -321,10 +324,12 @@ class OVSDVRNeutronAgent(object):
         dvr_macs = self.plugin_rpc.get_dvr_mac_address_list(self.context)
         LOG.debug("L2 Agent DVR: Received these MACs: %r", dvr_macs)
         for mac in dvr_macs:
-            if mac['mac_address'] == self.dvr_mac_address:
+            c_mac = netaddr.EUI(mac['mac_address'],
+                                dialect=netaddr.mac_unix_expanded)
+            if c_mac == self.dvr_mac_address:
                 continue
             #添加dvr mac地址
-            self._add_dvr_mac(mac['mac_address'])
+            self._add_dvr_mac(c_mac)
 
     # 处理dvr mac地址更新
     def dvr_mac_address_update(self, dvr_macs):
@@ -335,9 +340,11 @@ class OVSDVRNeutronAgent(object):
 
         dvr_host_macs = set()
         for entry in dvr_macs:
-            if entry['mac_address'] == self.dvr_mac_address:
+            e_mac = netaddr.EUI(entry['mac_address'],
+                                dialect=netaddr.mac_unix_expanded)
+            if e_mac == self.dvr_mac_address:
                 continue
-            dvr_host_macs.add(entry['mac_address'])
+            dvr_host_macs.add(e_mac)
 
         if dvr_host_macs == self.registered_dvr_macs:
             LOG.debug("DVR Mac address already up to date")
@@ -436,16 +443,27 @@ class OVSDVRNeutronAgent(object):
             br = self.tun_br
         # TODO(vivek) remove the IPv6 related flows once SNAT is not
         # used for IPv6 DVR.
-        if ip_version == 4:
-            if subnet_info['gateway_ip']:
-                br.install_dvr_process_ipv4(
-                    vlan_tag=lvm.vlan, gateway_ip=subnet_info['gateway_ip'])
+        port_net_info = (
+            self.plugin_rpc.get_network_info_for_id(
+                self.context, subnet_info.get('network_id')))
+        net_shared_only = (
+            port_net_info[0]['shared'] and
+            not port_net_info[0]['router:external'])
+        if net_shared_only:
+            LOG.debug("Not applying DVR rules to tunnel bridge because %s "
+                      "is a shared network", subnet_info.get('network_id'))
         else:
-            br.install_dvr_process_ipv6(
-                vlan_tag=lvm.vlan, gateway_mac=subnet_info['gateway_mac'])
-        br.install_dvr_process(
-            vlan_tag=lvm.vlan, vif_mac=port.vif_mac,
-            dvr_mac_address=self.dvr_mac_address)
+            if ip_version == 4:
+                if subnet_info['gateway_ip']:
+                    br.install_dvr_process_ipv4(
+                        vlan_tag=lvm.vlan,
+                        gateway_ip=subnet_info['gateway_ip'])
+            else:
+                br.install_dvr_process_ipv6(
+                    vlan_tag=lvm.vlan, gateway_mac=subnet_info['gateway_mac'])
+            br.install_dvr_process(
+                vlan_tag=lvm.vlan, vif_mac=port.vif_mac,
+                dvr_mac_address=self.dvr_mac_address)
 
         # the dvr router interface is itself a port, so capture it
         # queue this subnet to that port. A subnet appears only once as

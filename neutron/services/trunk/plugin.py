@@ -245,14 +245,17 @@ class TrunkPlugin(service_base.ServicePluginBase,
             # these are DB properties only.
             trunk_obj.update_fields(trunk_data, reset_changes=True)
             trunk_obj.update()
-            payload = callbacks.TrunkPayload(context, trunk_id,
-                                             original_trunk=original_trunk,
-                                             current_trunk=trunk_obj)
-            registry.notify(constants.TRUNK, events.PRECOMMIT_UPDATE, self,
-                            payload=payload)
+            payload = events.DBEventPayload(
+                context, resource_id=trunk_id, states=(original_trunk,),
+                desired_state=trunk_obj, request_body=trunk_data)
+            registry.publish(constants.TRUNK, events.PRECOMMIT_UPDATE, self,
+                             payload=payload)
         #触发trunk的更新事件
         registry.notify(constants.TRUNK, events.AFTER_UPDATE, self,
-                        payload=payload)
+                        payload=callbacks.TrunkPayload(
+                            context, trunk_id,
+                            original_trunk=original_trunk,
+                            current_trunk=trunk_obj))
         return trunk_obj
 
     def delete_trunk(self, context, trunk_id):

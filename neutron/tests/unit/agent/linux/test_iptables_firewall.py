@@ -1080,6 +1080,68 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
         ingress = None
         self._test_prepare_port_filter(rule, ingress, egress)
 
+    def _test_process_trusted_ports(self, configured):
+        port = self._fake_port()
+        port['id'] = 'tapfake_dev'
+
+        calls = [
+            mock.call.add_chain('sg-fallback'),
+            mock.call.add_rule('sg-fallback',
+                               '-j DROP', comment=ic.UNMATCH_DROP)]
+
+        if configured:
+            self.firewall.trusted_ports.append(port['id'])
+        else:
+            calls.append(
+                mock.call.add_rule('FORWARD',
+                                   '-m physdev --physdev-out tapfake_dev '
+                                   '--physdev-is-bridged '
+                                   '-j ACCEPT', comment=ic.TRUSTED_ACCEPT))
+        filter_inst = self.v4filter_inst
+        self.firewall.process_trusted_ports([port['id']])
+
+        comb = zip(calls, filter_inst.mock_calls)
+        for (l, r) in comb:
+            self.assertEqual(l, r)
+        filter_inst.assert_has_calls(calls)
+        self.assertIn(port['id'], self.firewall.trusted_ports)
+
+    def test_process_trusted_ports(self):
+        self._test_process_trusted_ports(False)
+
+    def test_process_trusted_ports_already_configured(self):
+        self._test_process_trusted_ports(True)
+
+    def _test_remove_trusted_ports(self, configured):
+        port = self._fake_port()
+        port['id'] = 'tapfake_dev'
+
+        calls = [
+            mock.call.add_chain('sg-fallback'),
+            mock.call.add_rule('sg-fallback',
+                               '-j DROP', comment=ic.UNMATCH_DROP)]
+
+        if configured:
+            self.firewall.trusted_ports.append(port['id'])
+            calls.append(
+                mock.call.remove_rule('FORWARD',
+                                      '-m physdev --physdev-out tapfake_dev '
+                                      '--physdev-is-bridged -j ACCEPT'))
+        filter_inst = self.v4filter_inst
+        self.firewall.remove_trusted_ports([port['id']])
+
+        comb = zip(calls, filter_inst.mock_calls)
+        for (l, r) in comb:
+            self.assertEqual(l, r)
+        filter_inst.assert_has_calls(calls)
+        self.assertNotIn(port['id'], self.firewall.trusted_ports)
+
+    def test_remove_trusted_ports(self):
+        self._test_remove_trusted_ports(True)
+
+    def test_process_remove_ports_not_configured(self):
+        self._test_remove_trusted_ports(False)
+
     def _test_prepare_port_filter(self,
                                   rule,
                                   ingress_expected_call=None,
@@ -1249,7 +1311,8 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
                 self.assertFalse(self.utils_exec.called)
                 return
             # process conntrack updates in the queue
-            self.firewall.ipconntrack._process_queue()
+            while not self.firewall.ipconntrack._queue.empty():
+                self.firewall.ipconntrack._process_queue()
             cmd = ['conntrack', '-D']
             if protocol:
                 cmd.extend(['-p', protocol])
@@ -1339,7 +1402,8 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
                 self.assertFalse(self.utils_exec.called)
                 return
             # process conntrack updates in the queue
-            self.firewall.ipconntrack._process_queue()
+            while not self.firewall.ipconntrack._queue.empty():
+                self.firewall.ipconntrack._process_queue()
             calls = self._get_expected_conntrack_calls(
                 [('ipv4', '10.0.0.1'), ('ipv6', 'fe80::1')], ct_zone)
             self.utils_exec.assert_has_calls(calls)
@@ -1404,7 +1468,8 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
                    "ipv6": ['fe80::1', 'fe80::2']}
             calls = []
             # process conntrack updates in the queue
-            self.firewall.ipconntrack._process_queue()
+            while not self.firewall.ipconntrack._queue.empty():
+                self.firewall.ipconntrack._process_queue()
             for direction in ['ingress', 'egress']:
                 direction = '-d' if direction == 'ingress' else '-s'
                 remote_ip_direction = '-s' if direction == '-d' else '-d'
@@ -1650,7 +1715,8 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
             self.assertFalse(self.utils_exec.called)
             return
         # process conntrack updates in the queue
-        self.firewall.ipconntrack._process_queue()
+        while not self.firewall.ipconntrack._queue.empty():
+            self.firewall.ipconntrack._process_queue()
         calls = self._get_expected_conntrack_calls(
             [('ipv4', '10.0.0.1'), ('ipv6', 'fe80::1')], ct_zone)
         self.utils_exec.assert_has_calls(calls)

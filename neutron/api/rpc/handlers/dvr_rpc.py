@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.agent import topics
 from neutron_lib.plugins import directory
 from oslo_log import helpers as log_helpers
 from oslo_log import log as logging
@@ -20,7 +21,6 @@ import oslo_messaging
 
 from neutron.common import constants
 from neutron.common import rpc as n_rpc
-from neutron.common import topics
 
 LOG = logging.getLogger(__name__)
 
@@ -58,6 +58,13 @@ class DVRServerRpcApi(object):
         cctxt = self.client.prepare()
         return cctxt.call(context, 'get_ports_on_host_by_subnet',
                           host=host, subnet=subnet)
+
+    @log_helpers.log_method_call
+    def get_network_info_for_id(self, context, network_id):
+        """Get network info for DVR router ports."""
+        cctxt = self.client.prepare()
+        return cctxt.call(context, 'get_network_info_for_id',
+                          network_id=network_id)
 
     @log_helpers.log_method_call
     def get_subnet_for_dvr(self, context, subnet, fixed_ips):
@@ -104,6 +111,13 @@ class DVRServerRpcCallback(object):
         LOG.debug("DVR Agent requests list of VM ports on host %s", host)
         return self.plugin.get_ports_on_host_by_subnet(context,
             host, subnet)
+
+    def get_network_info_for_id(self, context, **kwargs):
+        """Get network info for DVR port."""
+        network_id = kwargs.get('network_id')
+        LOG.debug("DVR Agent requests network info for id %s", network_id)
+        net_filter = {'id': [network_id]}
+        return self.plugin.get_networks(context, filters=net_filter)
 
     def get_subnet_for_dvr(self, context, **kwargs):
         fixed_ips = kwargs.get('fixed_ips')

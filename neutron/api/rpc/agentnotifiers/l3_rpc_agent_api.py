@@ -16,6 +16,8 @@
 
 import random
 
+from neutron_lib.agent import topics
+from neutron_lib.api import extensions
 from neutron_lib import constants
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
@@ -24,8 +26,6 @@ import oslo_messaging
 
 from neutron.api.rpc.agentnotifiers import utils as ag_utils
 from neutron.common import rpc as n_rpc
-from neutron.common import topics
-from neutron.common import utils
 
 
 LOG = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ class L3AgentNotifyAPI(object):
             LOG.error('No plugin for L3 routing registered. Cannot notify '
                       'agents with the message %s', method)
             return
-        if utils.is_extension_supported(
+        if extensions.is_extension_supported(
                 plugin, constants.L3_AGENT_SCHEDULER_EXT_ALIAS):
             adminContext = (context.is_admin and
                             context or context.elevated())

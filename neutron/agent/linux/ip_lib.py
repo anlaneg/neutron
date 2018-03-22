@@ -168,10 +168,14 @@ class IPWrapper(SubProcessBase):
             return IPDevice(devices[0]['name'], namespace=self.namespace)
 
     def add_tuntap(self, name, mode='tap'):
-        self._as_root([], 'tuntap', ('add', name, 'mode', mode))
+        privileged.create_interface(
+            name, self.namespace, "tuntap", mode=mode)
         return IPDevice(name, namespace=self.namespace)
 
     def add_veth(self, name1, name2, namespace2=None):
+        # TODO(slaweq): switch to pyroute2 when issue
+        # https://github.com/svinota/pyroute2/issues/463
+        # will be closed
         args = ['add', name1, 'type', 'veth', 'peer', 'name', name2]
 
         if namespace2 is None:
@@ -186,18 +190,20 @@ class IPWrapper(SubProcessBase):
                 IPDevice(name2, namespace=namespace2))
 
     def add_macvtap(self, name, src_dev, mode='bridge'):
-        args = ['add', 'link', src_dev, 'name', name, 'type', 'macvtap',
-                'mode', mode]
-        self._as_root([], 'link', tuple(args))
+        privileged.create_interface(name,
+                                    self.namespace,
+                                    "macvtap",
+                                    physical_interface=src_dev,
+                                    mode=mode)
         return IPDevice(name, namespace=self.namespace)
 
     def del_veth(self, name):
         """Delete a virtual interface between two namespaces."""
-        self._as_root([], 'link', ('del', name))
+        privileged.delete_interface(name, self.namespace)
 
     def add_dummy(self, name):
         """Create a Linux dummy interface with the given name."""
-        self._as_root([], 'link', ('add', name, 'type', 'dummy'))
+        privileged.create_interface(name, self.namespace, "dummy")
         return IPDevice(name, namespace=self.namespace)
 
     #创建namespace，并创建loopback口
@@ -226,35 +232,37 @@ class IPWrapper(SubProcessBase):
             device.link.set_netns(self.namespace)
 
     def add_vlan(self, name, physical_interface, vlan_id):
-        cmd = ['add', 'link', physical_interface, 'name', name,
-               'type', 'vlan', 'id', vlan_id]
-        self._as_root([], 'link', cmd)
+        privileged.create_interface(name,
+                                    self.namespace,
+                                    "vlan",
+                                    physical_interface=physical_interface,
+                                    vlan_id=vlan_id)
         return IPDevice(name, namespace=self.namespace)
 
     def add_vxlan(self, name, vni, group=None, dev=None, ttl=None, tos=None,
                   local=None, srcport=None, dstport=None, proxy=False):
-        cmd = ['add', name, 'type', 'vxlan', 'id', vni]
+        kwargs = {'vxlan_id': vni}
         if group:
-            cmd.extend(['group', group])
+            kwargs['vxlan_group'] = group
         if dev:
-            cmd.extend(['dev', dev])
+            kwargs['physical_interface'] = dev
         if ttl:
-            cmd.extend(['ttl', ttl])
+            kwargs['vxlan_ttl'] = ttl
         if tos:
-            cmd.extend(['tos', tos])
+            kwargs['vxlan_tos'] = tos
         if local:
-            cmd.extend(['local', local])
+            kwargs['vxlan_local'] = local
         if proxy:
-            cmd.append('proxy')
+            kwargs['vxlan_proxy'] = proxy
         # tuple: min,max
         if srcport:
             if len(srcport) == 2 and srcport[0] <= srcport[1]:
-                cmd.extend(['srcport', str(srcport[0]), str(srcport[1])])
+                kwargs['vxlan_port_range'] = (str(srcport[0]), str(srcport[1]))
             else:
                 raise n_exc.NetworkVxlanPortRangeError(vxlan_range=srcport)
         if dstport:
-            cmd.extend(['dstport', str(dstport)])
-        self._as_root([], 'link', cmd)
+            kwargs['vxlan_port'] = str(dstport)
+        privileged.create_interface(name, self.namespace, "vxlan", **kwargs)
         return (IPDevice(name, namespace=self.namespace))
 
     @removals.remove(version='Queens', removal_version='Rocky',
@@ -288,15 +296,7 @@ class IPDevice(SubProcessBase):
 
     def exists(self):
         """Return True if the device exists in the namespace."""
-        # we must save and restore this before returning
-        orig_log_fail_as_error = self.get_log_fail_as_error()
-        self.set_log_fail_as_error(False)
-        try:
-            return bool(self.link.address)
-        except RuntimeError:
-            return False
-        finally:
-            self.set_log_fail_as_error(orig_log_fail_as_error)
+        return privileged.interface_exists(self.name, self.namespace)
 
     def delete_addr_and_conntrack_state(self, cidr):
         """Delete an address along with its conntrack state
@@ -583,15 +583,14 @@ class IpAddrCommand(IpDeviceCommandBase):
     COMMAND = 'addr'
 
     def add(self, cidr, scope='global', add_broadcast=True):
-        add_ip_address(self.name, self._parent.namespace, cidr, scope,
+        add_ip_address(cidr, self.name, self._parent.namespace, scope,
                        add_broadcast)
 
     def delete(self, cidr):
-        delete_ip_address(self.name, self._parent.namespace, cidr)
+        delete_ip_address(cidr, self.name, self._parent.namespace)
 
     def flush(self, ip_version):
-        flush_ip_addresses(
-            self.name, self._parent.namespace, ip_version)
+        flush_ip_addresses(ip_version, self.name, self._parent.namespace)
 
     def get_devices_with_ip(self, name=None, scope=None, to=None,
                             filters=None, ip_version=None):
@@ -958,8 +957,16 @@ NetworkNamespaceNotFound = privileged.NetworkNamespaceNotFound
 NetworkInterfaceNotFound = privileged.NetworkInterfaceNotFound
 
 
-def add_ip_address(device, namespace, cidr, scope='global',
+def add_ip_address(cidr, device, namespace=None, scope='global',
                    add_broadcast=True):
+    """Add an IP address.
+
+    :param cidr: IP address to add, in CIDR notation
+    :param device: Device name to use in adding address
+    :param namespace: The name of the namespace in which to add the address
+    :param scope: scope of address being added
+    :param add_broadcast: should broadcast address be added
+    """
     net = netaddr.IPNetwork(cidr)
     broadcast = None
     if add_broadcast and net.version == 4:
@@ -971,15 +978,26 @@ def add_ip_address(device, namespace, cidr, scope='global',
         device, namespace, scope, broadcast)
 
 
-def delete_ip_address(device, namespace, cidr):
+def delete_ip_address(cidr, device, namespace=None):
+    """Delete an IP address.
+
+    :param cidr: IP address to delete, in CIDR notation
+    :param device: Device name to use in deleting address
+    :param namespace: The name of the namespace in which to delete the address
+    """
     net = netaddr.IPNetwork(cidr)
     privileged.delete_ip_address(
         net.version, str(net.ip), net.prefixlen, device, namespace)
 
 
-def flush_ip_addresses(device, namespace, ip_version):
-    privileged.flush_ip_addresses(
-        ip_version, device, namespace)
+def flush_ip_addresses(ip_version, device, namespace=None):
+    """Flush all IP addresses.
+
+    :param ip_version: IP version of addresses to flush
+    :param device: Device name to use in flushing addresses
+    :param namespace: The name of the namespace in which to flush the addresses
+    """
+    privileged.flush_ip_addresses(ip_version, device, namespace)
 
 
 def get_routing_table(ip_version, namespace=None):
