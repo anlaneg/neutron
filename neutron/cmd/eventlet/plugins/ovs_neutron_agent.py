@@ -15,6 +15,6 @@
 
 import neutron.plugins.ml2.drivers.openvswitch.agent.main as agent_main
 
-
+#neutron ovs agent代码入口
 def main():
     agent_main.main()

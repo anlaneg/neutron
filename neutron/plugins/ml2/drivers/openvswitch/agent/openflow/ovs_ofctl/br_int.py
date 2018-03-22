@@ -63,6 +63,7 @@ class OVSIntegrationBridge(ovs_bridge.OVSAgentBridge):
             dl_vlan = 0xffff
         else:
             dl_vlan = segmentation_id
+        #添加vlan修改后，重查指定表的规则（用于将vlan替换）
         self.add_flow(priority=3,
                       in_port=port,
                       dl_vlan=dl_vlan,

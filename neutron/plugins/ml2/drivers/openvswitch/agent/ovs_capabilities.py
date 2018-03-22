@@ -20,4 +20,5 @@ from neutron.services.trunk.drivers.openvswitch.agent import driver
 def register():
     """Register OVS capabilities."""
     # Add capabilities to be loaded during agent initialization
+    #注册回调，以便在agent完成初始化后执行
     capabilities.register(driver.init_handler, constants.AGENT_TYPE_OVS)

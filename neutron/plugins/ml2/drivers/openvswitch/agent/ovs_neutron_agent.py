@@ -443,7 +443,9 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         # don't try to process removed ports as deleted ports since
         # they are already gone
         if 'removed' in port_info:
+            #自需要移除的集合中删除掉将删除的port
             self.deleted_ports -= port_info['removed']
+        #依次删除掉delete_ports集合中的port
         deleted_ports = list(self.deleted_ports)
         while self.deleted_ports:
             port_id = self.deleted_ports.pop()
@@ -458,6 +460,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 # don't log errors since there is a chance someone will be
                 # removing the port from the bridge at the same time
                 self.port_dead(port, log_errors=False)
+            #自bound中移除此port
             self.port_unbound(port_id)
         # Flush firewall rules after ports are put on dead VLAN to be
         # more secure
@@ -1004,6 +1007,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         if not lvm.vif_ports:
             self.reclaim_local_vlan(net_uuid)
 
+    #移除port
     def port_dead(self, port, log_errors=True):
         '''Once a port has no binding, put it on the "dead vlan".
 
@@ -1441,6 +1445,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
     def scan_ports(self, registered_ports, sync, updated_ports=None):
         #获取br-int中port的增删除改情况
+        
+        #查出int_br上所有接口，接口的数目
         cur_ports = self.int_br.get_vif_port_set()
         self.int_br_device_count = len(cur_ports)
         port_info = self._get_port_info(registered_ports, cur_ports, sync)
@@ -1896,6 +1902,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             return None
         return '%s-%s' % (network_type, remote_tunnel_hash)
 
+    #检查是否有外部更新（ovsdb,neutron通知，firewall_refresh)
     def _agent_has_updates(self, polling_manager):
         return (polling_manager.is_polling_required or
                 self.updated_ports or
@@ -1966,7 +1973,6 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         # AlwaysPoll used by windows implementations
         # REVISIT (rossella_s) This needs to be reworked to hide implementation
         # details regarding polling in BasePollingManager subclasses
-        # linux 系统'get_events'不为None,故相应分支linux不走
         if sync or not (hasattr(polling_manager, 'get_events')):
             if sync:
                 LOG.info("Agent out of sync with plugin!")
@@ -2197,6 +2203,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                             consecutive_resyncs, ports_not_ready_yet,
                             failed_devices, failed_ancillary_devices))
                     sync = False
+                    #移除port_info中的delete port
                     self.process_deleted_ports(port_info)
                     ofport_changed_ports = self.update_stale_ofport_rules()
                     if ofport_changed_ports:
@@ -2347,6 +2354,7 @@ def main(bridge_classes):
     ovs_capabilities.register()
     ext_manager.register_opts(cfg.CONF)
 
+    #为l2agent提供扩展管理功能，支持agent插件处理
     ext_mgr = ext_manager.L2AgentExtensionsManager(cfg.CONF)
 
     # now that all extensions registered their options, we can log them
@@ -2356,6 +2364,7 @@ def main(bridge_classes):
 
     try:
         agent = OVSNeutronAgent(bridge_classes, ext_mgr, cfg.CONF)
+        #触发agent初始化完成
         capabilities.notify_init_event(n_const.AGENT_TYPE_OVS, agent)
     except (RuntimeError, ValueError) as e:
         LOG.error("%s Agent terminated!", e)

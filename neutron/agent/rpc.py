@@ -135,11 +135,13 @@ class PluginApi(object):
             'get_devices_details_list_and_failed_devices',
             devices=devices, agent_id=agent_id, host=host)
 
+    #知会neutron device状态down
     def update_device_down(self, context, device, agent_id, host=None):
         cctxt = self.client.prepare()
         return cctxt.call(context, 'update_device_down', device=device,
                           agent_id=agent_id, host=host)
 
+    #知会neutron device状态up
     def update_device_up(self, context, device, agent_id, host=None):
         cctxt = self.client.prepare()
         return cctxt.call(context, 'update_device_up', device=device,
@@ -215,6 +217,7 @@ class CacheBackedPluginApi(PluginApi):
         result = {'devices': [], 'failed_devices': []}
         for device in devices:
             try:
+                #按个取每个device的详细情况
                 result['devices'].append(
                     self.get_device_details(context, device, agent_id, host))
             except Exception:
@@ -226,6 +229,7 @@ class CacheBackedPluginApi(PluginApi):
         port_obj = self.remote_resource_cache.get_resource_by_id(
             resources.PORT, device)
         if not port_obj:
+            #有缓存直接返回
             LOG.debug("Device %s does not exist in cache.", device)
             return {'device': device}
         if not port_obj.binding_levels:
@@ -268,5 +272,6 @@ class CacheBackedPluginApi(PluginApi):
         return entry
 
     def get_devices_details_list(self, context, devices, agent_id, host=None):
+        #返回请求的所有设备的详情
         return [self.get_device_details(context, device, agent_id, host)
                 for device in devices]

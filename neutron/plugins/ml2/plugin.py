@@ -960,6 +960,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         registry.notify(resources.NETWORK, events.AFTER_UPDATE, self, **kwargs)
         self.mechanism_manager.update_network_postcommit(mech_context)
         if need_network_update_notify:
+            #通知agent network更新
             self.notifier.network_update(context, updated_network)
         return updated_network
 

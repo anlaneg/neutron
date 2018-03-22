@@ -31,5 +31,5 @@ class OVSAgentBridge(ofswitch.OpenFlowSwitchMixin,
         self.del_controller()
 
     def drop_port(self, in_port):
-        #在０号表里下发in_port端口进来的报文为丢弃
+        #在０号表里下发in_port端口进来的报文为丢弃,优先级2
         self.install_drop(priority=2, in_port=in_port)

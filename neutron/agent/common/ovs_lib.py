@@ -393,6 +393,7 @@ class OVSBridge(BaseOVS):
                           self.br_name)
             raise RuntimeError('No datapath_id on bridge %s' % self.br_name)
 
+    #按action要求处理flow (支持del,mod,add)
     def do_action_flows(self, action, kwargs_list, use_bundle=False):
         # we can't mix strict and non-strict, so we'll use the first kw
         # and check against other kw being different
@@ -409,6 +410,8 @@ class OVSBridge(BaseOVS):
                                         "set to %s" % kw.get('cookie_mask'))
                 elif 'cookie' in kw:
                     # a cookie was specified, use it
+                    #如果是删除操作，且指定了cookie,检查是否在结尾指定'/-1'如未指定，则添加
+                    #ovs-ofctl如果未指定，则无法删除
                     kw['cookie'] = check_cookie_mask(kw['cookie'])
                 else:
                     # nothing was specified about cookies, use default
@@ -432,9 +435,10 @@ class OVSBridge(BaseOVS):
         if action == 'del' and {} in kwargs_list:
             # the 'del' case simplifies itself if kwargs_list has at least
             # one item that matches everything
-            #删除掉所有流表内容
+            #是删除，但kwargs_list为空，删除掉所有流表内容
             self.run_ofctl('%s-flows' % action, [])
         else:
+            #执行流表修改，删除，更新操作
             flow_strs = [_build_flow_expr_str(kw, action, strict)
                          for kw in kwargs_list]
             if use_bundle:
@@ -446,9 +450,11 @@ class OVSBridge(BaseOVS):
     def add_flow(self, **kwargs):
         self.do_action_flows('add', [kwargs])
 
+    #修改流
     def mod_flow(self, **kwargs):
         self.do_action_flows('mod', [kwargs])
 
+    #删除流
     def delete_flows(self, **kwargs):
         self.do_action_flows('del', [kwargs])
 
@@ -470,6 +476,7 @@ class OVSBridge(BaseOVS):
                                if is_a_flow_line(item))
         return retval
 
+    #获取当前桥的所有流
     def dump_all_flows(self):
         return [f for f in self.run_ofctl("dump-flows", []).splitlines()
                 if is_a_flow_line(f)]
@@ -1059,7 +1066,7 @@ def check_cookie_mask(cookie):
     else:
         return cookie
 
-
+#检查此行是否为flow规则
 def is_a_flow_line(line):
     # this is used to filter out from ovs-ofctl dump-flows the lines that
     # are not flow descriptions but mere indications of the type of openflow

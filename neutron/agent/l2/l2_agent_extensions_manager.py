@@ -35,6 +35,7 @@ class L2AgentExtensionsManager(agent_ext_manager.AgentExtensionsManager):
         super(L2AgentExtensionsManager, self).__init__(conf,
                 L2_AGENT_EXT_MANAGER_NAMESPACE)
 
+    #知会所有agent 扩展执行handle_port
     def handle_port(self, context, data):
         """Notify all agent extensions to handle port."""
         for extension in self:
@@ -47,6 +48,7 @@ class L2AgentExtensionsManager(agent_ext_manager.AgentExtensionsManager):
                     {'name': extension.name}
                 )
 
+    #知会所有agent扩展执行delete_port
     def delete_port(self, context, data):
         """Notify all agent extensions to delete port."""
         for extension in self:

@@ -32,7 +32,7 @@ l2_ext_fdb_population.register_fdb_population_opts()
 
 LOG = logging.getLogger(__name__)
 
-
+#静态fdb注入功能,sangfor时做了dvr对应的fdb注入
 class FdbPopulationAgentExtension(
         l2_agent_extension.L2AgentExtension):
     """The FDB population is an agent extension to OVS or linux bridge
