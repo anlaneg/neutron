@@ -1311,23 +1311,27 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         return port_moves
 
     #区分哪些port添加，删除，以及当前port项
+    #cur_ports是现有的ports
+    #registered_ports是已登记的ports
+    #readd_registered_ports 是否重新登记的ports
     def _get_port_info(self, registered_ports, cur_ports,
                        readd_registered_ports):
         port_info = {'current': cur_ports}
         # FIXME(salv-orlando): It's not really necessary to return early
         # if nothing has changed.
         if not readd_registered_ports and cur_ports == registered_ports:
-            #如果readd_registered_ports为假（不需要同步），且两者相同，则直接返回port_info
+            #如果不需要重新登记的，且现有的ports与登记的ports两者相同，则直接返回现有ports
             return port_info
 
         if readd_registered_ports:
-            #需要同步，则直接采用cur_ports
+            #如果需要重新登记，则cur_ports为已添加ports
             port_info['added'] = cur_ports
         else:
-            #计算新增的
+            #如果无需重新登记，则已添加port为当前ports减去已登记的ports
             port_info['added'] = cur_ports - registered_ports
+            
         # Update port_info with ports not found on the integration bridge
-        # 计算移除
+        # 已删除ports则为已登记，但本机没有的ports
         port_info['removed'] = registered_ports - cur_ports
         return port_info
 
@@ -1446,9 +1450,10 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
     def scan_ports(self, registered_ports, sync, updated_ports=None):
         #获取br-int中port的增删除改情况
         
-        #查出int_br上所有接口，接口的数目
+        #查出本机int_br上所有接口，接口的数目
         cur_ports = self.int_br.get_vif_port_set()
         self.int_br_device_count = len(cur_ports)
+        
         port_info = self._get_port_info(registered_ports, cur_ports, sync)
         if updated_ports is None:
             updated_ports = set()
@@ -1976,20 +1981,26 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         if sync or not (hasattr(polling_manager, 'get_events')):
             if sync:
                 LOG.info("Agent out of sync with plugin!")
+                #增加重同步次数
                 consecutive_resyncs = consecutive_resyncs + 1
                 if (consecutive_resyncs >=
                         constants.MAX_DEVICE_RETRIES):
+                    #连续重同步次数过多，告警，清零
                     LOG.warning(
                         "Clearing cache of registered ports,"
                         " retries to resync were > %s",
                         constants.MAX_DEVICE_RETRIES)
+                    #清空ports,ancillary_ports
                     ports.clear()
                     ancillary_ports.clear()
                     consecutive_resyncs = 0
             else:
+                #由于本次没有同步，故连续同步次数减为0
                 consecutive_resyncs = 0
                 # TODO(rossella_s): For implementations that use AlwaysPoll
                 # resync if a device failed. This can be improved in future
+                # 如果fialed_devices及failed_ancillary_devices中有集合不为空，则需要
+                # 同步
                 sync = (any(failed_devices.values()) or
                     any(failed_ancillary_devices.values()))
 
@@ -1997,7 +2008,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             # calling polling_manager.get_events() since
             # the agent might miss some event (for example a port
             # deletion)
-            #如果ovs刚重启，则reg_ports为空，否则使用ports
+            #如果ovs刚重启，则reg_ports为空，否则使用当前缓存的ports
             reg_ports = (set() if ovs_restarted else ports)
             #获知port的增删改情况
             port_info = self.scan_ports(reg_ports, sync,
@@ -2145,6 +2156,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     self.dvr_agent.reset_dvr_parameters()
                     self.dvr_agent.setup_dvr_flows()
                 # notify that OVS has restarted
+                # 触发ovs重启完成事件
                 registry.notify(
                     callback_resources.AGENT,
                     callback_events.OVS_RESTARTED,
@@ -2172,7 +2184,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             # Notify the plugin of tunnel IP
             if self.enable_tunneling and tunnel_sync:
                 try:
-                    #拉起tunnel配置
+                    #拉取tunnel配置
                     tunnel_sync = self.tunnel_sync()
                 except Exception:
                     LOG.exception("Error while configuring tunnel endpoints")
@@ -2195,7 +2207,19 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     # between these two statements, this will be thread-safe
                     #收到port update事件的port
                     updated_ports_copy = self.updated_ports
-                    self.updated_ports = set() #将此置为空
+                    self.updated_ports = set() #已赋给临时变量，故将此置为空
+                    
+                    #start是当前时间
+                    #polling_manager是对ovsdb的检测
+                    #sync 是否需要全同步
+                    #ovs_restarted 表示ovs是否重启过
+                    #ports 是当前系统中已检测到的port信息
+                    #ancillary_ports
+                    #updated_ports_copy 当前由neutron发下来的需要更新的ports
+                    #consecutive_resyncs  当前连续重同步次数
+                    #ports_not_ready_yet
+                    #failed_devices 
+                    #failed_ancillary_devices
                     (port_info, ancillary_port_info, consecutive_resyncs,
                      ports_not_ready_yet) = (self.process_port_info(
                             start, polling_manager, sync, ovs_restarted,
