@@ -421,17 +421,23 @@ class AgentExtRpcCallback(object):
         # Initialize RPC api directed to other neutron-servers
         self.server_versions_rpc = resources_rpc.ResourcesPushToServersRpcApi()
 
+    #neutron server收到agent的状态上报
     @db_api.retry_if_session_inactive()
     def report_state(self, context, **kwargs):
         """Report state from agent to server.
 
         Returns - agent's status: AGENT_NEW, AGENT_REVIVED, AGENT_ALIVE
         """
+        #状态产生时的时间
         time = kwargs['time']
         time = timeutils.parse_strtime(time)
+        
+        #agent上报的状态（例如OVSNeutronAgent.agent_state)
         agent_state = kwargs['agent_state']['agent_state']
+        #检查agent与server间的时间差，如果时间差过大，则告警
         self._check_clock_sync_on_agent_start(agent_state, time)
         if self.START_TIME > time:
+            #检查到旧消息，警告且不处理
             time_agent = datetime.datetime.isoformat(time)
             time_server = datetime.datetime.isoformat(self.START_TIME)
             log_dict = {'agent_time': time_agent, 'server_time': time_server}
@@ -441,6 +447,7 @@ class AgentExtRpcCallback(object):
             return
         if not self.plugin:
             self.plugin = directory.get_plugin()
+        #更新数据库中状态
         agent_status, agent_state = self.plugin.create_or_update_agent(
             context, agent_state)
         self._update_local_agent_resource_versions(context, agent_state)
@@ -456,6 +463,7 @@ class AgentExtRpcCallback(object):
                                           host=agent_state['host']),
             resource_versions_dict)
         # report other neutron-servers about this quickly
+        # 知会其它neutron-server 版本问题
         self.server_versions_rpc.report_agent_resource_versions(
             context, agent_state['agent_type'], agent_state['host'],
             resource_versions_dict)
@@ -467,6 +475,7 @@ class AgentExtRpcCallback(object):
         on start up. Ignores it, on subsequent re-connects.
         """
         if agent_state.get('start_flag'):
+            #如果agent是刚启动，则计算两者间的差,如果差值过大，则告警
             time_server_now = timeutils.utcnow()
             diff = abs(timeutils.delta_seconds(time_server_now, agent_time))
             if diff > cfg.CONF.agent_down_time:

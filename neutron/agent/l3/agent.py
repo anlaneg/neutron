@@ -653,10 +653,12 @@ class L3NATAgent(ha.AgentMixin,
         is_snat_agent = (self.conf.agent_mode ==
                          lib_const.L3_AGENT_MODE_DVR_SNAT)
         try:
+            #向server请求当前agent上所有router的ids
             router_ids = self.plugin_rpc.get_router_ids(context)
             # fetch routers by chunks to reduce the load on server and to
             # start router processing earlier
             for i in range(0, len(router_ids), self.sync_routers_chunk_size):
+                #取一组router的详细信息，并更新为router update消息存入到队列中等待loop处理
                 chunk = router_ids[i:i + self.sync_routers_chunk_size]
                 routers = self.plugin_rpc.get_routers(context, chunk)
                 LOG.debug('Processing :%r', routers)
@@ -676,6 +678,7 @@ class L3NATAgent(ha.AgentMixin,
                         queue.PRIORITY_SYNC_ROUTERS_TASK,
                         router=r,
                         timestamp=timestamp)
+                    #存入loop中等待处理
                     self._queue.add(update)
         except oslo_messaging.MessagingTimeout:
             if self.sync_routers_chunk_size > SYNC_ROUTERS_MIN_CHUNK_SIZE:

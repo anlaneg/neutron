@@ -77,6 +77,7 @@ class LocalVlanManager(object):
     def __contains__(self, key):
         return key in self.mapping
 
+    #针对每个LocalVLANMapping进行遍历
     def __iter__(self):
         for value in list(self.mapping.values()):
             yield value
@@ -85,11 +86,18 @@ class LocalVlanManager(object):
         for item in self.mapping.items():
             yield item
 
+    #向mananger中注册vlan映射（将net_id映射为vlan)
+    #net_id network id号
+    #vlan   此network对应的vlan号
+    #network_type 网络类型，('gre', 'vxlan', 'vlan', 'flat','local', 'geneve') 之一
+    #physical_network 物理网络类型，'vlan' or 'flat'
+    #segmentation_id the VID for 'vlan' or tunnel ID for 'tunnel'
     def add(self, net_id, vlan, network_type, physical_network,
             segmentation_id, vif_ports=None):
         if net_id in self.mapping:
             #如果已存在，则报错
             raise MappingAlreadyExists(net_id=net_id)
+        #填充network 映射的vlan
         self.mapping[net_id] = LocalVLANMapping(
             vlan, network_type, physical_network, segmentation_id, vif_ports)
 

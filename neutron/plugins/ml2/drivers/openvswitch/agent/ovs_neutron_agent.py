@@ -295,6 +295,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             'agent_type': agent_conf.agent_type,
             'start_flag': True}
 
+        #取agent的上报间隔
         report_interval = agent_conf.report_interval
         if report_interval:
             heartbeat = loopingcall.FixedIntervalLoopingCall(
@@ -327,6 +328,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             self.dvr_agent.in_distributed_mode())
 
         try:
+            #向neutron上报当前状态
             agent_status = self.state_rpc.report_state(self.context,
                                                        self.agent_state,
                                                        True)
@@ -335,6 +337,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                          'Doing a full sync.')
                 self.fullsync = True
 
+            #第一次report完成后，删除掉start_flag,resouce_version说明
             # we only want to update resource versions on startup
             self.agent_state.pop('resource_versions', None)
             if self.agent_state.pop('start_flag', None):
@@ -432,25 +435,32 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                   {'network_id': network_id,
                    'ports': self.network_ports[network_id]})
 
-    #从旧的networks中移除具体一个port
+    #agent维护了某个network下有哪些port的信息表
+    #这个函数的处理是，自此信息表中移除掉指定port的记录
     def _clean_network_ports(self, port_id):
         for port_set in self.network_ports.values():
             if port_id in port_set:
                 port_set.remove(port_id)
                 break
 
+    #处理neutron要求我们删除的ports(来源于neutron rpc通知）
     def process_deleted_ports(self, port_info):
         # don't try to process removed ports as deleted ports since
         # they are already gone
         if 'removed' in port_info:
-            #自需要移除的集合中删除掉将删除的port
+            #removed 的指的是agent的缓存中包含了些port信息，但底下的ovs中没有此port的信息
+            #现在这里，先检查如果恰好，我们收到了删除这些port的事件，则恰好不用处理了，直接自
+            #delete_ports中移除这些port即可。
             self.deleted_ports -= port_info['removed']
-        #依次删除掉delete_ports集合中的port
+            
+        #依次删除掉剩余的需要删除的ports
         deleted_ports = list(self.deleted_ports)
         while self.deleted_ports:
             port_id = self.deleted_ports.pop()
             port = self.int_br.get_vif_port_by_id(port_id)
+            #此port要删除，故network下将不再有此ports了
             self._clean_network_ports(port_id)
+            #告知agent扩展程序，port将被删除
             self.ext_manager.delete_port(self.context,
                                          {"vif_port": port,
                                           "port_id": port_id})
@@ -619,14 +629,17 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         else:
             LOG.warning('Action %s not supported', action)
 
+    #flat时不支持物理网络有vlan(故segment为None)
     def _local_vlan_for_flat(self, lvid, physical_network):
         phys_br = self.phys_brs[physical_network]
         phys_port = self.phys_ofports[physical_network]
         int_br = self.int_br
         int_port = self.int_ofports[physical_network]
+        #flat时phys_br自与br-int相连的口收到报文后，去掉vlan后按normal转
         phys_br.provision_local_vlan(port=phys_port, lvid=lvid,
                                      segmentation_id=None,
                                      distributed=False)
+        #br-int与phys_br相连接口，在收到报文后，会将原vlan变更为lvid后按normal转发（原vlan为0xffff)
         int_br.provision_local_vlan(port=int_port, lvid=lvid,
                                     segmentation_id=None)
 
@@ -636,9 +649,11 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         phys_port = self.phys_ofports[physical_network]
         int_br = self.int_br
         int_port = self.int_ofports[physical_network]
+        #vlan时phys_br自与br-int相连接的口收到报文后，将vlan映射成segmentation_id后接normal转
         phys_br.provision_local_vlan(port=phys_port, lvid=lvid,
                                      segmentation_id=segmentation_id,
                                      distributed=distributed)
+        #br-int与phys_br相连接口，在收到报文后，会将原vlan变更为lvid后按normal转发
         int_br.provision_local_vlan(port=int_port, lvid=lvid,
                                     segmentation_id=segmentation_id)
 
@@ -682,20 +697,25 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                  "net-id=%(net_uuid)s",
                  {'vlan_id': lvid, 'net_uuid': net_uuid})
 
+        #如果网络类型为tunnel类型
         if network_type in constants.TUNNEL_NETWORK_TYPES:
             if self.enable_tunneling:
                 # outbound broadcast/multicast
                 ofports = list(self.tun_br_ofports[network_type].values())
                 if ofports:
+                    #tunnel口与br-int已相连，则下发flow，使br-int的流量可以到达br-tun
+                    #剥离掉本地vlan,并将其设置为vxlan id,并使之送往tunnel
                     self.tun_br.install_flood_to_tun(lvid,
                                                      segmentation_id,
                                                      ofports)
                 # inbound from tunnels: set lvid in the right table
                 # and resubmit to Table LEARN_FROM_TUN for mac learning
                 if self.enable_distributed_routing:
+                    #如果开启了分布式路由功能，则下发流量使得br-int实现local vlan与tun_id间的映射
                     self.dvr_agent.process_tunneled_network(
                         network_type, lvid, segmentation_id)
                 else:
+                    #下发流量使得br-int实现local vlan与tun_id间的映射
                     self.tun_br.provision_local_vlan(
                         network_type=network_type, lvid=lvid,
                         segmentation_id=segmentation_id)
@@ -705,6 +725,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                           {'network_type': network_type,
                            'net_uuid': net_uuid})
         elif network_type == n_const.TYPE_FLAT:
+            #flat方式时local vlan的处理
             if physical_network in self.phys_brs:
                 self._local_vlan_for_flat(lvid, physical_network)
             else:
@@ -714,6 +735,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                           {'net_uuid': net_uuid,
                            'physical_network': physical_network})
         elif network_type == n_const.TYPE_VLAN:
+            #vlan方式时local vlan的处理
             if physical_network in self.phys_brs:
                 self._local_vlan_for_vlan(lvid, physical_network,
                                           segmentation_id)
@@ -749,6 +771,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
         if lvm.network_type in constants.TUNNEL_NETWORK_TYPES:
             if self.enable_tunneling:
+                #如果隧道开启，则清理tun_br中的规则
                 self.tun_br.reclaim_local_vlan(
                     network_type=lvm.network_type,
                     segmentation_id=lvm.segmentation_id)
@@ -812,8 +835,11 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         :param ovs_restarted: indicates if this is called for an OVS restart.
         '''
         if net_uuid not in self.vlan_manager or ovs_restarted:
+            #此network在vlan_manager中可能还没有注册，注册并为其分配local vlan，且下发相应流表
             self.provision_local_vlan(net_uuid, network_type,
                                       physical_network, segmentation_id)
+        
+        #找到此network对应的vlan_manager，将此port加入
         lvm = self.vlan_manager.get(net_uuid)
         lvm.vif_ports[port.vif_id] = port
 
@@ -823,6 +849,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         port_other_config = self.int_br.db_get_val("Port", port.port_name,
                                                    "other_config")
         if port_other_config is None:
+            #在br-int中没有发现此port
             if port.vif_id in self.deleted_ports:
                 LOG.debug("Port %s deleted concurrently", port.vif_id)
             elif port.vif_id in self.updated_ports:
@@ -831,6 +858,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 LOG.debug("Unable to get config for port %s", port.vif_id)
             return False
 
+        #向此port中存放vlan_mapping映射情况
         vlan_mapping = {'net_uuid': net_uuid,
                         'network_type': network_type,
                         'physical_network': str(physical_network)}
@@ -841,11 +869,13 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                      port_other_config)
         return True
 
+    #为接口设置local vlan
     def _add_port_tag_info(self, need_binding_ports):
         port_names = [p['vif_port'].port_name for p in need_binding_ports]
         port_info = self.int_br.get_ports_attributes(
             "Port", columns=["name", "tag", "other_config"],
             ports=port_names, if_exists=True)
+        #构造所有port的名称及tag信息映射
         info_by_port = {
             x['name']: {
                 'tag': x['tag'],
@@ -853,6 +883,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             }
             for x in port_info
         }
+        
+        #遍历需要绑定的所有ports
         for port_detail in need_binding_ports:
             try:
                 lvm = self.vlan_manager.get(port_detail['network_id'])
@@ -862,15 +894,19 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             try:
                 cur_info = info_by_port[port.port_name]
             except KeyError:
+                #如果需要binding的口在ovs database中不存在，则忽略
                 continue
+            
             other_config = cur_info['other_config']
             if (cur_info['tag'] != lvm.vlan or
                     other_config.get('tag') != lvm.vlan):
+                #如果此接口的vlan信息不相等，则更新
                 other_config['tag'] = str(lvm.vlan)
                 self.int_br.set_db_attribute(
                     "Port", port.port_name, "other_config", other_config)
                 # Uninitialized port has tag set to []
                 if cur_info['tag']:
+                    #如果此接口有vlan,移除所有入接口为此接口的所有的流
                     self.int_br.uninstall_flows(in_port=port.ofport)
 
     def _bind_devices(self, need_binding_ports):
@@ -897,9 +933,11 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                           port.port_name)
                 continue
             if self.prevent_arp_spoofing:
+                #处理arp防欺骗
                 self.setup_arp_spoofing_protection(self.int_br,
                                                    port, port_detail)
             if cur_tag != lvm.vlan:
+                #处理vlan变更
                 self.int_br.set_db_attribute(
                     "Port", port.port_name, "tag", lvm.vlan)
 
@@ -908,6 +946,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             # must be handled appropriately. Otherwise this might prevent
             # neutron server from sending network-vif-* events to the nova
             # API server, thus possibly preventing instance spawn.
+            # 如果接口状态为admin_up,则是需要置为up的设备
             if port_detail.get('admin_state_up'):
                 LOG.debug("Setting status for %s to UP", device)
                 devices_up.append(device)
@@ -918,6 +957,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             devices_set = self.plugin_rpc.update_device_list(
                 self.context, devices_up, devices_down, self.agent_id,
                 self.conf.host)
+            #置设置接口up失败 与 设置接口down失败 的接口为失败接口
             failed_devices = (devices_set.get('failed_devices_up') +
                 devices_set.get('failed_devices_down'))
             if failed_devices:
@@ -990,6 +1030,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         :param net_uuid: the net_uuid this port is associated with.
         '''
         try:
+            #找出vif_id对应的network id号
             net_uuid = net_uuid or self.vlan_manager.get_net_uuid(vif_id)
         except vlanmanager.VifIdNotFound:
             LOG.info(
@@ -1000,14 +1041,17 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         lvm = self.vlan_manager.get(net_uuid)
 
         if vif_id in lvm.vif_ports:
+            #调用dvr_agent完成此port的解绑定
             vif_port = lvm.vif_ports[vif_id]
             self.dvr_agent.unbind_port_from_dvr(vif_port, lvm)
+        #自lvm中移除此port
         lvm.vif_ports.pop(vif_id, None)
 
+        #如果此network中不再含有任何port，则回收此netowrk的vlan占用
         if not lvm.vif_ports:
             self.reclaim_local_vlan(net_uuid)
 
-    #移除port
+    #恢复port vlan,下发flow要求此port无法进来流量（还能出）
     def port_dead(self, port, log_errors=True):
         '''Once a port has no binding, put it on the "dead vlan".
 
@@ -1017,9 +1061,11 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         cur_tag = self.int_br.db_get_val("Port", port.port_name, "tag",
                                          log_errors=log_errors)
         if cur_tag and cur_tag != constants.DEAD_VLAN_TAG:
+            #还原此port的vlan
             self.int_br.set_db_attribute("Port", port.port_name, "tag",
                                          constants.DEAD_VLAN_TAG,
                                          log_errors=log_errors)
+            #下发flow,指定自此port进入的流量丢弃
             self.int_br.drop_port(in_port=port.ofport)
 
     #配置集成桥
@@ -1053,21 +1099,32 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         '''Setup ancillary bridges - for example br-ex.'''
         ovs = ovs_lib.BaseOVS()
         ovs_bridges = set(ovs.get_bridges())
+        
         # Remove all known bridges
+        #移除br-int,br-tun桥
         ovs_bridges.remove(integ_br)
         if self.enable_tunneling:
             ovs_bridges.remove(tun_br)
+        
+        #收集所有物理桥名称    
         br_names = [self.phys_brs[physical_network].br_name for
                     physical_network in self.phys_brs]
+        
+        #移除所有物理桥名称
+        #更新ovs_bridges,去除掉ovs_bridges中所有已在br_names中包含的元素
+        #等价与ovs_bridges= ovs_bridges-set(br_names)
         ovs_bridges.difference_update(br_names)
+        
         # Filter list of bridges to those that have external
         # bridge-id's configured
+        #再移除掉与br-get-external-id不相等的桥
         br_names = []
         for bridge in ovs_bridges:
             bridge_id = ovs.get_bridge_external_bridge_id(bridge)
             if bridge_id != bridge:
                 br_names.append(bridge)
         ovs_bridges.difference_update(br_names)
+        
         ancillary_bridges = []
         for bridge in ovs_bridges:
             br = ovs_lib.OVSBridge(bridge)
@@ -1275,6 +1332,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                     'options', {'peer': int_if_name})
 
     def update_stale_ofport_rules(self):
+        #previous是上次我们收集的 接口名称与ofport之间的映射
+        #current是当前br-int上我们收集到的 接口名称与ofport之间的映射
         # ARP spoofing rules and drop-flow upon port-delete
         # use ofport-based rules
         previous = self.vifname_to_ofport_map
@@ -1282,16 +1341,22 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
         # if any ofport numbers have changed, re-process the devices as
         # added ports so any rules based on ofport numbers are updated.
+        # 如果ofprot 编号有变化，则需要重新处理这些设备的规则（为什么？不知道，需要看ovswitchd的代码吧！）
         moved_ports = self._get_ofport_moves(current, previous)
 
         # delete any stale rules based on removed ofports
+        # ofports_deleted指上次与本次之间，有哪些port已删除
         ofports_deleted = set(previous.values()) - set(current.values())
         for ofport in ofports_deleted:
+            #删除防arp欺骗
             if self.prevent_arp_spoofing:
                 self.int_br.delete_arp_spoofing_protection(port=ofport)
+            #移除所有针对此接口的流量
             self.int_br.uninstall_flows(in_port=ofport)
         # store map for next iteration
+        # 存储此map以便下次
         self.vifname_to_ofport_map = current
+        #返回哪些ofport发生了变化
         return moved_ports
 
     @staticmethod
@@ -1310,7 +1375,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 port_moves.append(name)
         return port_moves
 
-    #区分哪些port添加，删除，以及当前port项
+    #区分哪些port已添加，已删除，以及当前port项
     #cur_ports是现有的ports
     #registered_ports是已登记的ports
     #readd_registered_ports 是否重新登记的ports
@@ -1454,16 +1519,18 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         cur_ports = self.int_br.get_vif_port_set()
         self.int_br_device_count = len(cur_ports)
         
+        #获知本机br-int针对已登记ports，确定哪些已添加(added)，哪些缺失（deleted），确定那些是当前存在的(current)
         port_info = self._get_port_info(registered_ports, cur_ports, sync)
         if updated_ports is None:
             updated_ports = set()
-        #增加更新的port
+        #增加vlan更新的port
         updated_ports.update(self.check_changed_vlans())
         if updated_ports:
             # Some updated ports might have been removed in the
             # meanwhile, and therefore should not be processed.
             # In this case the updated port won't be found among
             # current ports.
+            #updated_ports与cur_ports与之后相同的port将置为updated(需要更新port)
             updated_ports &= cur_ports
             if updated_ports:
                 #更新的port
@@ -1472,6 +1539,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         return port_info
 
     def scan_ancillary_ports(self, registered_ports, sync):
+        #获取所有ancillary桥的所有port情况,确认哪些已添加，哪些缺失，哪些是当前存在的（current)
         cur_ports = set()
         for bridge in self.ancillary_brs:
             cur_ports |= bridge.get_vif_port_set()
@@ -1486,6 +1554,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         """
         port_tags = self.int_br.get_port_tag_dict()
         changed_ports = set()
+        #每个lvm是一个LocalVLANMapping类型,当前版本vif_ports为None
         for lvm in self.vlan_manager:
             for port in lvm.vif_ports.values():
                 if (
@@ -1529,15 +1598,19 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                         vif_port.vif_id)
         if vif_port:
             if admin_state_up:
+                #接口需要置为up，返回值为True时表示此接口已在本机存在，False时本机还无此接口
                 port_needs_binding = self.port_bound(
                     vif_port, network_id, network_type,
                     physical_network, segmentation_id,
                     fixed_ips, device_owner, ovs_restarted)
             else:
+                #接口需要置为down
                 LOG.info("VIF port: %s admin state up disabled, "
                          "putting on the dead VLAN", vif_port.vif_id)
 
+                #将接口置为down
                 self.port_dead(vif_port)
+                #知会server端，接口为down
                 self.plugin_rpc.update_device_down(
                     self.context, port_id, self.agent_id,
                     self.conf.host)
@@ -1627,25 +1700,30 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     #移除远端ip
                     self.tun_br_ofports[tunnel_type].pop(remote_ip, None)
 
+    #向server端取devices对应的详细信息
     def treat_devices_added_or_updated(self, devices, ovs_restarted):
         skipped_devices = []
         need_binding_devices = []
+        #自缓存中请求设备详情，有获取到的，有没有获取到的，还有获取失败的
         devices_details_list = (
             self.plugin_rpc.get_devices_details_list_and_failed_devices(
                 self.context,
                 devices,
                 self.agent_id,
                 self.conf.host))
+        #取出获取失败的，记为failed_devices
         failed_devices = set(devices_details_list.get('failed_devices'))
 
+        #取出获取到详情的，或者没有获取到详情的
         devices = devices_details_list.get('devices')
-        vif_by_id = self.int_br.get_vifs_by_ids(
+        vif_by_id = self.int_br.get_vifs_by_ids(#收集br-int上各接口的id号到VifPort的映射
             [vif['device'] for vif in devices])
         for details in devices:
             device = details['device']
             LOG.debug("Processing port: %s", device)
             port = vif_by_id.get(device)
             if not port:
+                #此设备在server端不存在，需要删除
                 # The port disappeared and cannot be processed
                 LOG.info("Port %s was not found on the integration bridge "
                          "and will therefore not be processed", device)
@@ -1655,6 +1733,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 continue
 
             if 'port_id' in details:
+                #这些接口是获取到详情的
                 LOG.info("Port %(device)s updated. Details: %(details)s",
                          {'device': device, 'details': details})
                 details['vif_port'] = port
@@ -1663,7 +1742,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                                    details['network_type'],
                                                    details['physical_network'],
                                                    details['segmentation_id'],
-                                                   details['admin_state_up'],
+                                                   details['admin_state_up'],#接口admin状态是否为up
                                                    details['fixed_ips'],
                                                    details['device_owner'],
                                                    ovs_restarted)
@@ -1673,6 +1752,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                           details['network_id'])
                 self.ext_manager.handle_port(self.context, details)
             else:
+                #这些接口是没有获得缓存的，需要置为dead
                 LOG.warning(
                     "Device %s not defined on plugin or binding failed",
                     device)
@@ -1693,6 +1773,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 devices,
                 self.agent_id,
                 self.conf.host))
+        #已知的存在在数据库中且需要获取的设备，但获取失败了
         failed_devices = set(devices_details_list.get('failed_devices'))
         devices_added = [
             d['device'] for d in devices_details_list.get('devices')]
@@ -1719,6 +1800,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                                           self.conf.host)
         failed_devices = set(devices_down.get('failed_devices_down'))
         LOG.debug("Port removal failed for %s", failed_devices)
+        #将removed的接口处理为delete
         for device in devices:
             self.ext_manager.delete_port(self.context, {'port_id': device})
             self.port_unbound(device)
@@ -1797,6 +1879,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         self._add_port_tag_info(need_binding_devices)
         self.sg_agent.setup_port_filters(added_ports,
                                          port_info.get('updated', set()))
+        #主要处理arp防欺骗，vlan更新
         failed_devices['added'] |= self._bind_devices(need_binding_devices)
 
         if 'removed' in port_info and port_info['removed']:
@@ -1807,6 +1890,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                       "treat_devices_removed completed in %(elapsed).3f",
                       {'iter_num': self.iter_num,
                        'elapsed': time.time() - start})
+        #将缺失的接口置为down状态
         if skipped_devices:
             start = time.time()
             self.treat_devices_skipped(skipped_devices)
@@ -2015,6 +2099,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                         updated_ports_copy)
             # Treat ancillary devices if they exist
             if self.ancillary_brs:
+                #如果存在ancillary_br，则收集其对应的port情况
                 ancillary_port_info = self.scan_ancillary_ports(
                     ancillary_ports, sync)
                 LOG.debug("Agent rpc_loop - iteration:%(iter_num)d"
@@ -2026,6 +2111,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 ancillary_port_info = {}
 
         else:
+            #有get_events函数，直接调用get_events，自ovsdb中获取哪些port增加了，哪些删除了
             consecutive_resyncs = 0
             events = polling_manager.get_events()
             port_info, ancillary_port_info, ports_not_ready_yet = (
@@ -2040,6 +2126,10 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 self,
                 ovsdb_events=events)
 
+        #port_info br-int上的port情况
+        #ancillary_port_info ancillary桥上的port情况
+        #consecutive_resyncs 连续全同步的次数
+        #port_not_ready_yet ????
         return (port_info, ancillary_port_info, consecutive_resyncs,
                 ports_not_ready_yet)
 
@@ -2213,12 +2303,12 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     #polling_manager是对ovsdb的检测
                     #sync 是否需要全同步
                     #ovs_restarted 表示ovs是否重启过
-                    #ports 是当前系统中已检测到的port信息
-                    #ancillary_ports
+                    #ports 是当前系统中br-int上已检测到的port信息
+                    #ancillary_ports 是当前系统中ancillary桥上已检测到的port情况
                     #updated_ports_copy 当前由neutron发下来的需要更新的ports
                     #consecutive_resyncs  当前连续重同步次数
                     #ports_not_ready_yet
-                    #failed_devices 
+                    #failed_devices  上报给server但处理失败的设备
                     #failed_ancillary_devices
                     (port_info, ancillary_port_info, consecutive_resyncs,
                      ports_not_ready_yet) = (self.process_port_info(
@@ -2227,8 +2317,9 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                             consecutive_resyncs, ports_not_ready_yet,
                             failed_devices, failed_ancillary_devices))
                     sync = False
-                    #移除port_info中的delete port
+                    #处理neutron rpc通知的port删除任务,self.deleted_ports
                     self.process_deleted_ports(port_info)
+                    #检查ofport number发生变化的port,需要更新其规则
                     ofport_changed_ports = self.update_stale_ofport_rules()
                     if ofport_changed_ports:
                         port_info.setdefault('updated', set()).update(
@@ -2238,13 +2329,16 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                               "Elapsed:%(elapsed).3f",
                               {'iter_num': self.iter_num,
                                'elapsed': time.time() - start})
+                    
                     # Secure and wire/unwire VIFs and update their status
                     # on Neutron server
                     if (self._port_info_has_changes(port_info) or
                         self.sg_agent.firewall_refresh_needed() or
                         ovs_restarted):
+                        #如果port有更新，则进入
                         LOG.debug("Starting to process devices in:%s",
                                   port_info)
+                        #处理接口的tag分配及设置
                         failed_devices = self.process_network_ports(
                             port_info, ovs_restarted)
                         if need_clean_stale_flow:

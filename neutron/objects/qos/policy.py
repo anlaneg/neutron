@@ -58,6 +58,7 @@ class QosPolicy(rbac_db.NeutronRbacObject):
     # Version 1.5: Direction for bandwidth limit rule added
     # Version 1.6: Added "is_default" field
     # Version 1.7: Added floating IP bindings
+    #资源版本号
     VERSION = '1.7'
 
     # required by RbacNeutronMetaclass

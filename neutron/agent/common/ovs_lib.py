@@ -159,6 +159,7 @@ class BaseOVS(object):
     def get_bridge_for_iface(self, iface):
         return self.ovsdb.iface_to_br(iface).execute()
 
+    #列出当前ovs中所有的桥
     def get_bridges(self):
         return self.ovsdb.list_br().execute(check_error=True)
 
@@ -562,6 +563,7 @@ class OVSBridge(BaseOVS):
 
         return edge_ports
 
+    #通过port id可以找到port对应的ofport编号
     def get_vif_port_to_ofport_map(self):
         results = self.get_ports_attributes(
             'Interface', columns=['name', 'external_ids', 'ofport'],
@@ -602,6 +604,7 @@ class OVSBridge(BaseOVS):
             return external_ids['iface-id']
 
     def get_port_tag_dict(self):
+        #获取接口的vlan信息
         """Get a dict of port names and associated vlan tags.
 
         e.g. the returned dict is of the following form::
@@ -616,11 +619,13 @@ class OVSBridge(BaseOVS):
         in the "Interface" table queried by the get_vif_port_set() method.
 
         """
+        #取Port表的name,tag列
         results = self.get_ports_attributes(
             'Port', columns=['name', 'tag'], if_exists=True)
         #列出port上对应的tag信息（vlan信息）
         return {p['name']: p['tag'] for p in results}
 
+    #通过port_id映射VifPort
     def get_vifs_by_ids(self, port_ids):
         interface_info = self.get_ports_attributes(
             "Interface", columns=["name", "external_ids", "ofport"],
@@ -651,6 +656,7 @@ class OVSBridge(BaseOVS):
             return False
         return True
 
+    #给定port id返回对应的port信息
     def get_vif_port_by_id(self, port_id):
         ports = self.ovsdb.db_find(
             'Interface', ('external_ids', '=', {'iface-id': port_id}),

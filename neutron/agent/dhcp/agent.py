@@ -749,7 +749,7 @@ class DhcpAgentWithStateReport(DhcpAgent):
             self.agent_state.get('configurations').update(
                 self.cache.get_state())
             ctx = context.get_admin_context_without_session()
-            #向server上报状态
+            #dhcp向server上报状态
             agent_status = self.state_rpc.report_state(
                 ctx, self.agent_state, True)
             if agent_status == agent_consts.AGENT_REVIVED:

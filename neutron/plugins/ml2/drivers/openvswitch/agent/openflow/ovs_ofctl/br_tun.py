@@ -155,6 +155,8 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
             table_id = constants.DVR_NOT_LEARN
         else:
             table_id = constants.LEARN_FROM_TUN
+        #如果隧道id是segmentation_id,则修改vlan为lvid
+        #并重查表table_id {这个表用于注入dvr的静态fdb}
         self.add_flow(table=constants.TUN_TABLE[network_type],
                       priority=1,
                       tun_id=segmentation_id,
@@ -229,7 +231,10 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
                             nw_dst='%s' % ip)
 
     #设置tunnel 流量，如果入接口为port,则查询表constants.TUN_TABLE[network_type]
-    #确定处理。
+    #确定处理。看对应的隧道类型如何处理
+    #针对每种隧道类型，使得从port口进来的报文，直接送往表constants.TUN_TABLE[network_type]处理
+    #而constants.TUN_TABLE[network_type]表处，恰恰是针对tunnel_id转为local vlan,
+    #然后表将被送往br-int
     def setup_tunnel_port(self, network_type, port, deferred_br=None):
         br = deferred_br if deferred_br else self
         br.add_flow(priority=1,
@@ -242,6 +247,7 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
         br = deferred_br if deferred_br else self
         br.delete_flows(in_port=port)
 
+    #将dvr接口的mac地址注入到DVR_NOT_LEARN表中，使得桥可以在隧道口将流量送给与br-int相连的口
     def add_dvr_mac_tun(self, mac, port):
         # Table DVR_NOT_LEARN ensures unique dvr macs in the cloud
         # are not learnt, as they may result in flow explosions
@@ -250,6 +256,7 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
                             eth_src=mac,
                             port=port)
 
+    #将dvr接口的mac地址删除掉
     def remove_dvr_mac_tun(self, mac):
         # REVISIT(yamamoto): match in_port as well?
         self.delete_flows(table=constants.DVR_NOT_LEARN,

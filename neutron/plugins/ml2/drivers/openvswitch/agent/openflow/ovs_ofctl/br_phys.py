@@ -36,12 +36,14 @@ class OVSPhysicalBridge(ovs_bridge.OVSAgentBridge,
     def provision_local_vlan(self, port, lvid, segmentation_id, distributed):
         table_id = constants.LOCAL_VLAN_TRANSLATION if distributed else 0
         if segmentation_id is None:
+            #如果物理口进来不进行segmentation映射，则strip掉vlan,接normal转
             self.add_flow(table=table_id,
                           priority=4,
                           in_port=port,
                           dl_vlan=lvid,
                           actions="strip_vlan,normal")
         else:
+            #如果物理口进来需要进行segmentation映射，则修改vlan为segmentation_id,按normal转
             self.add_flow(table=table_id,
                           priority=4,
                           in_port=port,

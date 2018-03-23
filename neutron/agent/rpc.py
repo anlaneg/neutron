@@ -77,10 +77,10 @@ class PluginReportStateAPI(object):
                                        namespace=n_const.RPC_NAMESPACE_STATE)
         self.client = n_rpc.get_client(target)
 
+    # agent向server发送report入口
     def report_state(self, context, agent_state, use_call=False):
         cctxt = self.client.prepare(
             timeout=n_rpc.TRANSPORT.conf.rpc_response_timeout)
-        # agent向server发送report入口
         # add unique identifier to a report
         # that can be logged on server side.
         # This create visible correspondence between events on
@@ -217,19 +217,21 @@ class CacheBackedPluginApi(PluginApi):
         result = {'devices': [], 'failed_devices': []}
         for device in devices:
             try:
-                #按个取每个device的详细情况
+                #按个取每个device的详细情况（来源于缓存）
                 result['devices'].append(
                     self.get_device_details(context, device, agent_id, host))
             except Exception:
+                #取设备device时失败，记录在失败集合中
                 LOG.exception("Failed to get details for device %s", device)
                 result['failed_devices'].append(device)
         return result
 
+    #自缓存中提取设备详情
     def get_device_details(self, context, device, agent_id, host=None):
         port_obj = self.remote_resource_cache.get_resource_by_id(
             resources.PORT, device)
         if not port_obj:
-            #有缓存直接返回
+            #缓存中不存在
             LOG.debug("Device %s does not exist in cache.", device)
             return {'device': device}
         if not port_obj.binding_levels:
@@ -239,6 +241,7 @@ class CacheBackedPluginApi(PluginApi):
         if not segment:
             LOG.debug("Device %s is not bound to any segment.", port_obj)
             return {'device': device}
+        #缓存中命中
         net = self.remote_resource_cache.get_resource_by_id(
             resources.NETWORK, port_obj.network_id)
         net_qos_policy_id = net.qos_policy_id

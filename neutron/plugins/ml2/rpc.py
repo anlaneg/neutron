@@ -157,6 +157,7 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
             for device in kwargs.pop('devices', [])
         ]
 
+    #收到对指定devices的信息查询
     def get_devices_details_list_and_failed_devices(self,
                                                     rpc_context,
                                                     **kwargs):
@@ -164,12 +165,14 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
         failed_devices = []
         devices_to_fetch = kwargs.pop('devices', [])
         plugin = directory.get_plugin()
+        #请求devices信息查询的主机
         host = kwargs.get('host')
         bound_contexts = plugin.get_bound_ports_contexts(rpc_context,
                                                          devices_to_fetch,
                                                          host)
         for device in devices_to_fetch:
             if not bound_contexts.get(device):
+                # 此port信息未在数据库发现
                 # unbound bound
                 LOG.debug("Device %(device)s requested by agent "
                           "%(agent_id)s not found in database",
@@ -178,6 +181,7 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
                 devices.append({'device': device})
                 continue
             try:
+                #数据库里有，取此详细的详细信息
                 devices.append(self._get_device_details(
                                rpc_context,
                                agent_id=kwargs.get('agent_id'),
@@ -185,6 +189,7 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
                                device=device,
                                port_context=bound_contexts[device]))
             except Exception:
+                #取详情时失败了
                 LOG.exception("Failed to get details for device %s",
                               device)
                 failed_devices.append(device)
@@ -199,9 +204,11 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
             failed_devices = devices_to_fetch
             devices = []
 
+        #filed_devices是获取失败的devices,而devices是可能获取了详情的设备及数据库不存在设备
         return {'devices': devices,
                 'failed_devices': failed_devices}
 
+    #处理agent上报的接口down状态
     def update_device_down(self, rpc_context, **kwargs):
         """Device no longer exists on agent."""
         # TODO(garyk) - live migration and port status

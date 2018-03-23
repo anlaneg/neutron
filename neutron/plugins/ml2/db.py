@@ -275,6 +275,7 @@ def partial_port_ids_to_full_ids(context, partial_ids):
     is found.
     """
     result = {}
+    #注查询给定id的前缀的port
     to_full_query = (context.session.query(models_v2.Port.id).
                      filter(or_(*[models_v2.Port.id.startswith(p)
                                   for p in partial_ids])))
@@ -282,8 +283,10 @@ def partial_port_ids_to_full_ids(context, partial_ids):
     for partial_id in partial_ids:
         matching = [c for c in candidates if c.startswith(partial_id)]
         if len(matching) == 1:
+            #如果备选的为1个，则直接赋值，没有歧议
             result[partial_id] = matching[0]
             continue
+        #其它情况为不存在，或者有歧议，显示log并返回空
         if len(matching) < 1:
             LOG.info("No ports have port_id starting with %s", partial_id)
         elif len(matching) > 1:
@@ -292,6 +295,7 @@ def partial_port_ids_to_full_ids(context, partial_ids):
     return result
 
 
+#给定多个port id,查询port的数据库记录
 @db_api.context_manager.reader
 def get_port_db_objects(context, port_ids):
     """Takes a list of port_ids and returns matching port db objects.

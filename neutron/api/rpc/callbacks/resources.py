@@ -44,8 +44,10 @@ _VALID_CLS = (
     log_object.Log,
 )
 
+#构造obj_name到class间的映射
 _TYPE_TO_CLS_MAP = {cls.obj_name(): cls for cls in _VALID_CLS}
 
+#构适各obj_name与版本的映射
 LOCAL_RESOURCE_VERSIONS = {
     resource_type: cls.VERSION
     for resource_type, cls in _TYPE_TO_CLS_MAP.items()

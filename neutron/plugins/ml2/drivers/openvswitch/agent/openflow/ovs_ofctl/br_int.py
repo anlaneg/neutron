@@ -83,7 +83,8 @@ class OVSIntegrationBridge(ovs_bridge.OVSAgentBridge):
             return constants.DVR_TO_SRC_MAC_VLAN
         else:
             return constants.DVR_TO_SRC_MAC
-
+    
+    #表constants.DVR_TO_SRC_MAC 将源mac修改为gateway_mac地址
     def install_dvr_to_src_mac(self, network_type,
                                vlan_tag, gateway_mac, dst_mac, dst_port):
         table_id = self._dvr_to_src_mac_table_id(network_type)
@@ -126,6 +127,7 @@ class OVSIntegrationBridge(ovs_bridge.OVSAgentBridge):
     def add_dvr_mac_tun(self, mac, port):
         # Table LOCAL_SWITCHING will now sort DVR traffic from other
         # traffic depending on in_port
+        # 从port口进来的报文，如果源mac为mac，则跳到表constants.DVR_TO_SRC_MAC
         self.install_goto(table_id=constants.LOCAL_SWITCHING,
                           priority=2,
                           in_port=port,

@@ -277,6 +277,7 @@ class PortContext(MechanismDriverContext, api.PortContext):
 
     @property
     def vif_details(self):
+        #返回vif的详细信息
         return self._plugin._get_vif_details(self._binding)
 
     @property

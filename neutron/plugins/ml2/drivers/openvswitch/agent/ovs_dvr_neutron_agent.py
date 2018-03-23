@@ -290,6 +290,7 @@ class OVSDVRNeutronAgent(object):
         # REVISIT(yamamoto): match in_port as well?
         phys_br.remove_dvr_mac_vlan(mac=mac)
 
+    #
     def _add_dvr_mac_for_tun_br(self, mac):
         self.int_br.add_dvr_mac_tun(mac=mac, port=self.patch_tun_ofport)
         self.tun_br.add_dvr_mac_tun(mac=mac, port=self.patch_int_ofport)
@@ -362,6 +363,7 @@ class OVSDVRNeutronAgent(object):
     def in_distributed_mode(self):
         return self.dvr_mac_address is not None
 
+    #下发流，使隧道口进来的报文可以到达br-int
     def process_tunneled_network(self, network_type, lvid, segmentation_id):
         self.tun_br.provision_local_vlan(
             network_type=network_type,

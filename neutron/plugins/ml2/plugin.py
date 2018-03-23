@@ -1706,24 +1706,34 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         # fetching network
         # TODO(ihrachys) remove in Queens+ when mtu is not nullable
         with db_api.context_manager.writer.using(plugin_context):
+            #查询port id以$dev_ids开头的所有ports id
             dev_to_full_pids = db.partial_port_ids_to_full_ids(
                 plugin_context, dev_ids)
+            #通过这些id，拿到对应的ports信息
             # get all port objects for IDs
             port_dbs_by_id = db.get_port_db_objects(
                 plugin_context, dev_to_full_pids.values())
+            #针对所有ports信息，收集这些ports对应的network id
             # get all networks for PortContext construction
             netctxs_by_netid = self.get_network_contexts(
                 plugin_context,
                 {p.network_id for p in port_dbs_by_id.values()})
+            
             for dev_id in dev_ids:
+                #注意：dev_to_full_pids中的key可能不是完整的port_id
+                #采用dev_id通过dev_to_full_pids可以映射到完整的port_id
                 port_id = dev_to_full_pids.get(dev_id)
                 port_db = port_dbs_by_id.get(port_id)
                 if (not port_id or not port_db or
                         port_db.network_id not in netctxs_by_netid):
+                    #注：这里这么处理的原因是，partial_port_ids_to_full_ids没有把未查找的设置为None
+                    #这里设置为None,准备知会agent server端没有这个port的信息
                     result[dev_id] = None
                     continue
+                #准备port信息，准备返回
                 port = self._make_port_dict(port_db)
                 if port['device_owner'] == const.DEVICE_OWNER_DVR_INTERFACE:
+                    #此port为分布式路由器接口时，检查此port是否已绑定在此host上
                     binding = db.get_distributed_port_binding_by_host(
                         plugin_context, port['id'], host)
                     bindlevelhost_match = host
@@ -1731,6 +1741,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                     binding = port_db.port_binding
                     bindlevelhost_match = binding.host if binding else None
                 if not binding:
+                    #如果此port还未绑定到此主机上，则不返回
                     LOG.info("Binding info for port %s was not found, "
                              "it might have been deleted already.",
                              port_id)
