@@ -134,6 +134,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         super(OVSNeutronAgent, self).__init__()
         self.conf = conf or cfg.CONF
         self.ovs = ovs_lib.BaseOVS()
+        #agent的扩展manager
         self.ext_manager = ext_manager
         agent_conf = self.conf.AGENT
         ovs_conf = self.conf.OVS
@@ -226,11 +227,12 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         self.ext_manager.initialize(
             self.connection, constants.EXTENSION_DRIVER_TYPE, agent_api)
 
+        #dvr agent功能（辅助l3 agent来处理）
         self.dvr_agent = ovs_dvr_neutron_agent.OVSDVRNeutronAgent(
             self.context,
             self.dvr_plugin_rpc,
-            self.int_br,
-            self.tun_br,
+            self.int_br,#br-int桥
+            self.tun_br,#br-tun桥
             self.bridge_mappings,
             self.phys_brs,
             self.int_ofports,
