@@ -172,6 +172,7 @@ class DVRDbMixin(ext_dvr.DVRMacAddressPluginBase):
         else:
             subnet_data = subnet
         try:
+            #取subnet_id查subnet数据库记录
             subnet_info = self.plugin.get_subnet(
                 context, subnet_data)
         except n_exc.SubnetNotFound:
@@ -179,19 +180,23 @@ class DVRDbMixin(ext_dvr.DVRMacAddressPluginBase):
         else:
             # retrieve the gateway port on this subnet
             if fixed_ips:
+                #有ip,则查此ip对应的port
                 ip_address = fixed_ips[0]['ip_address']
             else:
+                #无ip,则查gateway_ip对应的port
                 ip_address = subnet_info['gateway_ip']
 
             filter = {'fixed_ips': {'subnet_id': [subnet],
                                     'ip_address': [ip_address]}}
 
+            #查port
             internal_gateway_ports = self.plugin.get_ports(
                 context, filters=filter)
             if not internal_gateway_ports:
                 LOG.error("Could not retrieve gateway port "
                           "for subnet %s", subnet_info)
                 return {}
+            #取此port对应的mac定义为gateway_mac
             internal_port = internal_gateway_ports[0]
             subnet_info['gateway_mac'] = internal_port['mac_address']
             return subnet_info

@@ -113,6 +113,10 @@ class OVSPort(object):
         return self.ofport
 
 
+#由于l3 agent默认借用ovs来处理二层的转发，故在dvr模式情况下，需要ovs dvr agent进行
+#辅助，比如 1。添加dvr mac保证本地mac注入。 2。l3 agent上所有router接口mac地址是相同的
+#也就是说，如果两台物理服务器接同一个交换机，则由router发出来的报文，将在交换机上出现fdb飘移，
+#openstack在解决此问题上，采用了dvr agent mac,故需要ovs配合完成mac替换
 @profiler.trace_cls("ovs_dvr_agent")
 class OVSDVRNeutronAgent(object):
     '''
@@ -139,6 +143,7 @@ class OVSDVRNeutronAgent(object):
         self.reset_ovs_parameters(integ_br, tun_br,
                                   patch_int_ofport, patch_tun_ofport)
         self.reset_dvr_parameters()
+        #记录本机上的dvr mac地址
         self.dvr_mac_address = None
         if self.enable_distributed_routing:
             self.get_dvr_mac_address()
@@ -166,6 +171,7 @@ class OVSDVRNeutronAgent(object):
         self.local_ports = {}
         self.registered_dvr_macs = set()
 
+    #获取本主机对应的dvr mac地址
     def get_dvr_mac_address(self):
         try:
             self.get_dvr_mac_address_with_retry()
@@ -208,6 +214,7 @@ class OVSDVRNeutronAgent(object):
                     dialect=netaddr.mac_unix_expanded))
                 return
 
+    #br-int中默认移除所有流，相关表默认丢弃报文
     def setup_dvr_flows_on_integ_br(self):
         '''Setup up initial dvr flows into br-int'''
 
@@ -219,6 +226,7 @@ class OVSDVRNeutronAgent(object):
             self.int_br.uninstall_flows(cookie=ovs_lib.COOKIE_ANY)
 
         # Add a canary flow to int_br to track OVS restarts
+        # 标记表，用于跟踪ovs重启情况
         self.int_br.setup_canary_table()
 
         # Insert 'drop' action as the default for Table DVR_TO_SRC_MAC
@@ -239,16 +247,20 @@ class OVSDVRNeutronAgent(object):
     def setup_dvr_flows_on_tun_br(self):
         '''Setup up initial dvr flows into br-tun'''
         if not self.enable_tunneling:
+            #tunnel未开启时，直接返回，不处理
             return
 
+        #在0号表中，添加流表，如果报文是从br-int进来的，则直接跳到DVR_PROCESS表，并进行查询
         self.tun_br.install_goto(dest_table_id=constants.DVR_PROCESS,
                                  priority=1,
                                  in_port=self.patch_int_ofport)
 
         # table-miss should be sent to learning table
+        # DVR_NOT_LEARN表的默认规则是跳至LEARN_FROM_TUN表，并查询
         self.tun_br.install_goto(table_id=constants.DVR_NOT_LEARN,
                                  dest_table_id=constants.LEARN_FROM_TUN)
 
+        #DVR_PROCESS表的默认规则是跳至PATCH_LV_TO_TUN表，并查询
         self.tun_br.install_goto(table_id=constants.DVR_PROCESS,
                                  dest_table_id=constants.PATCH_LV_TO_TUN)
 
@@ -261,17 +273,21 @@ class OVSDVRNeutronAgent(object):
                 in_port=self.phys_ofports[physical_network],
                 priority=2,
                 dest_table_id=constants.DVR_PROCESS_VLAN)
+            #phys_br上表0默认规则是跳到DVR_NOT_LEARN_VLAN查询（优先级1）
             self.phys_brs[physical_network].install_goto(
                 priority=1,
                 dest_table_id=constants.DVR_NOT_LEARN_VLAN)
+            #phys_br上表DVR_PROCESS_VLAN，默认规则跳到表LOCAL_VLAN_TRANSLATION查询
             self.phys_brs[physical_network].install_goto(
                 table_id=constants.DVR_PROCESS_VLAN,
                 priority=0,
                 dest_table_id=constants.LOCAL_VLAN_TRANSLATION)
+            #phys_br上表LOCAL_VLAN_TRANSLATION,如果入接口为pyhs_ofports时，默认丢弃
             self.phys_brs[physical_network].install_drop(
                 table_id=constants.LOCAL_VLAN_TRANSLATION,
                 in_port=self.phys_ofports[physical_network],
                 priority=2)
+            #DVR_NOT_LEARN_VLAN表，默认normal转发
             self.phys_brs[physical_network].install_normal(
                 table_id=constants.DVR_NOT_LEARN_VLAN,
                 priority=1)
@@ -381,6 +397,7 @@ class OVSDVRNeutronAgent(object):
             ldm = self.local_dvr_map[subnet_uuid]
         else:
             # set up LocalDVRSubnetMapping available for this subnet
+            #取fixed_ip所在的subnet信息
             subnet_info = self.plugin_rpc.get_subnet_for_dvr(
                 self.context, subnet_uuid, fixed_ips=fixed_ips)
             if not subnet_info:
@@ -391,6 +408,7 @@ class OVSDVRNeutronAgent(object):
             LOG.debug("get_subnet_for_dvr for subnet %(uuid)s "
                       "returned with %(info)s",
                       {"uuid": subnet_uuid, "info": subnet_info})
+            #将此subnet注册至ldm集合中
             ldm = LocalDVRSubnetMapping(subnet_info)
             self.local_dvr_map[subnet_uuid] = ldm
 
@@ -430,6 +448,7 @@ class OVSDVRNeutronAgent(object):
                 comp_ovsport.add_subnet(subnet_uuid)
                 self.local_ports[vif.vif_id] = comp_ovsport
             # create rule for just this vm port
+            # 修改去往compute的源mac地址
             self.int_br.install_dvr_to_src_mac(
                 network_type=lvm.network_type,
                 vlan_tag=vlan_to_use,
@@ -582,8 +601,10 @@ class OVSDVRNeutronAgent(object):
     def bind_port_to_dvr(self, port, local_vlan_map,
                          fixed_ips, device_owner):
         if not self.in_distributed_mode():
+            #非dvr模式，不处理
             return
 
+        #当前仅支持ovs的常用网络类型及vlan
         if local_vlan_map.network_type not in (constants.TUNNEL_NETWORK_TYPES
                                                + [n_const.TYPE_VLAN]):
             LOG.debug("DVR: Port %s is with network_type %s not supported"
@@ -597,6 +618,7 @@ class OVSDVRNeutronAgent(object):
                      "%(ofport)s, rebinding.",
                      {'vif': port.vif_id, 'ofport': port.ofport})
             self.unbind_port_from_dvr(port, local_vlan_map)
+        #此port是dvr interface，则绑定给分布式路由器
         if device_owner == n_const.DEVICE_OWNER_DVR_INTERFACE:
             self._bind_distributed_router_interface_port(port,
                                                          local_vlan_map,
@@ -608,6 +630,7 @@ class OVSDVRNeutronAgent(object):
                                           fixed_ips,
                                           device_owner)
 
+        #此port是snat 路由器的interface
         if device_owner == n_const.DEVICE_OWNER_ROUTER_SNAT:
             self._bind_centralized_snat_port_on_dvr_subnet(port,
                                                            local_vlan_map,

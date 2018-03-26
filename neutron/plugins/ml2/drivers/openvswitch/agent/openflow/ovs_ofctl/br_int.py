@@ -85,6 +85,8 @@ class OVSIntegrationBridge(ovs_bridge.OVSAgentBridge):
             return constants.DVR_TO_SRC_MAC
     
     #表constants.DVR_TO_SRC_MAC 将源mac修改为gateway_mac地址
+    #常用于将去往compute的报文源mac修改为gateway对应的mac地址
+    #（这样做的目的是？防止mac是snat路由器上的mac地址？)
     def install_dvr_to_src_mac(self, network_type,
                                vlan_tag, gateway_mac, dst_mac, dst_port):
         table_id = self._dvr_to_src_mac_table_id(network_type)
