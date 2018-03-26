@@ -38,6 +38,7 @@ class LocalVLANMapping(object):
         self.network_type = network_type
         self.physical_network = physical_network
         self.segmentation_id = segmentation_id
+        #在此local vlan下有哪些port
         self.vif_ports = vif_ports or {}
         # set of tunnel ports on which packets should be flooded
         self.tun_ofports = set()

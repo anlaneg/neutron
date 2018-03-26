@@ -290,7 +290,7 @@ class OVSDVRNeutronAgent(object):
         # REVISIT(yamamoto): match in_port as well?
         phys_br.remove_dvr_mac_vlan(mac=mac)
 
-    #
+    #向br-int上添加
     def _add_dvr_mac_for_tun_br(self, mac):
         self.int_br.add_dvr_mac_tun(mac=mac, port=self.patch_tun_ofport)
         self.tun_br.add_dvr_mac_tun(mac=mac, port=self.patch_int_ofport)
