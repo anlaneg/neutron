@@ -59,6 +59,11 @@ they provide their version of manuals.
 
       # neutron-db-manage --subproject neutron-vpnaas upgrade head
 
+   .. note::
+
+      In order to run the above command, you need to have `neutron-vpnaas <https://pypi.python.org/pypi/neutron-vpnaas>`__
+      package installed on controller node.
+
 #. Restart the ``neutron-server`` in controller node to apply the settings.
 
 #. Restart the ``neutron-l3-agent`` in network node to apply the settings.
@@ -79,7 +84,7 @@ IPsec connections. The endpoint groups separate the "what gets connected" from
 the "how to connect" for a VPN service, and can be used for different flavors
 of VPN, in the future.
 
-Refer `Multiple Local Subnets <https://docs.openstack.org/neutron-vpnaas/latest/devref/multiple-local-subnets.html>`__ for more detail.
+Refer `Multiple Local Subnets <https://docs.openstack.org/neutron-vpnaas/latest/contributor/multiple-local-subnets.html>`__ for more detail.
 
 Create the IKE policy, IPsec policy, VPN service,
 local endpoint group and peer endpoint group.

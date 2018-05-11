@@ -69,8 +69,6 @@ class TestQosPlugin(base.BaseQosTestCase):
 
         self.ctxt = context.Context('fake_user', 'fake_tenant')
         self.admin_ctxt = context.get_admin_context()
-        mock.patch.object(self.ctxt.session, 'refresh').start()
-        mock.patch.object(self.ctxt.session, 'expunge').start()
 
         self.policy_data = {
             'policy': {'id': uuidutils.generate_uuid(),
@@ -526,8 +524,8 @@ class TestQosPlugin(base.BaseQosTestCase):
         setattr(_policy, "rules", [self.rule])
         with mock.patch('neutron.objects.qos.rule.get_rules',
                         return_value=[self.rule]), mock.patch(
-            'neutron.objects.qos.policy.QosPolicy.get_object',
-            return_value=_policy):
+                'neutron.objects.qos.policy.QosPolicy.get_object',
+                return_value=_policy):
             self.rule_data['bandwidth_limit_rule']['max_kbps'] = 1
             self.qos_plugin.update_policy_bandwidth_limit_rule(
                 self.ctxt, self.rule.id, self.policy.id, self.rule_data)

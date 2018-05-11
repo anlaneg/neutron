@@ -31,6 +31,7 @@ from neutron_lib import exceptions as n_exc
 from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
+from neutron_lib.plugins import utils as plugin_utils
 from neutron_lib.services import base as base_services
 from oslo_log import log as logging
 from oslo_utils import uuidutils
@@ -46,7 +47,6 @@ from neutron.db import _model_query as model_query
 from neutron.db import _resource_extend as resource_extend
 from neutron.db import _utils as db_utils
 from neutron.db import api as db_api
-from neutron.db import common_db_mixin
 from neutron.db.models import l3 as l3_models
 from neutron.db import models_v2
 from neutron.db import standardattrdescription_db as st_attr
@@ -249,9 +249,9 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         delete = functools.partial(self.delete_router, context)
         update_gw = functools.partial(self._update_gw_for_create_router,
                                       context, gw_info)
-        router_db, _unused = common_db_mixin.safe_creation(context, create,
-                                                           delete, update_gw,
-                                                           transaction=False)
+        router_db, _unused = db_utils.safe_creation(context, create,
+                                                    delete, update_gw,
+                                                    transaction=False)
         new_router = self._make_router_dict(router_db)
         registry.notify(resources.ROUTER, events.AFTER_CREATE, self,
                         context=context, router_id=router_db.id,
@@ -337,7 +337,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         if (not extensions.is_extension_supported(
                 l3_plugin,
                 constants.L3_AGENT_SCHEDULER_EXT_ALIAS) or
-            l3_plugin.router_scheduler is None):
+                l3_plugin.router_scheduler is None):
             # that might mean that we are dealing with non-agent-based
             # implementation of l3 services
             return
@@ -386,8 +386,8 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         if not gw_port['fixed_ips']:
             LOG.debug('No IPs available for external network %s',
                       network_id)
-        with p_utils.delete_port_on_error(self._core_plugin,
-                                          context.elevated(), gw_port['id']):
+        with plugin_utils.delete_port_on_error(
+                self._core_plugin, context.elevated(), gw_port['id']):
             with context.session.begin(subtransactions=True):
                 #创建对应的router-port
                 router.gw_port = self._core_plugin._get_port(
@@ -565,7 +565,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
     def delete_router(self, context, id):
         registry.notify(resources.ROUTER, events.BEFORE_DELETE,
                         self, context=context, router_id=id)
-        #TODO(nati) Refactor here when we have router insertion model
+        # TODO(nati) Refactor here when we have router insertion model
         router = self._ensure_router_not_in_use(context, id)
         original = self._make_router_dict(router)
         self._delete_current_gw_port(context, id, router, None)
@@ -810,8 +810,8 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             #如果subnet没有配置gateway_ip，则不容许其连接到路由器（subnet是容许不配置gateway_ip的）
             msg = _('Subnet for router interface must have a gateway IP')
             raise n_exc.BadRequest(resource='router', msg=msg)
-        if (subnet['ip_version'] == 6 and subnet['ipv6_ra_mode'] is None
-                and subnet['ipv6_address_mode'] is not None):
+        if (subnet['ip_version'] == 6 and subnet['ipv6_ra_mode'] is None and
+                subnet['ipv6_address_mode'] is not None):
             msg = (_('IPv6 subnet %s configured to receive RAs from an '
                    'external router cannot be added to Neutron Router.') %
                    subnet['id'])
@@ -822,7 +822,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                     'subnet_id': subnet['id']}
 
         if (subnet['ip_version'] == 6 and not
-            ipv6_utils.is_ipv6_pd_enabled(subnet)):
+                ipv6_utils.is_ipv6_pd_enabled(subnet)):
             # Add new prefix to an existing ipv6 port with the same network id
             # if one exists
             port = self._find_ipv6_router_port_by_network(context, router,
@@ -875,7 +875,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             port = self._check_router_port(context, port_id, '')
             revert_value = {'device_id': '',
                             'device_owner': port['device_owner']}
-            with p_utils.update_port_on_error(
+            with plugin_utils.update_port_on_error(
                     self._core_plugin, context, port_id, revert_value):
                 #更新port为路由器所有
                 port, subnets = self._add_interface_by_port(
@@ -891,10 +891,10 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                             'device_owner': port['device_owner']}
 
         if cleanup_port:
-            mgr = p_utils.delete_port_on_error(
+            mgr = plugin_utils.delete_port_on_error(
                 self._core_plugin, context, port['id'])
         else:
-            mgr = p_utils.update_port_on_error(
+            mgr = plugin_utils.update_port_on_error(
                 self._core_plugin, context, port['id'], revert_value)
 
         if new_router_intf:
@@ -1346,9 +1346,9 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                                             {'port': port},
                                             check_allow_post=False)
 
-        with p_utils.delete_port_on_error(self._core_plugin,
-                                          context.elevated(),
-                                          external_port['id']),\
+        with plugin_utils.delete_port_on_error(
+                self._core_plugin, context.elevated(),
+                external_port['id']),\
                 context.session.begin(subtransactions=True):
             # Ensure IPv4 addresses are allocated on external port
             external_ipv4_ips = self._port_ipv4_fixed_ips(external_port)
@@ -1428,11 +1428,6 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                                                    floatingip_obj,
                                                    fip,
                                                    old_floatingip)
-            # Expunge it to ensure the following get_object doesn't  use the
-            # instance. Such as update fip qos above bumps the revision of the
-            # floatingIp. It would add floatingIp object to the session.
-            context.session.expunge(model_query.get_by_id(
-                context, l3_models.FloatingIP, floatingip_obj.id))
             floatingip_obj = l3_obj.FloatingIP.get_object(
                 context, id=floatingip_obj.id)
             floatingip_db = floatingip_obj.db_obj

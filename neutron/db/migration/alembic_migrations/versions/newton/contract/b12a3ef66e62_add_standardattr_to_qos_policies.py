@@ -12,6 +12,9 @@
 #    under the License.
 #
 
+from alembic import op
+import sqlalchemy as sa
+
 """add standardattr to qos policies
 
 Revision ID: b12a3ef66e62
@@ -24,9 +27,6 @@ Create Date: 2016-08-18 14:10:30.021055
 revision = 'b12a3ef66e62'
 down_revision = '3b935b28e7a0'
 depends_on = ('67daae611b6e',)
-
-from alembic import op
-import sqlalchemy as sa
 
 
 # basic model of the tables with required field for migration
@@ -71,7 +71,7 @@ def generate_records_for_existing():
         for row in session.query(TABLE_MODEL):
             # NOTE(kevinbenton): without this disabled, pylint complains
             # about a missing 'dml' argument.
-            #pylint: disable=no-value-for-parameter
+            # pylint: disable=no-value-for-parameter
             res = session.execute(
                 standardattrs.insert().values(resource_type=TABLE,
                                               description=row[1])

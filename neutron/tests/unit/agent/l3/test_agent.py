@@ -1864,8 +1864,8 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
         l3_test_common.router_append_subnet(
             router, count=2, ip_version=6,
             ipv6_subnet_modes=([{'ra_mode': lib_constants.IPV6_SLAAC,
-                                 'address_mode': lib_constants.IPV6_SLAAC}]
-                               * 2))
+                                 'address_mode': lib_constants.IPV6_SLAAC}] *
+                               2))
         self._process_router_instance_for_agent(agent, ri, router)
         self._assert_ri_process_enabled(ri)
         # Reset mocks to check for modified radvd config
@@ -2532,9 +2532,10 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                   'distributed': True, 'ha': True,
                   'external_gateway_info': {}, 'routes': [],
                   'admin_state_up': True}
-
-        agent._process_router_if_compatible(router)
-        self.assertIn(router['id'], agent.router_info)
+        with mock.patch.object(agent, 'check_ha_state_for_router') as chsfr:
+            agent._process_router_if_compatible(router)
+            self.assertIn(router['id'], agent.router_info)
+            self.assertFalse(chsfr.called)
 
     def test_process_router_if_compatible_with_no_ext_net_in_conf(self):
         self.conf.set_override('external_network_bridge', 'br-ex')
@@ -3507,6 +3508,15 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                             mock.call.add_chain('float-snat'),
                             mock.call.add_rule('PREROUTING', '-j $floatingip'),
                             mock.call.add_rule(
+                                'PREROUTING',
+                                '-d 169.254.169.254/32 -i %(interface_name)s '
+                                '-p tcp -m tcp --dport 80 '
+                                '-j MARK --set-xmark %(value)s/%(mask)s' %
+                                {'interface_name':
+                                 namespaces.INTERNAL_DEV_PREFIX + '+',
+                                 'value': self.conf.metadata_access_mark,
+                                 'mask': n_const.ROUTER_MARK_MASK}),
+                            mock.call.add_rule(
                                 'float-snat',
                                 '-m connmark --mark 0x0/0xffff0000 '
                                 '-j CONNMARK --save-mark '
@@ -3540,6 +3550,27 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
             ri._create_dvr_gateway(ex_gw_port, interface_name)
             self._verify_address_scopes_iptables_rule(
                 ri.snat_iptables_manager)
+
+    def _verify_metadata_iptables_rule(self, mock_iptables_manager):
+        v4_mangle_calls = ([mock.call.add_rule(
+                                'PREROUTING',
+                                '-d 169.254.169.254/32 -i %(interface_name)s '
+                                '-p tcp -m tcp --dport 80 '
+                                '-j MARK --set-xmark %(value)s/%(mask)s' %
+                                {'interface_name':
+                                 namespaces.INTERNAL_DEV_PREFIX + '+',
+                                 'value': self.conf.metadata_access_mark,
+                                 'mask': n_const.ROUTER_MARK_MASK})])
+        mock_iptables_manager.ipv4['mangle'].assert_has_calls(v4_mangle_calls,
+                                                              any_order=True)
+
+    def test_initialize_metadata_iptables_rules(self):
+        id = _uuid()
+        agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
+        with mock.patch('neutron.agent.linux.iptables_manager.'
+                        'IptablesManager'):
+            ri = l3router.RouterInfo(agent, id, {}, **self.ri_kwargs)
+            self._verify_metadata_iptables_rule(ri.iptables_manager)
 
     @mock.patch.object(l3router.RouterInfo, 'delete')
     @mock.patch.object(ha_router.HaRouter, 'destroy_state_change_monitor')

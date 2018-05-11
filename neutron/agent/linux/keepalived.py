@@ -366,7 +366,7 @@ class KeepalivedManager(object):
 
     """
 
-    def __init__(self, resource_id, config, process_monitor, conf_path='/tmp',
+    def __init__(self, resource_id, config, process_monitor, conf_path,
                  namespace=None, throttle_restart_value=None):
         self.resource_id = resource_id
         self.config = config
@@ -378,7 +378,7 @@ class KeepalivedManager(object):
         if throttle_restart_value is not None:
             self._throttle_spawn(throttle_restart_value)
 
-    #pylint: disable=method-hidden
+    # pylint: disable=method-hidden
     def _throttle_spawn(self, threshold):
         self.spawn = utils.throttler(threshold)(self.spawn)
 

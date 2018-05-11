@@ -1,6 +1,3 @@
-# Copyright 2011 Citrix Systems.
-# All Rights Reserved.
-#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -13,15 +10,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from debtcollector import removals
+from neutron_lib.api.definitions import fip_port_details as apidef
+from neutron_lib.api import extensions
 
-from neutron.pecan_wsgi import app as pecan_app
 
+class Fip_port_details(extensions.APIExtensionDescriptor):
+    """Extension class adding port_details to Floating IP."""
 
-class Versions(object):
-
-    @removals.remove(version="Queens", removal_version="Rocky",
-                     message="Use neutron.pecan_wsgi.app:versions_factory")
-    @classmethod
-    def factory(cls, global_config, **local_config):
-        return pecan_app.versions_factory(global_config, **local_config)
+    api_definition = apidef

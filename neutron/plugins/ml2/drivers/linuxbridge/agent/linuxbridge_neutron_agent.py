@@ -24,6 +24,7 @@ import sys
 import netaddr
 from neutron_lib.agent import topics
 from neutron_lib import constants
+from neutron_lib.plugins import utils as plugin_utils
 from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -40,7 +41,6 @@ from neutron.common import exceptions
 from neutron.common import profiler as setup_profiler
 from neutron.common import utils
 from neutron.conf.agent import common as agent_config
-from neutron.plugins.common import utils as p_utils
 from neutron.plugins.ml2.drivers.agent import _agent_manager_base as amb
 from neutron.plugins.ml2.drivers.agent import _common_agent as ca
 from neutron.plugins.ml2.drivers.agent import config as cagt_config  # noqa
@@ -196,8 +196,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
         #          prefix = mix_interface.1 (backward compatible)
         #          prefix = mix_iHASHED.1111
         if (len(physical_interface) + len(vlan_postfix) >
-            constants.DEVICE_NAME_MAX_LEN):
-            physical_interface = p_utils.get_interface_name(
+                constants.DEVICE_NAME_MAX_LEN):
+            physical_interface = plugin_utils.get_interface_name(
                 physical_interface, max_len=(constants.DEVICE_NAME_MAX_LEN -
                                              MAX_VLAN_POSTFIX_LEN))
         return "%s%s" % (physical_interface, vlan_postfix)
@@ -347,25 +347,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
                 args['proxy'] = cfg.CONF.VXLAN.arp_responder
 
             try:
-                if mtu:
-                    phys_dev_mtu = ip_lib.get_device_mtu(self.local_int)
-                    max_mtu = phys_dev_mtu - constants.VXLAN_ENCAP_OVERHEAD
-                    if mtu > max_mtu:
-                        LOG.error("Provided MTU value %(mtu)s for VNI "
-                                  "%(segmentation_id)s is too high. "
-                                  "According to physical device %(dev)s "
-                                  "MTU=%(phys_mtu)s maximum available "
-                                  "MTU is %(max_mtu)s",
-                                  {'mtu': mtu,
-                                   'segmentation_id': segmentation_id,
-                                   'dev': self.local_int,
-                                   'phys_mtu': phys_dev_mtu,
-                                   'max_mtu': max_mtu})
-                        return None
                 int_vxlan = self.ip.add_vxlan(interface, segmentation_id,
                                               **args)
-                if mtu:
-                    int_vxlan.link.set_mtu(mtu)
             except RuntimeError:
                 with excutils.save_and_reraise_exception() as ctxt:
                     # perform this check after an attempt rather than before
@@ -376,6 +359,20 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
                                   "VNI %s because it is in use by another "
                                   "interface.", segmentation_id)
                         return None
+            if mtu:
+                try:
+                    int_vxlan.link.set_mtu(mtu)
+                except ip_lib.InvalidArgument:
+                    phys_dev_mtu = ip_lib.get_device_mtu(self.local_int)
+                    LOG.error("Provided MTU value %(mtu)s for VNI "
+                              "%(segmentation_id)s is too high according "
+                              "to physical device %(dev)s MTU=%(phys_mtu)s.",
+                              {'mtu': mtu,
+                               'segmentation_id': segmentation_id,
+                               'dev': self.local_int,
+                               'phys_mtu': phys_dev_mtu})
+                    int_vxlan.link.delete()
+                    return None
             int_vxlan.disable_ipv6()
             int_vxlan.link.set_up()
             LOG.debug("Done creating vxlan interface %s", interface)
@@ -420,21 +417,10 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
 
         return updated
 
-    def _bridge_exists_and_ensure_up(self, bridge_name):
-        """Check if the bridge exists and make sure it is up."""
-        br = ip_lib.IPDevice(bridge_name)
-        br.set_log_fail_as_error(False)
-        try:
-            # If the device doesn't exist this will throw a RuntimeError
-            br.link.set_up()
-        except RuntimeError:
-            return False
-        return True
-
     def ensure_bridge(self, bridge_name, interface=None,
                       update_interface=True):
         """Create a bridge unless it already exists."""
-        # _bridge_exists_and_ensure_up instead of device_exists is used here
+        # ensure_device_is_ready instead of device_exists is used here
         # because there are cases where the bridge exists but it's not UP,
         # for example:
         # 1) A greenthread was executing this function and had not yet executed
@@ -442,7 +428,7 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
         # thread running the same function
         # 2) The Nova VIF driver was running concurrently and had just created
         #    the bridge, but had not yet put it UP
-        if not self._bridge_exists_and_ensure_up(bridge_name):
+        if not ip_lib.ensure_device_is_ready(bridge_name):
             LOG.debug("Starting bridge %(bridge_name)s for subinterface "
                       "%(interface)s",
                       {'bridge_name': bridge_name, 'interface': interface})
@@ -707,8 +693,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
 
         test_iface = None
         for seg_id in moves.range(1, constants.MAX_VXLAN_VNI + 1):
-            if (ip_lib.device_exists(self.get_vxlan_device_name(seg_id))
-                    or ip_lib.vxlan_in_use(seg_id)):
+            if (ip_lib.device_exists(self.get_vxlan_device_name(seg_id)) or
+                    ip_lib.vxlan_in_use(seg_id)):
                 continue
             test_iface = self.ensure_vxlan(seg_id)
             break
@@ -1034,5 +1020,5 @@ def main():
                                LB_AGENT_BINARY)
     setup_profiler.setup("neutron-linuxbridge-agent", cfg.CONF.host)
     LOG.info("Agent initialized successfully, now running... ")
-    launcher = service.launch(cfg.CONF, agent)
+    launcher = service.launch(cfg.CONF, agent, restart_method='mutate')
     launcher.wait()

@@ -92,11 +92,10 @@ class L3NatExtensionTestCase(test_extensions_base.ExtensionTestCase):
 
     def setUp(self):
         super(L3NatExtensionTestCase, self).setUp()
-        self._setUpExtension(
+        self.setup_extension(
             'neutron.services.l3_router.l3_router_plugin.L3RouterPlugin',
-            plugin_constants.L3, {},
-            l3.L3, '', allow_pagination=True, allow_sorting=True,
-            supported_extension_aliases=['router'],
+            plugin_constants.L3, l3.L3, '', allow_pagination=True,
+            allow_sorting=True, supported_extension_aliases=['router'],
             use_quota=True)
 
     def test_router_create(self):
@@ -350,8 +349,9 @@ class L3NatTestCaseMixin(object):
             data['router']['name'] = name
         if admin_state_up is not None:
             data['router']['admin_state_up'] = admin_state_up
-        for arg in (('admin_state_up', 'tenant_id', 'availability_zone_hints')
-                    + (arg_list or ())):
+        for arg in (('admin_state_up', 'tenant_id',
+                     'availability_zone_hints') +
+                    (arg_list or ())):
             # Arg must be present and not empty
             if arg in kwargs:
                 data['router'][arg] = kwargs[arg]
@@ -1928,7 +1928,7 @@ class L3NatTestCaseBase(L3NatTestCaseMixin):
                                                   None,
                                                   None,
                                                   exc.HTTPBadRequest.code)
-                    #remove properly to clean-up
+                    # remove properly to clean-up
                     self._router_interface_action('remove',
                                                   r['router']['id'],
                                                   None,
@@ -2114,7 +2114,7 @@ class L3NatTestCaseBase(L3NatTestCaseMixin):
                         self.assertEqual(400, res.status_int)
                     for p in self._list('ports')['ports']:
                         if (p['device_owner'] ==
-                            lib_constants.DEVICE_OWNER_FLOATINGIP):
+                                lib_constants.DEVICE_OWNER_FLOATINGIP):
                             self.fail('garbage port is not deleted')
 
     def test_floatingip_with_assoc_fails(self):
@@ -3531,7 +3531,7 @@ class L3AgentDbTestCaseBase(L3NatTestCaseMixin):
                 self.assertIn(router1_id, device_list)
                 self.assertIn(router2_id, device_list)
 
-                #Verify if no router pass in, return empty list
+                # Verify if no router pass in, return empty list
                 ifaces = self.plugin._get_sync_interfaces(admin_ctx, None)
                 self.assertEqual(0, len(ifaces))
 

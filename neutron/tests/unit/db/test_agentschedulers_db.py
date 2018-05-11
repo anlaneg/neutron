@@ -215,7 +215,7 @@ class AgentSchedulerTestMixIn(object):
         agents = self._list_agents()
         for agent_data in agents['agents']:
             if (agent_data['agent_type'] == agent_type and
-                agent_data['host'] == host):
+                    agent_data['host'] == host):
                 return agent_data['id']
 
 
@@ -268,6 +268,12 @@ class OvsAgentSchedulerTestCase(OvsAgentSchedulerTestCaseBase):
         self._register_agent_states()
         agents = self._list_agents()
         self.assertEqual(4, len(agents['agents']))
+
+    def test_list_router_ids_on_host_no_l3_agent(self):
+        l3_rpc_cb = l3_rpc.L3RpcCallback()
+        self.assertEqual(
+            [],
+            l3_rpc_cb.get_router_ids(self.adminContext, host="fake host"))
 
     def test_network_scheduling_on_network_creation(self):
         self._register_agent_states()
@@ -1133,7 +1139,7 @@ class OvsAgentSchedulerTestCase(OvsAgentSchedulerTestCaseBase):
             default = l3agents['agents'][0]['id']
             for com in agents['agents']:
                 if (com['id'] != default and
-                    com['agent_type'] == constants.AGENT_TYPE_L3):
+                        com['agent_type'] == constants.AGENT_TYPE_L3):
                     another_l3_agent_id = com['id']
                     another_l3_agent_host = com['host']
                     break

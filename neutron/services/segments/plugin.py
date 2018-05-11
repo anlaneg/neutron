@@ -25,20 +25,20 @@ from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
+from neutron_lib.exceptions import placement as placement_exc
 from neutron_lib.plugins import directory
 from novaclient import client as nova_client
 from novaclient import exceptions as nova_exc
 from oslo_config import cfg
 from oslo_log import log
+from oslo_utils import excutils
 
 from neutron._i18n import _
-from neutron.common import exceptions as n_exc
 from neutron.db import _resource_extend as resource_extend
-from neutron.db import api as db_api
-from neutron.db.models import segment as segment_model
-from neutron.db import models_v2
 from neutron.extensions import segment
 from neutron.notifiers import batch_notifier
+from neutron.objects import network as net_obj
+from neutron.objects import subnet as subnet_obj
 from neutron.services.segments import db
 from neutron.services.segments import exceptions
 from neutron.services.segments import placement_client
@@ -58,7 +58,11 @@ class Plugin(db.SegmentDbMixin, segment.SegmentPluginBase):
     _instance = None
 
     supported_extension_aliases = ["segment", "ip_allocation",
-                                   l2adj_apidef.ALIAS]
+                                   l2adj_apidef.ALIAS,
+                                   "standard-attr-segment"]
+
+    __native_pagination_support = True
+    __native_sorting_support = True
 
     def __init__(self):
         self.nova_updater = NovaSegmentNotifier()
@@ -71,8 +75,8 @@ class Plugin(db.SegmentDbMixin, segment.SegmentPluginBase):
 
         # TODO(carl_baldwin) Make this work with service subnets when
         #                    it's a thing.
-        is_adjacent = (not network_db.subnets
-                       or not network_db.subnets[0].segment_id)
+        is_adjacent = (not network_db.subnets or
+                       not network_db.subnets[0].segment_id)
         network_res[l2adj_apidef.L2_ADJACENCY] = is_adjacent
 
     @staticmethod
@@ -105,11 +109,10 @@ class Plugin(db.SegmentDbMixin, segment.SegmentPluginBase):
         if for_net_delete:
             # don't check if this is a part of a network delete operation
             return
-        with db_api.context_manager.reader.using(context):
-            segment_id = segment['id']
-            query = context.session.query(models_v2.Subnet.id)
-            query = query.filter(models_v2.Subnet.segment_id == segment_id)
-            subnet_ids = [s[0] for s in query]
+        segment_id = segment['id']
+        subnets = subnet_obj.Subnet.get_objects(context,
+                                                segment_id=segment_id)
+        subnet_ids = [s.id for s in subnets]
 
         if subnet_ids:
             reason = _("The segment is still associated with subnet(s) "
@@ -165,7 +168,7 @@ class NovaSegmentNotifier(object):
         for event in batched_events:
             try:
                 event.method(event)
-            except n_exc.PlacementEndpointNotFound:
+            except placement_exc.PlacementEndpointNotFound:
                 LOG.debug('Placement API was not found when trying to '
                           'update routed networks IPv4 inventories')
                 return
@@ -178,18 +181,17 @@ class NovaSegmentNotifier(object):
             return
         total, reserved = self._calculate_inventory_total_and_reserved(subnet)
         if total:
-            query = (
-                context.session.query(segment_model.SegmentHostMapping).
-                filter_by(segment_id=segment_id)
-            )
+            segment_host_mappings = net_obj.SegmentHostMapping.get_objects(
+                context, segment_id=segment_id)
             self.batch_notifier.queue_event(Event(
                 self._create_or_update_nova_inventory, segment_id, total=total,
-                reserved=reserved, segment_host_mappings=query.all()))
+                reserved=reserved,
+                segment_host_mappings=segment_host_mappings))
 
     def _create_or_update_nova_inventory(self, event):
         try:
             self._update_nova_inventory(event)
-        except n_exc.PlacementResourceProviderNotFound:
+        except placement_exc.PlacementResourceProviderNotFound:
             self._create_nova_inventory(event.segment_id, event.total,
                                         event.reserved,
                                         event.segment_host_mappings)
@@ -207,11 +209,22 @@ class NovaSegmentNotifier(object):
                                                ipv4_inventory,
                                                IPV4_RESOURCE_CLASS)
                 return
-            except n_exc.PlacementInventoryUpdateConflict:
+            except placement_exc.PlacementInventoryUpdateConflict:
                 LOG.debug('Re-trying to update Nova IPv4 inventory for '
                           'routed network segment: %s', event.segment_id)
         LOG.error('Failed to update Nova IPv4 inventory for routed '
                   'network segment: %s', event.segment_id)
+
+    def _get_nova_aggregate_uuid(self, aggregate):
+        try:
+            return aggregate.uuid
+        except AttributeError:
+            with excutils.save_and_reraise_exception():
+                LOG.exception("uuid was not returned as part of the aggregate "
+                              "object which indicates that the Nova API "
+                              "backend does not support microversions. Ensure "
+                              "that the compute endpoint in the service "
+                              "catalog points to the v2.1 API.")
 
     def _create_nova_inventory(self, segment_id, total, reserved,
                                segment_host_mappings):
@@ -219,9 +232,10 @@ class NovaSegmentNotifier(object):
         resource_provider = {'name': name, 'uuid': segment_id}
         self.p_client.create_resource_provider(resource_provider)
         aggregate = self.n_client.aggregates.create(name, None)
-        self.p_client.associate_aggregates(segment_id, [aggregate.uuid])
+        aggregate_uuid = self._get_nova_aggregate_uuid(aggregate)
+        self.p_client.associate_aggregates(segment_id, [aggregate_uuid])
         for mapping in segment_host_mappings:
-            self.n_client.aggregates.add_host(aggregate.id, mapping['host'])
+            self.n_client.aggregates.add_host(aggregate.id, mapping.host)
         ipv4_inventory = {'total': total, 'reserved': reserved,
                           'min_unit': 1, 'max_unit': 1, 'step_size': 1,
                           'allocation_ratio': 1.0,
@@ -268,9 +282,8 @@ class NovaSegmentNotifier(object):
         if total or reserved:
             segment_host_mappings = None
             if not original_subnet['allocation_pools']:
-                segment_host_mappings = context.session.query(
-                    segment_model.SegmentHostMapping).filter_by(
-                        segment_id=segment_id).all()
+                segment_host_mappings = net_obj.SegmentHostMapping.get_objects(
+                    context, segment_id=segment_id)
             self.batch_notifier.queue_event(Event(
                 self._create_or_update_nova_inventory, segment_id, total=total,
                 reserved=reserved,
@@ -299,7 +312,8 @@ class NovaSegmentNotifier(object):
             segment_id)['aggregates'][0]
         aggregates = self.n_client.aggregates.list()
         for aggregate in aggregates:
-            if aggregate.uuid == aggregate_uuid:
+            nc_aggregate_uuid = self._get_nova_aggregate_uuid(aggregate)
+            if nc_aggregate_uuid == aggregate_uuid:
                 return aggregate.id
 
     def _delete_nova_inventory(self, event):
@@ -316,9 +330,9 @@ class NovaSegmentNotifier(object):
     def _notify_host_addition_to_aggregate(self, resource, event, trigger,
                                            context, host, current_segment_ids,
                                            **kwargs):
-        query = context.session.query(models_v2.Subnet).filter(
-            models_v2.Subnet.segment_id.in_(current_segment_ids))
-        segment_ids = {subnet['segment_id'] for subnet in query}
+        subnets = subnet_obj.Subnet.get_objects(context,
+                                                segment_id=current_segment_ids)
+        segment_ids = {s.segment_id for s in subnets}
         self.batch_notifier.queue_event(Event(self._add_host_to_aggregate,
             segment_ids, host=host))
 
@@ -326,7 +340,7 @@ class NovaSegmentNotifier(object):
         for segment_id in event.segment_ids:
             try:
                 aggregate_id = self._get_aggregate_id(segment_id)
-            except n_exc.PlacementAggregateNotFound:
+            except placement_exc.PlacementAggregateNotFound:
                 LOG.info('When adding host %(host)s, aggregate not found '
                          'for routed network segment %(segment_id)s',
                          {'host': event.host, 'segment_id': segment_id})
@@ -384,17 +398,16 @@ class NovaSegmentNotifier(object):
         ipv4_subnet_ids = self._get_ipv4_subnet_ids(port)
         if not ipv4_subnet_ids:
             return 0, None
-        segment_id = context.session.query(
-            models_v2.Subnet).filter_by(id=ipv4_subnet_ids[0]).one()[
-                    'segment_id']
-        if not segment_id:
-            return 0, None
-        return len(ipv4_subnet_ids), segment_id
+        subnet = subnet_obj.Subnet.get_object(context, id=ipv4_subnet_ids[0])
+        if subnet and subnet.segment_id:
+            return len(ipv4_subnet_ids), subnet.segment_id
+
+        return 0, None
 
     def _does_port_require_nova_inventory_update(self, port):
         device_owner = port.get('device_owner')
         if (device_owner.startswith(constants.DEVICE_OWNER_COMPUTE_PREFIX) or
-            device_owner == constants.DEVICE_OWNER_DHCP):
+                device_owner == constants.DEVICE_OWNER_DHCP):
             return False
         return True
 

@@ -13,11 +13,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import errno
 import os
 import re
 import time
 
-from debtcollector import removals
 import eventlet
 import netaddr
 from neutron_lib import constants
@@ -25,6 +25,8 @@ from neutron_lib import exceptions
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import excutils
+from pyroute2.netlink.rtnl import ifinfmsg
+from pyroute2 import NetlinkError
 from pyroute2 import netns
 import six
 
@@ -63,6 +65,11 @@ def remove_interface_suffix(interface):
 class AddressNotReady(exceptions.NeutronException):
     message = _("Failure waiting for address %(address)s to "
                 "become ready: %(reason)s")
+
+
+class InvalidArgument(exceptions.NeutronException):
+    message = _("Invalid value %(value)s for parameter %(parameter)s "
+                "provided.")
 
 
 class SubProcessBase(object):
@@ -261,17 +268,9 @@ class IPWrapper(SubProcessBase):
             else:
                 raise n_exc.NetworkVxlanPortRangeError(vxlan_range=srcport)
         if dstport:
-            kwargs['vxlan_port'] = str(dstport)
+            kwargs['vxlan_port'] = dstport
         privileged.create_interface(name, self.namespace, "vxlan", **kwargs)
         return (IPDevice(name, namespace=self.namespace))
-
-    @removals.remove(version='Queens', removal_version='Rocky',
-                     message="This will be removed in the future. Please use "
-                             "'neutron.agent.linux.ip_lib."
-                             "list_network_namespaces' instead.")
-    @classmethod
-    def get_namespaces(cls):
-        return list_network_namespaces()
 
 
 class IPDevice(SubProcessBase):
@@ -284,8 +283,8 @@ class IPDevice(SubProcessBase):
         self.neigh = IpNeighCommand(self) #邻居表项
 
     def __eq__(self, other):
-        return (other is not None and self.name == other.name
-                and self.namespace == other.namespace)
+        return (other is not None and self.name == other.name and
+                self.namespace == other.namespace)
 
     def __str__(self):
         return self.name
@@ -474,7 +473,7 @@ class IpRuleCommand(IpCommandBase):
     def add(self, ip, **kwargs):
         ip_version = common_utils.get_ip_version(ip)
 
-        # In case if we need to add in a rule based on incoming
+        # In case we need to add a rule based on an incoming
         # interface, pass the "any" IP address, for example, 0.0.0.0/0,
         # else pass the given IP.
         if kwargs.get('iif'):
@@ -492,8 +491,13 @@ class IpRuleCommand(IpCommandBase):
     def delete(self, ip, **kwargs):
         ip_version = common_utils.get_ip_version(ip)
 
-        # TODO(Carl) ip ignored in delete, okay in general?
-
+        # In case we need to delete a rule based on an incoming
+        # interface, pass the "any" IP address, for example, 0.0.0.0/0,
+        # else pass the given IP.
+        if kwargs.get('iif'):
+            kwargs.update({'from': constants.IP_ANY[ip_version]})
+        else:
+            kwargs.update({'from': ip})
         canonical_kwargs = self._make_canonical(ip_version, kwargs)
 
         args_tuple = self._make__flat_args_tuple('del', **canonical_kwargs)
@@ -510,33 +514,46 @@ class IpLinkCommand(IpDeviceCommandBase):
     COMMAND = 'link'
 
     def set_address(self, mac_address):
-        self._as_root([], ('set', self.name, 'address', mac_address))
+        privileged.set_link_attribute(
+            self.name, self._parent.namespace, address=mac_address)
 
     def set_allmulticast_on(self):
-        self._as_root([], ('set', self.name, 'allmulticast', 'on'))
+        privileged.set_link_flags(
+            self.name, self._parent.namespace, ifinfmsg.IFF_ALLMULTI)
 
     def set_mtu(self, mtu_size):
-        self._as_root([], ('set', self.name, 'mtu', mtu_size))
+        try:
+            privileged.set_link_attribute(
+                self.name, self._parent.namespace, mtu=mtu_size)
+        except NetlinkError as e:
+            if e.code == errno.EINVAL:
+                raise InvalidArgument(parameter="MTU", value=mtu_size)
+            raise
 
     def set_up(self):
-        return self._as_root([], ('set', self.name, 'up'))
+        privileged.set_link_attribute(
+            self.name, self._parent.namespace, state='up')
 
     def set_down(self):
-        return self._as_root([], ('set', self.name, 'down'))
+        privileged.set_link_attribute(
+            self.name, self._parent.namespace, state='down')
 
     def set_netns(self, namespace):
-        self._as_root([], ('set', self.name, 'netns', namespace))
+        privileged.set_link_attribute(
+            self.name, self._parent.namespace, net_ns_fd=namespace)
         self._parent.namespace = namespace
 
     def set_name(self, name):
-        self._as_root([], ('set', self.name, 'name', name))
+        privileged.set_link_attribute(
+            self.name, self._parent.namespace, ifname=name)
         self._parent.name = name
 
     def set_alias(self, alias_name):
-        self._as_root([], ('set', self.name, 'alias', alias_name))
+        privileged.set_link_attribute(
+            self.name, self._parent.namespace, ifalias=alias_name)
 
     def delete(self):
-        self._as_root([], ('delete', self.name))
+        privileged.delete_interface(self.name, self._parent.namespace)
 
     @property
     def address(self):
@@ -545,6 +562,10 @@ class IpLinkCommand(IpDeviceCommandBase):
     @property
     def state(self):
         return self.attributes.get('state')
+
+    @property
+    def allmulticast(self):
+        return self.attributes.get('allmulticast')
 
     @property
     def mtu(self):
@@ -564,19 +585,8 @@ class IpLinkCommand(IpDeviceCommandBase):
 
     @property
     def attributes(self):
-        return self._parse_line(self._run(['o'], ('show', self.name)))
-
-    def _parse_line(self, value):
-        if not value:
-            return {}
-
-        device_name, settings = value.replace("\\", '').split('>', 1)
-        tokens = settings.split()
-        keys = tokens[::2]
-        values = [int(v) if v.isdigit() else v for v in tokens[1::2]]
-
-        retval = dict(zip(keys, values))
-        return retval
+        return privileged.get_link_attributes(self.name,
+                                              self._parent.namespace)
 
 
 class IpAddrCommand(IpDeviceCommandBase):
@@ -672,6 +682,7 @@ class IpAddrCommand(IpDeviceCommandBase):
             if addr_info['dadfailed']:
                 raise AddressNotReady(
                     address=address, reason=_('Duplicate address detected'))
+            return False
         errmsg = _("Exceeded %s second limit waiting for "
                    "address to leave the tentative state.") % wait_time
         common_utils.wait_until_true(
@@ -708,9 +719,9 @@ class IpRouteCommand(IpDeviceCommandBase):
         args += self._table_args(table)
         self._as_root([ip_version], tuple(args))
 
-    def _run_as_root_detect_device_not_found(self, *args, **kwargs):
+    def _run_as_root_detect_device_not_found(self, options, args):
         try:
-            return self._as_root(*args, **kwargs)
+            return self._as_root(options, tuple(args))
         except RuntimeError as rte:
             with excutils.save_and_reraise_exception() as ctx:
                 if "Cannot find device" in str(rte):
@@ -723,7 +734,7 @@ class IpRouteCommand(IpDeviceCommandBase):
                 'via', gateway]
         args += self._dev_args()
         args += self._table_args(table)
-        self._run_as_root_detect_device_not_found([ip_version], tuple(args))
+        self._run_as_root_detect_device_not_found([ip_version], args)
 
     def _parse_routes(self, ip_version, output, **kwargs):
         for line in output.splitlines():
@@ -812,7 +823,7 @@ class IpRouteCommand(IpDeviceCommandBase):
         args += self._table_args(table)
         for k, v in kwargs.items():
             args += [k, v]
-        self._run_as_root_detect_device_not_found([ip_version], tuple(args))
+        self._run_as_root_detect_device_not_found([ip_version], args)
 
     def delete_route(self, cidr, via=None, table=None, **kwargs):
         ip_version = common_utils.get_ip_version(cidr)
@@ -823,7 +834,7 @@ class IpRouteCommand(IpDeviceCommandBase):
         args += self._table_args(table)
         for k, v in kwargs.items():
             args += [k, v]
-        self._run_as_root_detect_device_not_found([ip_version], tuple(args))
+        self._run_as_root_detect_device_not_found([ip_version], args)
 
 
 class IPRoute(SubProcessBase):
@@ -886,9 +897,8 @@ class IpNetnsCommand(IpCommandBase):
                 log_fail_as_error=True, extra_ok_codes=None,
                 run_as_root=False):
         ns_params = []
-        kwargs = {'run_as_root': run_as_root}
         if self._parent.namespace:
-            kwargs['run_as_root'] = True
+            run_as_root = True
             ns_params = ['ip', 'netns', 'exec', self._parent.namespace]
 
         env_params = []
@@ -898,7 +908,8 @@ class IpNetnsCommand(IpCommandBase):
         cmd = ns_params + env_params + list(cmds)
         return utils.execute(cmd, check_exit_code=check_exit_code,
                              extra_ok_codes=extra_ok_codes,
-                             log_fail_as_error=log_fail_as_error, **kwargs)
+                             log_fail_as_error=log_fail_as_error,
+                             run_as_root=run_as_root)
 
     def exists(self, name):
         return network_namespace_exists(name)
@@ -1111,7 +1122,6 @@ def network_namespace_exists(namespace, **kwargs):
 
 def ensure_device_is_ready(device_name, namespace=None):
     dev = IPDevice(device_name, namespace=namespace)
-    dev.set_log_fail_as_error(False)
     try:
         # Ensure the device has a MAC address and is up, even if it is already
         # up. If the device doesn't exist, a RuntimeError will be raised.

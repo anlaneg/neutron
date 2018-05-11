@@ -32,6 +32,7 @@ from oslo_versionedobjects import fields as obj_fields
 import testtools
 
 from neutron.db import _model_query as model_query
+from neutron.db import api as db_api
 from neutron import objects
 from neutron.objects import agent
 from neutron.objects import base
@@ -559,13 +560,8 @@ class _BaseObjectTestCase(object):
 
     _test_class = FakeNeutronDbObject
 
-    CORE_PLUGIN = 'neutron.db.db_base_plugin_v2.NeutronDbPluginV2'
-
     def setUp(self):
         super(_BaseObjectTestCase, self).setUp()
-        # TODO(ihrachys): revisit plugin setup once we decouple
-        # neutron.objects.db.api from core plugin instance
-        self.setup_coreplugin(self.CORE_PLUGIN)
         # make sure all objects are loaded and registered in the registry
         objects.register_objects()
         self.context = context.get_admin_context()
@@ -713,27 +709,6 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
         self.model_map = collections.defaultdict(list)
         self.model_map[self._test_class.db_model] = self.db_objs
         self.pager_map = collections.defaultdict(lambda: None)
-        # don't validate refresh and expunge in tests that don't touch database
-        # because otherwise it will fail due to db models not being injected
-        # into active session in the first place
-        mock.patch.object(self.context.session, 'refresh').start()
-        mock.patch.object(self.context.session, 'expunge').start()
-
-        # don't validate expunge in tests that don't touch database and use
-        # new reader engine facade
-        self.reader_facade_mock = mock.patch.object(
-            self._test_class, 'db_context_reader').start()
-        mock.patch.object(self.reader_facade_mock.return_value.session,
-                          'expunge').start()
-
-        # don't validate refresh and expunge in tests that don't touch database
-        # and use new writer engine facade
-        self.writer_facade_mock = mock.patch.object(
-            self._test_class, 'db_context_writer').start()
-        mock.patch.object(self.writer_facade_mock.return_value.session,
-                          'expunge').start()
-        mock.patch.object(self.writer_facade_mock.return_value.session,
-                          'refresh').start()
 
         self.get_objects_mock = mock.patch.object(
             obj_db_api, 'get_objects',
@@ -1177,10 +1152,10 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                        return_value={'a': 'a', 'b': 'b', 'c': 'c'})
     def test_update_changes_forbidden(self, *mocks):
         with mock.patch.object(
-            self._test_class,
-            'fields_no_update',
-            new_callable=mock.PropertyMock(return_value=['a', 'c']),
-            create=True):
+                self._test_class,
+                'fields_no_update',
+                new_callable=mock.PropertyMock(return_value=['a', 'c']),
+                create=True):
             obj = self._test_class(self.context, **self.obj_fields[0])
             self.assertRaises(o_exc.NeutronObjectUpdateForbidden, obj.update)
 
@@ -1720,16 +1695,23 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         self.assertEqual(1, mock_commit.call_count)
 
     def _get_ro_txn_exit_func_name(self):
-        # for old engine facade, we didn't have distinction between r/o and r/w
-        # transactions and so we always call commit even for getters when the
-        # old facade is used
+        # with no engine facade, we didn't have distinction between r/o and
+        # r/w transactions and so we always call commit even for getters when
+        # no facade is used
         return (
             SQLALCHEMY_CLOSE
-            if self._test_class.new_facade else SQLALCHEMY_COMMIT)
+            if self._test_class._use_db_facade else SQLALCHEMY_COMMIT)
 
     def test_get_objects_single_transaction(self):
         with mock.patch(self._get_ro_txn_exit_func_name()) as mock_exit:
-            self._test_class.get_objects(self.context)
+            with db_api.autonested_transaction(self.context.session):
+                self._test_class.get_objects(self.context)
+        self.assertEqual(1, mock_exit.call_count)
+
+    def test_get_objects_single_transaction_enginefacade(self):
+        with mock.patch(self._get_ro_txn_exit_func_name()) as mock_exit:
+            with db_api.context_manager.reader.using(self.context):
+                self._test_class.get_objects(self.context)
         self.assertEqual(1, mock_exit.call_count)
 
     def test_get_object_single_transaction(self):
@@ -1737,8 +1719,19 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         obj.create()
 
         with mock.patch(self._get_ro_txn_exit_func_name()) as mock_exit:
-            obj = self._test_class.get_object(self.context,
-                                              **obj._get_composite_keys())
+            with db_api.autonested_transaction(self.context.session):
+                obj = self._test_class.get_object(self.context,
+                                                  **obj._get_composite_keys())
+        self.assertEqual(1, mock_exit.call_count)
+
+    def test_get_object_single_transaction_enginefacade(self):
+        obj = self._make_object(self.obj_fields[0])
+        obj.create()
+
+        with mock.patch(self._get_ro_txn_exit_func_name()) as mock_exit:
+            with db_api.context_manager.reader.using(self.context):
+                obj = self._test_class.get_object(self.context,
+                                                  **obj._get_composite_keys())
         self.assertEqual(1, mock_exit.call_count)
 
     def test_get_objects_supports_extra_filtername(self):

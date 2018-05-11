@@ -16,6 +16,7 @@ import socket
 from neutron_lib import constants
 import pyroute2
 from pyroute2.netlink import rtnl
+from pyroute2.netlink.rtnl import ifinfmsg
 from pyroute2.netlink.rtnl import ndmsg
 from pyroute2 import NetlinkError
 from pyroute2 import netns
@@ -47,7 +48,31 @@ class NetworkNamespaceNotFound(RuntimeError):
 
 
 class NetworkInterfaceNotFound(RuntimeError):
-    pass
+    message = _("Network interface %(device)s not found in namespace "
+                "%(namespace)s.")
+
+    def __init__(self, message=None, device=None, namespace=None):
+        # NOTE(slaweq): 'message' can be passed as an optional argument
+        # because of how privsep daemon works. If exception is raised in
+        # function called by privsep daemon, it will then try to reraise it
+        # and will call it always with passing only message from originally
+        # raised exception.
+        message = message or self.message % {
+                'device': device, 'namespace': namespace}
+        super(NetworkInterfaceNotFound, self).__init__(message)
+
+
+class IpAddressAlreadyExists(RuntimeError):
+    message = _("IP address %(ip)s already configured on %(device)s.")
+
+    def __init__(self, message=None, ip=None, device=None):
+        # NOTE(slaweq): 'message' can be passed as an optional argument
+        # because of how privsep daemon works. If exception is raised in
+        # function called by privsep daemon, it will then try to reraise it
+        # and will call it always with passing only message from originally
+        # raised exception.
+        message = message or self.message % {'ip': ip, 'device': device}
+        super(IpAddressAlreadyExists, self).__init__(message)
 
 
 @privileged.default.entrypoint
@@ -96,17 +121,18 @@ def _get_link_id(device, namespace):
         with _get_iproute(namespace) as ip:
             return ip.link_lookup(ifname=device)[0]
     except IndexError:
-        msg = _("Network interface %(device)s not found in namespace "
-                "%(namespace)s.") % {'device': device,
-                                     'namespace': namespace}
-        raise NetworkInterfaceNotFound(msg)
+        raise NetworkInterfaceNotFound(device=device, namespace=namespace)
 
 
-def _run_iproute_link(command, device, namespace, **kwargs):
+def _run_iproute_link(command, device, namespace=None, **kwargs):
     try:
         with _get_iproute(namespace) as ip:
             idx = _get_link_id(device, namespace)
             return ip.link(command, index=idx, **kwargs)
+    except NetlinkError as e:
+        if e.code == errno.ENODEV:
+            raise NetworkInterfaceNotFound(device=device, namespace=namespace)
+        raise
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise NetworkNamespaceNotFound(netns_name=namespace)
@@ -118,6 +144,10 @@ def _run_iproute_neigh(command, device, namespace, **kwargs):
         with _get_iproute(namespace) as ip:
             idx = _get_link_id(device, namespace)
             return ip.neigh(command, ifindex=idx, **kwargs)
+    except NetlinkError as e:
+        if e.code == errno.ENODEV:
+            raise NetworkInterfaceNotFound(device=device, namespace=namespace)
+        raise
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise NetworkNamespaceNotFound(netns_name=namespace)
@@ -129,6 +159,10 @@ def _run_iproute_addr(command, device, namespace, **kwargs):
         with _get_iproute(namespace) as ip:
             idx = _get_link_id(device, namespace)
             return ip.addr(command, index=idx, **kwargs)
+    except NetlinkError as e:
+        if e.code == errno.ENODEV:
+            raise NetworkInterfaceNotFound(device=device, namespace=namespace)
+        raise
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise NetworkNamespaceNotFound(netns_name=namespace)
@@ -139,25 +173,39 @@ def _run_iproute_addr(command, device, namespace, **kwargs):
 def add_ip_address(ip_version, ip, prefixlen, device, namespace, scope,
                    broadcast=None):
     family = _IP_VERSION_FAMILY_MAP[ip_version]
-    _run_iproute_addr('add',
-                      device,
-                      namespace,
-                      address=ip,
-                      mask=prefixlen,
-                      family=family,
-                      broadcast=broadcast,
-                      scope=_get_scope_name(scope))
+    try:
+        _run_iproute_addr('add',
+                          device,
+                          namespace,
+                          address=ip,
+                          mask=prefixlen,
+                          family=family,
+                          broadcast=broadcast,
+                          scope=_get_scope_name(scope))
+    except NetlinkError as e:
+        if e.code == errno.EEXIST:
+            raise IpAddressAlreadyExists(ip=ip, device=device)
+        raise
 
 
 @privileged.default.entrypoint
 def delete_ip_address(ip_version, ip, prefixlen, device, namespace):
     family = _IP_VERSION_FAMILY_MAP[ip_version]
-    _run_iproute_addr("delete",
-                      device,
-                      namespace,
-                      address=ip,
-                      mask=prefixlen,
-                      family=family)
+    try:
+        _run_iproute_addr("delete",
+                          device,
+                          namespace,
+                          address=ip,
+                          mask=prefixlen,
+                          family=family)
+    except NetlinkError as e:
+        # when trying to delete a non-existent IP address, pyroute2 raises
+        # NetlinkError with code EADDRNOTAVAIL (99, 'Cannot assign requested
+        # address')
+        # this shouldn't raise an error
+        if e.code == errno.EADDRNOTAVAIL:
+            return
+        raise
 
 
 @privileged.default.entrypoint
@@ -205,6 +253,33 @@ def interface_exists(ifname, namespace):
         if e.errno == errno.ENOENT:
             return False
         raise
+
+
+@privileged.default.entrypoint
+def set_link_flags(device, namespace, flags):
+    link = _run_iproute_link("get", device, namespace)[0]
+    new_flags = flags | link['flags']
+    return _run_iproute_link("set", device, namespace, flags=new_flags)
+
+
+@privileged.default.entrypoint
+def set_link_attribute(device, namespace, **attributes):
+    return _run_iproute_link("set", device, namespace, **attributes)
+
+
+@privileged.default.entrypoint
+def get_link_attributes(device, namespace):
+    link = _run_iproute_link("get", device, namespace)[0]
+    return {
+        'mtu': link.get_attr('IFLA_MTU'),
+        'qlen': link.get_attr('IFLA_TXQLEN'),
+        'state': link.get_attr('IFLA_OPERSTATE'),
+        'qdisc': link.get_attr('IFLA_QDISC'),
+        'brd': link.get_attr('IFLA_BROADCAST'),
+        'link/ether': link.get_attr('IFLA_ADDRESS'),
+        'alias': link.get_attr('IFLA_IFALIAS'),
+        'allmulticast': bool(link['flags'] & ifinfmsg.IFF_ALLMULTI)
+    }
 
 
 @privileged.default.entrypoint

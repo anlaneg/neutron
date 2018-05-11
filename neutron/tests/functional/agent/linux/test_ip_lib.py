@@ -91,6 +91,89 @@ class IpLibTestFramework(functional_base.BaseSudoTestCase):
 
 
 class IpLibTestCase(IpLibTestFramework):
+
+    def test_rules_lifecycle(self):
+        PRIORITY = 32768
+        TABLE = 16
+        attr = self.generate_device_details()
+        device = self.manage_device(attr)
+
+        test_cases = {
+            constants.IP_VERSION_4: [
+                {
+                    'ip': '1.1.1.1',
+                    'to': '8.8.8.0/24'
+                },
+                {
+                    'ip': '1.1.1.1',
+                    'iif': device.name,
+                    'to': '7.7.7.0/24'
+                }
+            ],
+            constants.IP_VERSION_6: [
+                {
+                    'ip': 'abcd::1',
+                    'to': '1234::/64'
+                },
+                {
+                    'ip': 'abcd::1',
+                    'iif': device.name,
+                    'to': '4567::/64'
+                }
+            ]
+        }
+        expected_rules = {
+            constants.IP_VERSION_4: [
+                {
+                    'from': '1.1.1.1',
+                    'to': '8.8.8.0/24',
+                    'priority': str(PRIORITY),
+                    'table': str(TABLE),
+                    'type': 'unicast'
+                }, {
+                    'from': '0.0.0.0/0',
+                    'to': '7.7.7.0/24',
+                    'iif': device.name,
+                    'priority': str(PRIORITY),
+                    'table': str(TABLE),
+                    'type': 'unicast'
+                }
+            ],
+            constants.IP_VERSION_6: [
+                {
+                    'from': 'abcd::1',
+                    'to': '1234::/64',
+                    'priority': str(PRIORITY),
+                    'table': str(TABLE),
+                    'type': 'unicast'
+                },
+                {
+                    'from': '::/0',
+                    'to': '4567::/64',
+                    'iif': device.name,
+                    'priority': str(PRIORITY),
+                    'table': str(TABLE),
+                    'type': 'unicast',
+                }
+            ]
+        }
+
+        ip_rule = ip_lib.IPRule(namespace=device.namespace)
+        for ip_version, test_case in test_cases.items():
+            for rule in test_case:
+                ip_rule.rule.add(table=TABLE, priority=PRIORITY, **rule)
+
+            rules = ip_rule.rule.list_rules(ip_version)
+            for expected_rule in expected_rules[ip_version]:
+                self.assertIn(expected_rule, rules)
+
+            for rule in test_case:
+                ip_rule.rule.delete(table=TABLE, priority=PRIORITY, **rule)
+
+            rules = ip_rule.rule.list_rules(ip_version)
+            for expected_rule in expected_rules[ip_version]:
+                self.assertNotIn(expected_rule, rules)
+
     def test_device_exists(self):
         attr = self.generate_device_details()
 
@@ -200,6 +283,60 @@ class IpLibTestCase(IpLibTestFramework):
         self.assertEqual(attr.mac_address, mac_address)
 
         device.link.delete()
+
+    def test_gateway_lifecycle(self):
+        attr = self.generate_device_details(
+            ip_cidrs=["%s/24" % TEST_IP, "fd00::1/64"]
+        )
+        metric = 1000
+        device = self.manage_device(attr)
+        gateways = {
+            constants.IP_VERSION_4: attr.ip_cidrs[0].split('/')[0],
+            constants.IP_VERSION_6: "fd00::ff"
+        }
+        expected_gateways = {
+            constants.IP_VERSION_4: {
+                'metric': metric,
+                'gateway': gateways[constants.IP_VERSION_4]},
+            constants.IP_VERSION_6: {
+                'metric': metric,
+                'gateway': gateways[constants.IP_VERSION_6]}}
+
+        for ip_version, gateway_ip in gateways.items():
+            device.route.add_gateway(gateway_ip, metric)
+
+            self.assertEqual(
+                expected_gateways[ip_version],
+                device.route.get_gateway(ip_version=ip_version))
+
+            device.route.delete_gateway(gateway_ip)
+            self.assertIsNone(
+                device.route.get_gateway(ip_version=ip_version))
+
+    def test_gateway_flush(self):
+        attr = self.generate_device_details(
+            ip_cidrs=["%s/24" % TEST_IP, "fd00::1/64"]
+        )
+        device = self.manage_device(attr)
+
+        gateways = {
+            constants.IP_VERSION_4: attr.ip_cidrs[0].split('/')[0],
+            constants.IP_VERSION_6: "fd00::ff"
+        }
+        for ip_version, gateway_ip in gateways.items():
+            # Ensure that there is no gateway configured
+            self.assertIsNone(
+                device.route.get_gateway(ip_version=ip_version))
+
+            # Now lets add gateway
+            device.route.add_gateway(gateway_ip, table="main")
+            self.assertIsNotNone(
+                device.route.get_gateway(ip_version=ip_version))
+
+            # Flush gateway and check that there is no any gateway configured
+            device.route.flush(ip_version, table="main")
+            self.assertIsNone(
+                device.route.get_gateway(ip_version=ip_version))
 
     def test_get_routing_table(self):
         attr = self.generate_device_details(
@@ -343,6 +480,18 @@ class IpLibTestCase(IpLibTestFramework):
 
         self.assertEqual(1450, device.link.mtu)
 
+        # Check if proper exception will be raised when wrong MTU value is
+        # provided
+        self.assertRaises(ip_lib.InvalidArgument, device.link.set_mtu, 1)
+
+    def test_set_link_allmulticast_on(self):
+        attr = self.generate_device_details()
+        device = self.manage_device(attr)
+
+        self.assertFalse(device.link.allmulticast)
+        device.link.set_allmulticast_on()
+        self.assertTrue(device.link.allmulticast)
+
     def test_set_link_netns(self):
         attr = self.generate_device_details()
         device = self.manage_device(attr)
@@ -417,6 +566,12 @@ class IpLibTestCase(IpLibTestFramework):
         device = self.manage_device(attr)
         self._add_and_check_ips(device, ip_addresses)
 
+        # Now let's check if adding already existing IP address will raise
+        # RuntimeError
+        ip_address = ip_addresses[0]
+        self.assertRaises(RuntimeError,
+                          device.addr.add, str(ip_address[0]), ip_address[1])
+
     def test_delete_ip_address(self):
         attr = self.generate_device_details()
         cidr = attr.ip_cidrs[0]
@@ -428,6 +583,10 @@ class IpLibTestCase(IpLibTestFramework):
         device.addr.delete(cidr)
         device_cidrs = [ip_info['cidr'] for ip_info in device.addr.list()]
         self.assertNotIn(cidr, device_cidrs)
+
+        # Try to delete not existing IP address, it should be just fine and
+        # finish without any error raised
+        device.addr.delete(cidr)
 
     def test_flush_ip_addresses(self):
         ip_addresses = [

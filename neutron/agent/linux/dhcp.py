@@ -58,6 +58,8 @@ METADATA_PORT = 80
 WIN2k3_STATIC_DNS = 249
 NS_PREFIX = 'qdhcp-'
 DNSMASQ_SERVICE_NAME = 'dnsmasq'
+DHCP_RELEASE_TRIES = 3
+DHCP_RELEASE_TRIES_SLEEP = 0.3
 
 
 class DictModel(dict):
@@ -485,10 +487,10 @@ class Dnsmasq(DhcpLocalProcess):
                             "will not call it again.")
         return self._IS_DHCP_RELEASE6_SUPPORTED
 
-    def _release_lease(self, mac_address, ip, client_id=None,
+    def _release_lease(self, mac_address, ip, ip_version, client_id=None,
                        server_id=None, iaid=None):
         """Release a DHCP lease."""
-        if netaddr.IPAddress(ip).version == constants.IP_VERSION_6:
+        if ip_version == constants.IP_VERSION_6:
             if not self._is_dhcp_release6_supported():
                 return
             cmd = ['dhcp_release6', '--iface', self.interface_name,
@@ -770,14 +772,11 @@ class Dnsmasq(DhcpLocalProcess):
             LOG.debug('Error while reading hosts file %s', filename)
         return leases
 
-    def _read_v6_leases_file_leases(self, filename):
+    def _read_leases_file_leases(self, filename, ip_version=None):
         """
-        reading information from leases file which is needed to pass to
+        Read information from leases file, which is needed to pass to
         dhcp_release6 command line utility if some of these leases are not
         needed anymore
-
-        in this method  ipv4 entries in leases file are ignored, as info in
-        hosts file is enough
 
         each line in dnsmasq leases file is one of the following
           * duid entry: duid server_duid
@@ -807,7 +806,8 @@ class Dnsmasq(DhcpLocalProcess):
         dnsmasq-discuss/2016q2/010595.html
 
         :param filename: leases file
-        :return: dict, keys are IPv6 addresses, values are dicts containing
+        :param ip_version: IP version of entries to return, or None for all
+        :return: dict, keys are IP(v6) addresses, values are dicts containing
                 iaid, client_id and server_id
         """
         leases = {}
@@ -828,7 +828,8 @@ class Dnsmasq(DhcpLocalProcess):
                     parts = l.strip().split()
                     (iaid, ip, client_id) = parts[1], parts[2], parts[4]
                     ip = ip.strip('[]')
-                    if netaddr.IPAddress(ip).version == constants.IP_VERSION_4:
+                    if (ip_version and
+                            netaddr.IPAddress(ip).version != ip_version):
                         continue
                     leases[ip] = {'iaid': iaid,
                                   'client_id': client_id,
@@ -840,26 +841,68 @@ class Dnsmasq(DhcpLocalProcess):
         filename = self.get_conf_file_name('host')
         old_leases = self._read_hosts_file_leases(filename)
         leases_filename = self.get_conf_file_name('leases')
-        # here is dhcpv6 stuff needed to craft dhcpv6 packet
-        v6_leases = self._read_v6_leases_file_leases(leases_filename)
+        cur_leases = self._read_leases_file_leases(leases_filename)
+        if not cur_leases:
+            return
+
+        v4_leases = set()
+        for (k, v) in cur_leases.items():
+            # IPv4 leases have a MAC, IPv6 ones do not, so we must ignore
+            if netaddr.IPAddress(k).version == constants.IP_VERSION_4:
+                # treat '*' as None, see note in _read_leases_file_leases()
+                client_id = v['client_id']
+                if client_id is '*':
+                    client_id = None
+                v4_leases.add((k, v['iaid'], client_id))
+
         new_leases = set()
         for port in self.network.ports:
             client_id = self._get_client_id(port)
             for alloc in port.fixed_ips:
                 new_leases.add((alloc.ip_address, port.mac_address, client_id))
 
-        for ip, mac, client_id in old_leases - new_leases:
-            entry = v6_leases.get(ip, None)
-            version = netaddr.IPAddress(ip).version
-            if entry:
-                # must release IPv6 lease
-                self._release_lease(mac, ip, entry['client_id'],
-                                    entry['server_id'], entry['iaid'])
-            # must release only if v4 lease. If we have ipv6 address missing
-            # in old_leases, that means it's released already and nothing to do
-            # here
-            elif version == constants.IP_VERSION_4:
-                self._release_lease(mac, ip, client_id)
+        # If an entry is in the leases or host file(s), but doesn't have
+        # a fixed IP on a corresponding neutron port, consider it stale.
+        entries_to_release = (v4_leases | old_leases) - new_leases
+        if not entries_to_release:
+            return
+
+        # Try DHCP_RELEASE_TRIES times to release a lease, re-reading the
+        # file each time to see if it's still there.  We loop +1 times to
+        # check the lease file one last time before logging any remaining
+        # entries.
+        for i in range(DHCP_RELEASE_TRIES + 1):
+            entries_not_present = set()
+            for ip, mac, client_id in entries_to_release:
+                try:
+                    entry = cur_leases[ip]
+                except KeyError:
+                    entries_not_present.add((ip, mac, client_id))
+                    continue
+                # if not the final loop, try and release
+                if i < DHCP_RELEASE_TRIES:
+                    ip_version = netaddr.IPAddress(ip).version
+                    if ip_version == constants.IP_VERSION_6:
+                        client_id = entry['client_id']
+                    self._release_lease(mac, ip, ip_version, client_id,
+                                        entry['server_id'], entry['iaid'])
+
+            # Remove elements that were not in the current leases file,
+            # no need to look for them again, and see if we're done.
+            entries_to_release -= entries_not_present
+            if not entries_to_release:
+                break
+
+            if i < DHCP_RELEASE_TRIES:
+                time.sleep(DHCP_RELEASE_TRIES_SLEEP)
+                cur_leases = self._read_leases_file_leases(leases_filename)
+                if not cur_leases:
+                    break
+        else:
+            LOG.warning("Could not release DHCP leases for these IP "
+                        "addresses after %d tries: %s",
+                        DHCP_RELEASE_TRIES,
+                        ', '.join(ip for ip, m, c in entries_to_release))
 
     def _output_addn_hosts_file(self):
         """Writes a dnsmasq compatible additional hosts file.
@@ -945,10 +988,11 @@ class Dnsmasq(DhcpLocalProcess):
                  (isolated_subnets[subnet.id] and
                      self.conf.enable_isolated_metadata)) and
                     subnet.ip_version == 4):
-                subnet_dhcp_ip = subnet_to_interface_ip[subnet.id]
-                host_routes.append(
-                    '%s/32,%s' % (METADATA_DEFAULT_IP, subnet_dhcp_ip)
-                )
+                subnet_dhcp_ip = subnet_to_interface_ip.get(subnet.id)
+                if subnet_dhcp_ip:
+                    host_routes.append(
+                        '%s/32,%s' % (METADATA_DEFAULT_IP, subnet_dhcp_ip)
+                    )
             elif not isolated_subnets[subnet.id] and gateway:
                 host_routes.append(
                     '%s/32,%s' % (METADATA_DEFAULT_IP, gateway)
@@ -1094,7 +1138,8 @@ class Dnsmasq(DhcpLocalProcess):
                 continue
             for alloc in port.fixed_ips:
                 if (alloc.subnet_id in subnets and
-                    subnets[alloc.subnet_id].gateway_ip == alloc.ip_address):
+                        subnets[alloc.subnet_id].gateway_ip ==
+                        alloc.ip_address):
                     isolated_subnets[alloc.subnet_id] = False
 
         return isolated_subnets
@@ -1137,7 +1182,7 @@ class Dnsmasq(DhcpLocalProcess):
             return False
 
         if (conf.enable_metadata_network and
-            cls.has_metadata_subnet(all_subnets)):
+                cls.has_metadata_subnet(all_subnets)):
             return True
 
         isolated_subnets = cls.get_isolated_subnets(network)
@@ -1171,9 +1216,9 @@ class DeviceManager(object):
 
         for subnet in network.subnets:
             skip_subnet = (
-                subnet.ip_version != ip_version
-                or not subnet.enable_dhcp
-                or subnet.gateway_ip is None)
+                subnet.ip_version != ip_version or
+                not subnet.enable_dhcp or
+                subnet.gateway_ip is None)
 
             if skip_subnet:
                 continue

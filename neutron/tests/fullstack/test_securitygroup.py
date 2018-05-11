@@ -55,7 +55,7 @@ class BaseSecurityGroupsSameNetworkTest(base.BaseFullStackTestCase):
         super(BaseSecurityGroupsSameNetworkTest, self).setUp(env)
 
         if (self.firewall_driver == 'openvswitch' and
-            not OVSVersionChecker.supports_ovsfirewall()):
+                not OVSVersionChecker.supports_ovsfirewall()):
             self.skipTest("Open vSwitch firewall_driver doesn't work "
                           "with this version of ovs.")
 
@@ -159,6 +159,7 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
 
         for vm in vms:
             vm.block_until_boot()
+            vm.block_until_dhcp_config_done()
 
         # 0. check that traffic is allowed when port security is disabled
         self.assert_connection(

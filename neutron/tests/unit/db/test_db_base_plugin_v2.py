@@ -341,7 +341,7 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
                 data['subnet'][arg] = kwargs[arg]
 
         if ('gateway_ip' in kwargs and
-            kwargs['gateway_ip'] is not constants.ATTR_NOT_SPECIFIED):
+                kwargs['gateway_ip'] is not constants.ATTR_NOT_SPECIFIED):
             data['subnet']['gateway_ip'] = kwargs['gateway_ip']
 
         subnet_req = self.new_create_request('subnets', data, fmt)
@@ -401,9 +401,9 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
                 data['port'][arg] = kwargs[arg]
         # create a dhcp port device id if one hasn't been supplied
         if ('device_owner' in kwargs and
-            kwargs['device_owner'] == constants.DEVICE_OWNER_DHCP and
-            'host' in kwargs and
-            'device_id' not in kwargs):
+                kwargs['device_owner'] == constants.DEVICE_OWNER_DHCP and
+                'host' in kwargs and
+                'device_id' not in kwargs):
             device_id = utils.get_dhcp_agent_device_id(net_id, kwargs['host'])
             data['port']['device_id'] = device_id
         port_req = self.new_create_request('ports', data, fmt)
@@ -1052,7 +1052,7 @@ class TestPortsV2(NeutronDbPluginV2TestCase):
     def test_create_ports_bulk_emulated(self):
         real_has_attr = hasattr
 
-        #ensures the API choose the emulation code path
+        # ensures the API choose the emulation code path
         def fakehasattr(item, attr):
             if attr.endswith('__native_bulk_support'):
                 return False
@@ -1092,7 +1092,7 @@ class TestPortsV2(NeutronDbPluginV2TestCase):
     def test_create_ports_bulk_emulated_plugin_failure(self):
         real_has_attr = hasattr
 
-        #ensures the API choose the emulation code path
+        # ensures the API choose the emulation code path
         def fakehasattr(item, attr):
             if attr.endswith('__native_bulk_support'):
                 return False
@@ -2684,6 +2684,38 @@ class TestNetworksV2(NeutronDbPluginV2TestCase):
             port1 = self.deserialize(self.fmt, res1)
             self._delete('ports', port1['port']['id'])
 
+    def test_update_network_set_not_shared_other_tenant_access_via_rbac(self):
+        with self.network(shared=True) as network:
+            ctx = context.get_admin_context()
+            with db_api.context_manager.writer.using(ctx):
+                ctx.session.add(
+                    rbac_db_models.NetworkRBAC(
+                        object_id=network['network']['id'],
+                        action='access_as_shared',
+                        tenant_id=network['network']['tenant_id'],
+                        target_tenant='somebody_else')
+                )
+                ctx.session.add(
+                    rbac_db_models.NetworkRBAC(
+                        object_id=network['network']['id'],
+                        action='access_as_shared',
+                        tenant_id=network['network']['tenant_id'],
+                        target_tenant='one_more_somebody_else')
+                )
+            res1 = self._create_port(self.fmt,
+                                     network['network']['id'],
+                                     webob.exc.HTTPCreated.code,
+                                     tenant_id='somebody_else',
+                                     set_context=True)
+            data = {'network': {'shared': False}}
+            req = self.new_update_request('networks',
+                                          data,
+                                          network['network']['id'])
+            res = self.deserialize(self.fmt, req.get_response(self.api))
+            self.assertFalse(res['network']['shared'])
+            port1 = self.deserialize(self.fmt, res1)
+            self._delete('ports', port1['port']['id'])
+
     def test_update_network_set_not_shared_multi_tenants_returns_409(self):
         with self.network(shared=True) as network:
             res1 = self._create_port(self.fmt,
@@ -2795,7 +2827,7 @@ class TestNetworksV2(NeutronDbPluginV2TestCase):
     def test_create_networks_bulk_emulated(self):
         real_has_attr = hasattr
 
-        #ensures the API choose the emulation code path
+        # ensures the API choose the emulation code path
         def fakehasattr(item, attr):
             if attr.endswith('__native_bulk_support'):
                 return False
@@ -2826,7 +2858,7 @@ class TestNetworksV2(NeutronDbPluginV2TestCase):
             return real_has_attr(item, attr)
 
         orig = directory.get_plugin().create_network
-        #ensures the API choose the emulation code path
+        # ensures the API choose the emulation code path
         with mock.patch('six.moves.builtins.hasattr',
                         new=fakehasattr):
             method_to_patch = _get_create_db_method('network')
@@ -3275,7 +3307,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
     def test_create_subnets_bulk_emulated(self):
         real_has_attr = hasattr
 
-        #ensures the API choose the emulation code path
+        # ensures the API choose the emulation code path
         def fakehasattr(item, attr):
             if attr.endswith('__native_bulk_support'):
                 return False
@@ -3292,7 +3324,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
     def test_create_subnets_bulk_emulated_plugin_failure(self):
         real_has_attr = hasattr
 
-        #ensures the API choose the emulation code path
+        # ensures the API choose the emulation code path
         def fakehasattr(item, attr):
             if attr.endswith('__native_bulk_support'):
                 return False
@@ -4318,9 +4350,9 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                                               'fe80::/64', ip_version=6,
                                               ipv6_ra_mode=addr_mode,
                                               ipv6_address_mode=addr_mode)
-            if (insert_db_reference_error or insert_address_allocated
-                or device_owner == constants.DEVICE_OWNER_ROUTER_SNAT
-                or device_owner in constants.ROUTER_INTERFACE_OWNERS):
+            if (insert_db_reference_error or insert_address_allocated or
+                    device_owner == constants.DEVICE_OWNER_ROUTER_SNAT or
+                    device_owner in constants.ROUTER_INTERFACE_OWNERS):
                 # DVR SNAT, router interfaces and DHCP ports should not have
                 # been updated with addresses from the new auto-address subnet
                 self.assertEqual(1, len(port['port']['fixed_ips']))
@@ -4735,12 +4767,12 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                     data['subnet']['gateway_ip'] = '192.168.0.9'
                 req = self.new_update_request('subnets', data,
                                               subnet['subnet']['id'])
-                #check res code and contents
+                # check res code and contents
                 res = req.get_response(self.api)
                 self.assertEqual(200, res.status_code)
                 self._verify_updated_subnet_allocation_pools(res,
                                                              with_gateway_ip)
-                #GET subnet to verify DB updated correctly
+                # GET subnet to verify DB updated correctly
                 req = self.new_show_request('subnets', subnet['subnet']['id'],
                                             self.fmt)
                 res = req.get_response(self.api)
@@ -4753,7 +4785,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
     def test_update_subnet_allocation_pools_and_gateway_ip(self):
         self._test_update_subnet_allocation_pools(with_gateway_ip=True)
 
-    #updating alloc pool to something outside subnet.cidr
+    # updating alloc pool to something outside subnet.cidr
     def test_update_subnet_allocation_pools_invalid_pool_for_cidr(self):
         """Test update alloc pool to something outside subnet.cidr.
 
@@ -4773,7 +4805,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                 self.assertEqual(webob.exc.HTTPClientError.code,
                                  res.status_int)
 
-    #updating alloc pool on top of existing subnet.gateway_ip
+    # updating alloc pool on top of existing subnet.gateway_ip
     def test_update_subnet_allocation_pools_over_gateway_ip_returns_409(self):
         allocation_pools = [{'start': '10.0.0.2', 'end': '10.0.0.254'}]
         with self.network() as network:

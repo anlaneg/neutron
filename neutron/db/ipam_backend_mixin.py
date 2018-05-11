@@ -20,7 +20,6 @@ import itertools
 import netaddr
 from neutron_lib.api.definitions import ip_allocation as ipalloc_apidef
 from neutron_lib.api.definitions import portbindings
-from neutron_lib.api.definitions import segment as seg_apidef
 from neutron_lib.api import validators
 from neutron_lib import constants as const
 from neutron_lib import exceptions as exc
@@ -40,6 +39,7 @@ from neutron.db import db_base_plugin_common
 from neutron.db.models import segment as segment_model
 from neutron.db.models import subnet_service_type as sst_model
 from neutron.db import models_v2
+from neutron.extensions import segment
 from neutron.ipam import exceptions as ipam_exceptions
 from neutron.ipam import utils as ipam_utils
 from neutron.objects import network as network_obj
@@ -238,7 +238,7 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
             subnet_list = self._get_subnets(context)
         for subnet in subnet_list:
             if ((netaddr.IPSet([subnet.cidr]) & new_subnet_ipset) and
-                str(subnet.cidr) != const.PROVISIONAL_IPV6_PD_PREFIX):
+                    str(subnet.cidr) != const.PROVISIONAL_IPV6_PD_PREFIX):
                 # don't give out details of the overlapping subnet
                 err_msg = ("Requested subnet with cidr: %(cidr)s for "
                            "network: %(network_id)s overlaps with another "
@@ -732,8 +732,8 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
     def _make_subnet_args(self, detail, subnet, subnetpool_id):
         args = super(IpamBackendMixin, self)._make_subnet_args(
             detail, subnet, subnetpool_id)
-        if validators.is_attr_set(subnet.get(seg_apidef.SEGMENT_ID)):
-            args['segment_id'] = subnet[seg_apidef.SEGMENT_ID]
+        if validators.is_attr_set(subnet.get(segment.SEGMENT_ID)):
+            args['segment_id'] = subnet[segment.SEGMENT_ID]
         if validators.is_attr_set(subnet.get('service_types')):
             args['service_types'] = subnet['service_types']
         return args
@@ -765,10 +765,10 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
         old_ips = old_port.get('fixed_ips')
         deferred_ip_allocation = (
             old_port.get('ip_allocation') ==
-            ipalloc_apidef.IP_ALLOCATION_DEFERRED
-            and host and not old_host
-            and not old_ips
-            and not fixed_ips_requested)
+            ipalloc_apidef.IP_ALLOCATION_DEFERRED and
+            host and not old_host and
+            not old_ips and
+            not fixed_ips_requested)
         if not deferred_ip_allocation:
             # Check that any existing IPs are valid on the new segment
             new_host_requested = host and host != old_host

@@ -342,8 +342,8 @@ class L3NATAgent(ha.AgentMixin,
             # to provision a router namespace because of a DVR service port
             # (e.g. DHCP).
             #创建分布式ha路由器
-            if (self.conf.agent_mode == lib_const.L3_AGENT_MODE_DVR_SNAT
-                    and router.get(lib_const.HA_INTERFACE_KEY) is not None):
+            if (self.conf.agent_mode == lib_const.L3_AGENT_MODE_DVR_SNAT and
+                    router.get(lib_const.HA_INTERFACE_KEY) is not None):
                 kwargs['state_change_callback'] = self.enqueue_state_change
                 return dvr_edge_ha_router.DvrEdgeHaRouter(*args, **kwargs) #ha功能的snat路由器
 
@@ -481,7 +481,7 @@ class L3NATAgent(ha.AgentMixin,
         """ 执行具体的一个路由器添加 """
         #配置了外部桥，但不存在，报错
         if (self.conf.external_network_bridge and
-            not ip_lib.device_exists(self.conf.external_network_bridge)):
+                not ip_lib.device_exists(self.conf.external_network_bridge)):
             LOG.error("The external network bridge '%s' does not exist",
                       self.conf.external_network_bridge)
             return
@@ -520,14 +520,15 @@ class L3NATAgent(ha.AgentMixin,
         self.l3_ext_manager.add_router(self.context, router) #各扩展处理router_add
 
     def _process_updated_router(self, router):
+        ri = self.router_info[router['id']]
         is_dvr_only_agent = (self.conf.agent_mode in
                              [lib_const.L3_AGENT_MODE_DVR,
                               lib_const.L3_AGENT_MODE_DVR_NO_EXTERNAL])
+        is_ha_router = getattr(ri, 'ha_state', False)
         # For HA routers check that DB state matches actual state
-        if router.get('ha') and not is_dvr_only_agent:
+        if router.get('ha') and not is_dvr_only_agent and is_ha_router:
             self.check_ha_state_for_router(
                 router['id'], router.get(l3_constants.HA_ROUTER_STATE_KEY))
-        ri = self.router_info[router['id']]
         ri.router = router
         registry.notify(resources.ROUTER, events.BEFORE_UPDATE,
                         self, router=ri)

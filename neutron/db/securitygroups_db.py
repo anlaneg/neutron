@@ -126,12 +126,6 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             sg.obj_reset_changes(['rules'])
 
             # fetch sg from db to load the sg rules with sg model.
-            # NOTE(yamamoto): Adding rules above bumps the revision
-            # of the SG.  It would add SG object to the session.
-            # Expunge it to ensure the following get_object doesn't
-            # use the instance.
-            context.session.expunge(model_query.get_by_id(
-                context, sg_models.SecurityGroup, sg.id))
             sg = sg_obj.SecurityGroup.get_object(context, id=sg.id)
             secgroup_dict = self._make_security_group_dict(sg)
             kwargs['security_group'] = secgroup_dict
@@ -455,8 +449,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
 
     def _validate_port_range(self, rule):
         """Check that port_range is valid."""
-        if (rule['port_range_min'] is None and
-            rule['port_range_max'] is None):
+        if rule['port_range_min'] is None and rule['port_range_max'] is None:
             return
         if not rule['protocol']:
             raise ext_sg.SecurityGroupProtocolRequiredWithPorts()
@@ -489,8 +482,8 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
             # Only the protocols above support port ranges, raise otherwise.
             # When min/max are the same it is just a single port.
             if (rule['port_range_min'] is not None and
-                rule['port_range_max'] is not None and
-                rule['port_range_min'] != rule['port_range_max']):
+                    rule['port_range_max'] is not None and
+                    rule['port_range_min'] != rule['port_range_max']):
                 raise ext_sg.SecurityGroupInvalidProtocolForPortRange(
                     protocol=ip_proto)
 
@@ -844,8 +837,9 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase):
         is either [] or not is_attr_set, otherwise return False
         """
         if (ext_sg.SECURITYGROUPS in port['port'] and
-            not (validators.is_attr_set(port['port'][ext_sg.SECURITYGROUPS])
-                 and port['port'][ext_sg.SECURITYGROUPS] != [])):
+            not (validators.is_attr_set(
+                     port['port'][ext_sg.SECURITYGROUPS]) and
+                 port['port'][ext_sg.SECURITYGROUPS] != [])):
             return True
         return False
 

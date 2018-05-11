@@ -1,6 +1,3 @@
-# Copyright 2013 IBM Corp.
-# All Rights Reserved.
-#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -13,9 +10,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_concurrency.fixture import lockutils
+"""
+TODO(hongbin): This module should be deleted once neutron-lib containing
+https://review.openstack.org/#/c/565342/ change is released.
+"""
 
 
-class LockFixture(lockutils.LockFixture):
-    def __init__(self, name):
-        super(LockFixture, self).__init__(name, 'tempest-')
+ALIAS = 'empty-string-filtering'
+IS_SHIM_EXTENSION = True
+IS_STANDARD_ATTR_EXTENSION = False
+NAME = 'Empty String Filtering Extension'
+DESCRIPTION = 'Allow filtering by attributes with empty string value'
+UPDATED_TIMESTAMP = '2018-04-09T10:00:00-00:00'
+RESOURCE_ATTRIBUTE_MAP = {}
+SUB_RESOURCE_ATTRIBUTE_MAP = {}
+ACTION_MAP = {}
+REQUIRED_EXTENSIONS = []
+OPTIONAL_EXTENSIONS = []
+ACTION_STATUS = {}

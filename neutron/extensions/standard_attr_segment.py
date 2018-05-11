@@ -1,5 +1,3 @@
-# All Rights Reserved.
-#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -12,13 +10,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from tempest.lib.common import ssh
+from neutron.extensions import _standard_attr_segment_lib as apidef
+from neutron_lib.api import extensions
 
-from neutron.tests.tempest import config
 
-
-class Client(ssh.Client):
-    def __init__(self, *args, **kwargs):
-        if 'timeout' not in kwargs:
-            kwargs['timeout'] = config.CONF.validation.ssh_timeout
-        super(Client, self).__init__(*args, **kwargs)
+class Standard_attr_segment(extensions.APIExtensionDescriptor):
+    api_definition = apidef

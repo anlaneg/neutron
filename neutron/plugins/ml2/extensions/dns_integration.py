@@ -22,13 +22,13 @@ from neutron_lib import constants as lib_const
 from neutron_lib.exceptions import dns as dns_exc
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api
+from neutron_lib.plugins import utils as plugin_utils
 from oslo_config import cfg
 from oslo_log import log as logging
 
 from neutron.db import segments_db
 from neutron.objects import network as net_obj
 from neutron.objects import ports as port_obj
-from neutron.plugins.common import utils as plugin_utils
 from neutron.services.externaldns import driver
 
 LOG = logging.getLogger(__name__)
@@ -152,7 +152,7 @@ class DNSExtensionDriver(api.ExtensionDriver):
             is_dns_domain_changed = (dns_domain is not None and
                 dns_data_db[dns_apidef.DNSDOMAIN] != dns_domain)
             if (is_dns_name_changed or is_dns_domain_changed or
-                (has_fixed_ips and dns_data_db['current_dns_name'])):
+                    (has_fixed_ips and dns_data_db['current_dns_name'])):
                 dns_data_db = self._populate_previous_external_dns_data(
                     dns_data_db)
                 dns_data_db = self._populate_current_external_dns_data(

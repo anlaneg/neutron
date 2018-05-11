@@ -192,8 +192,8 @@ class Server(object):
             # The API service runs in a number of child processes.
             # Minimize the cost of checking for child exit by extending the
             # wait interval past the default of 0.01s.
-            self._server = common_service.ProcessLauncher(cfg.CONF,
-                                                          wait_interval=1.0)
+            self._server = common_service.ProcessLauncher(
+                cfg.CONF, wait_interval=1.0, restart_method='mutate')
             #启动多个service(通过调用service的start来启动，通过service的wiat来等待退出，通过restart来
             #重新启动service)
             self._server.launch_service(service,
@@ -244,13 +244,13 @@ class Request(wsgi.Request):
             if _format in ['json']:
                 return 'application/{0}'.format(_format)
 
-        #Then look up content header
+        # Then look up content header
         type_from_header = self.get_content_type()
         if type_from_header:
             return type_from_header
         ctypes = ['application/json']
 
-        #Finally search in Accept-* headers
+        # Finally search in Accept-* headers
         bm = self.accept.best_match(ctypes)
         return bm or 'application/json'
 
@@ -631,7 +631,7 @@ class Resource(Application):
 
         controller_method = getattr(self.controller, action)
         try:
-            #NOTE(salvatore-orlando): the controller method must have
+            # NOTE(salvatore-orlando): the controller method must have
             # an argument whose name is 'request'
             return controller_method(request=request, **action_args)
         except TypeError:

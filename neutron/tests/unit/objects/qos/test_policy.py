@@ -90,9 +90,9 @@ class QosPolicyObjectTestCase(test_base.BaseObjectIfaceTestCase):
             return_value=[self.db_objs[0]]) as get_objects_mock:
 
             with mock.patch.object(
-                self.context,
-                'elevated',
-                return_value=admin_context) as context_mock:
+                    self.context,
+                    'elevated',
+                    return_value=admin_context) as context_mock:
 
                 objs = self._test_class.get_objects(
                     self.context,
@@ -446,8 +446,8 @@ class QosPolicyDbObjectTestCase(test_base.BaseDbObjectTestCase,
             policy_obj.obj_to_primitive('1.2')
 
     def test_object_version_degradation_to_1_0(self):
-        #NOTE(mangelajo): we should not check .VERSION, since that's the
-        #                 local version on the class definition
+        # NOTE(mangelajo): we should not check .VERSION, since that's the
+        #                  local version on the class definition
         policy_obj, rule_objs = self._create_test_policy_with_rules(
             [qos_consts.RULE_TYPE_BANDWIDTH_LIMIT,
              qos_consts.RULE_TYPE_DSCP_MARKING,
@@ -461,8 +461,8 @@ class QosPolicyDbObjectTestCase(test_base.BaseDbObjectTestCase,
         self.assertNotIn(rule_objs[2], policy_obj_v1_0.rules)
 
     def test_object_version_degradation_1_2_to_1_1(self):
-        #NOTE(mangelajo): we should not check .VERSION, since that's the
-        #                 local version on the class definition
+        # NOTE(mangelajo): we should not check .VERSION, since that's the
+        #                  local version on the class definition
         policy_obj, rule_objs = self._create_test_policy_with_rules(
             [qos_consts.RULE_TYPE_BANDWIDTH_LIMIT,
              qos_consts.RULE_TYPE_DSCP_MARKING,
@@ -476,8 +476,8 @@ class QosPolicyDbObjectTestCase(test_base.BaseDbObjectTestCase,
         self.assertNotIn(rule_objs[2], policy_obj_v1_1.rules)
 
     def test_object_version_degradation_1_3_to_1_2(self):
-        #NOTE(mangelajo): we should not check .VERSION, since that's the
-        #                 local version on the class definition
+        # NOTE(mangelajo): we should not check .VERSION, since that's the
+        #                  local version on the class definition
         policy_obj, rule_objs = self._create_test_policy_with_rules(
             [qos_consts.RULE_TYPE_BANDWIDTH_LIMIT,
              qos_consts.RULE_TYPE_DSCP_MARKING,

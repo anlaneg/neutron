@@ -1,6 +1,3 @@
-# Copyright 2012 OpenStack Foundation
-# All Rights Reserved.
-#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -13,18 +10,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from tempest.lib import exceptions
+from neutron_lib.api import extensions
 
-TempestException = exceptions.TempestException
-
-
-class InvalidConfiguration(TempestException):
-    message = "Invalid Configuration"
+from neutron.extensions import _empty_string_filtering_lib as apidef
 
 
-class InvalidCredentials(TempestException):
-    message = "Invalid Credentials"
-
-
-class InvalidServiceTag(TempestException):
-    message = "Invalid service tag"
+class Empty_string_filtering(extensions.APIExtensionDescriptor):
+    api_definition = apidef

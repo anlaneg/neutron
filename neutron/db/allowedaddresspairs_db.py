@@ -94,8 +94,9 @@ class AllowedAddressPairsMixin(object):
 
     def _has_address_pairs(self, port):
         #检查port是否配置了address_pairs
-        return (validators.is_attr_set(port['port'][addr_apidef.ADDRESS_PAIRS])
-                and port['port'][addr_apidef.ADDRESS_PAIRS] != [])
+        return (validators.is_attr_set(
+                    port['port'][addr_apidef.ADDRESS_PAIRS]) and
+                port['port'][addr_apidef.ADDRESS_PAIRS] != [])
 
     def _check_update_has_allowed_address_pairs(self, port):
         """Determine if request has an allowed address pair.

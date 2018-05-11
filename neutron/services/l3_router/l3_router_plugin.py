@@ -33,6 +33,7 @@ from neutron.db import dns_db
 from neutron.db import extraroute_db
 from neutron.db import l3_dvr_ha_scheduler_db
 from neutron.db import l3_dvrscheduler_db
+from neutron.db import l3_fip_port_details
 from neutron.db import l3_fip_qos
 from neutron.db import l3_gwmode_db
 from neutron.db import l3_hamode_db
@@ -68,7 +69,8 @@ class L3RouterPlugin(service_base.ServicePluginBase,
                      l3_gwmode_db.L3_NAT_db_mixin,
                      l3_dvr_ha_scheduler_db.L3_DVR_HA_scheduler_db_mixin,
                      dns_db.DNSDbMixin,
-                     l3_fip_qos.FloatingQoSDbMixin):
+                     l3_fip_qos.FloatingQoSDbMixin,
+                     l3_fip_port_details.Fip_port_details_db_mixin):
 
     """Implementation of the Neutron L3 Router Service Plugin.
 
@@ -82,7 +84,8 @@ class L3RouterPlugin(service_base.ServicePluginBase,
     _supported_extension_aliases = ["dvr", "router", "ext-gw-mode",
                                     "extraroute", "l3_agent_scheduler",
                                     "l3-ha", "router_availability_zone",
-                                    "l3-flavors", "qos-fip"]
+                                    "l3-flavors", "qos-fip",
+                                    "fip-port-details"]
 
     __native_pagination_support = True
     __native_sorting_support = True
@@ -119,7 +122,7 @@ class L3RouterPlugin(service_base.ServicePluginBase,
     def start_rpc_listeners(self):
         # RPC support
         self.topic = topics.L3PLUGIN
-        self.conn = n_rpc.create_connection()
+        self.conn = n_rpc.Connection()
         self.endpoints = [l3_rpc.L3RpcCallback()]
         self.conn.create_consumer(self.topic, self.endpoints,
                                   fanout=False)

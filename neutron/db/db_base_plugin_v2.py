@@ -279,8 +279,23 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         # raise if multiple tenants found or if the only tenant found
         # is not the owner of the network
         if (len(tenant_ids) > 1 or len(tenant_ids) == 1 and
-            tenant_ids.pop() != original.tenant_id):
-            raise n_exc.InvalidSharedSetting(network=original.name)
+                original.tenant_id not in tenant_ids):
+            self._validate_projects_have_access_to_network(
+                original, tenant_ids)
+
+    def _validate_projects_have_access_to_network(self, network, project_ids):
+        ctx_admin = ctx.get_admin_context()
+        rb_model = rbac_db.NetworkRBAC
+        other_rbac_entries = model_query.query_with_hooks(
+            ctx_admin, rb_model).filter(
+                and_(rb_model.object_id == network.id,
+                     rb_model.action == 'access_as_shared',
+                     rb_model.target_tenant != "*"))
+        allowed_projects = {entry['target_tenant']
+                            for entry in other_rbac_entries}
+        allowed_projects.add(network.project_id)
+        if project_ids - allowed_projects:
+            raise n_exc.InvalidSharedSetting(network=network.name)
 
     def _validate_ipv6_attributes(self, subnet, cur_subnet):
         if cur_subnet:
@@ -416,6 +431,17 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                     context.session.add(entry)
                 elif not update_shared and entry:
                     network.rbac_entries.remove(entry)
+
+                # TODO(ihrachys) Below can be removed when we make sqlalchemy
+                # event listeners in neutron/db/api.py to refresh expired
+                # attributes.
+                #
+                # First trigger expiration of rbac_entries.
+                context.session.flush()
+                # Then fetch state for _make_network_dict use outside session
+                # context.
+                getattr(network, 'rbac_entries')
+
             # The filter call removes attributes from the body received from
             # the API that are logically tied to network resources but are
             # stored in other database tables handled by extensions
@@ -547,7 +573,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             error_message = _("Subnet has a prefix length that is "
                               "incompatible with DHCP service enabled")
             if ((ip_ver == 4 and subnet_prefixlen > 30) or
-                (ip_ver == 6 and subnet_prefixlen > 126)):
+                    (ip_ver == 6 and subnet_prefixlen > 126)):
                 raise exc.InvalidInput(error_message=error_message)
 
             net = netaddr.IPNetwork(s['cidr'])
@@ -802,6 +828,8 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                                                             network,
                                                             subnet['subnet'],
                                                             subnetpool_id)
+            # TODO(ihrachys): make sqlalchemy refresh expired relationships
+            getattr(network, 'subnets')
         result = self._make_subnet_dict(subnet, context=context)
         return result, network, ipam_subnet
 
@@ -913,7 +941,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                 for ip in port['fixed_ips']:
                     if ip['subnet_id'] == result['id']:
                         if (port['device_owner'] in
-                            constants.ROUTER_INTERFACE_OWNERS):
+                                constants.ROUTER_INTERFACE_OWNERS):
                             routers.append(port['device_id'])
                             ip['ip_address'] = result['gateway_ip']
                         else:
@@ -1220,7 +1248,8 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
 
     def _check_mac_addr_update(self, context, port, new_mac, device_owner):
         if (device_owner and
-            device_owner.startswith(constants.DEVICE_OWNER_NETWORK_PREFIX)):
+            device_owner.startswith(
+                constants.DEVICE_OWNER_NETWORK_PREFIX)):
             raise n_exc.UnsupportedPortDeviceOwner(
                 op=_("mac address update"), port_id=id,
                 device_owner=device_owner)

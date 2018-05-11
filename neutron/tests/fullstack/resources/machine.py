@@ -38,9 +38,9 @@ class FakeFullstackMachinesList(list):
 
     def ping_all(self):
         # Generate an iterable of all unique pairs. For example:
-        # itertools.combinations(range(3), 2) results in:
-        # ((0, 1), (0, 2), (1, 2))
-        for vm_1, vm_2 in itertools.combinations(self, 2):
+        # itertools.permutations(range(3), 2) results in:
+        # ((0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1))
+        for vm_1, vm_2 in itertools.permutations(self, 2):
             vm_1.block_until_ping(vm_2.ip)
 
 
@@ -109,7 +109,7 @@ class FakeFullstackMachine(machine_fixtures.FakeMachineBase):
         subnet_id = fixed_ip['subnet_id']
         subnet = self.safe_client.client.show_subnet(subnet_id)
         if (netaddr.IPAddress(fixed_ip['ip_address']).version ==
-            constants.IP_VERSION_6):
+                constants.IP_VERSION_6):
             # v6Address/default_route is auto-configured.
             self._ipv6 = fixed_ip['ip_address']
             self.gateway_ipv6 = subnet['subnet']['gateway_ip']

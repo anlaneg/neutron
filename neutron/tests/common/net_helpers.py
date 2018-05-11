@@ -352,7 +352,8 @@ class Pinger(object):
         r'.* Destination .* Unreachable')
     TIMEOUT = 15
 
-    def __init__(self, namespace, address, count=None, timeout=1):
+    def __init__(self, namespace, address, count=None, timeout=1,
+                 interval=None):
         self.proc = None
         self.namespace = namespace
         self.address = address
@@ -361,6 +362,7 @@ class Pinger(object):
         self.destination_unreachable = False
         self.sent = 0
         self.received = 0
+        self.interval = interval
 
     def _wait_for_death(self):
         is_dead = lambda: self.proc.poll() is not None
@@ -390,6 +392,8 @@ class Pinger(object):
         cmd = [ping_exec, self.address, '-W', str(self.timeout)]
         if self.count:
             cmd.extend(['-c', str(self.count)])
+        if self.interval:
+            cmd.extend(['-i', str(self.interval)])
         self.proc = RootHelperProcess(cmd, namespace=self.namespace)
 
     def stop(self):
@@ -591,7 +595,7 @@ class VethFixture(fixtures.Fixture):
         for port in self.ports:
             ip_wrapper = ip_lib.IPWrapper(port.namespace)
             if (ip_wrapper.netns.exists(port.namespace) or
-                port.namespace is None):
+                    port.namespace is None):
                 try:
                     ip_wrapper.del_veth(port.name)
                     break
@@ -662,7 +666,7 @@ class MacvtapFixture(fixtures.Fixture):
 
     def destroy(self):
         if (ip_lib.network_namespace_exists(self.ip_dev.namespace) or
-            self.ip_dev.namespace is None):
+                self.ip_dev.namespace is None):
             try:
                 self.ip_dev.link.delete()
             except RuntimeError:
@@ -778,6 +782,10 @@ class OVSPortFixture(PortFixture):
             self.mac,
             bridge=self.bridge.br_name,
             namespace=self.namespace)
+        # NOTE(mangelajo): for OVS implementations remove the DEAD VLAN tag
+        # on ports that we intend to use as fake vm interfaces, they
+        # need to be flat. This is related to lp#1767422
+        self.bridge.clear_db_attribute("Port", port_name, "tag")
         self.addCleanup(self.bridge.delete_port, port_name)
         self.port = ip_lib.IPDevice(port_name, self.namespace)
 
