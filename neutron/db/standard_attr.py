@@ -96,15 +96,31 @@ class HasStandardAttributes(object):
         # with the declarative base others inherit from.
         if hasattr(cls, 'api_collections'):
             return cls.api_collections
-        raise NotImplementedError("%s must define api_collections" % cls)
+        raise NotImplementedError(_("%s must define api_collections") % cls)
+
+    @classmethod
+    def get_api_sub_resources(cls):
+        """Define the API sub-resources this object will appear under.
+
+        This should return a list of API sub-resources that the object
+        will be exposed under.
+
+        This is used by the standard attr extensions to discover which
+        sub-resources need to be extended with the standard attr fields
+        (e.g. created_at/updated_at/etc).
+        """
+        try:
+            return cls.api_sub_resources
+        except AttributeError:
+            return []
 
     @classmethod
     def get_collection_resource_map(cls):
         try:
             return cls.collection_resource_map
         except AttributeError:
-            raise NotImplementedError("%s must define "
-                                      "collection_resource_map" % cls)
+            raise NotImplementedError(_("%s must define "
+                                        "collection_resource_map") % cls)
 
     @classmethod
     def validate_tag_support(cls):
@@ -173,17 +189,27 @@ class HasStandardAttributes(object):
         self.standard_attr.bump_revision()
 
 
-def get_standard_attr_resource_model_map():
+def _resource_model_map_helper(rs_map, resource, subclass):
+    if resource in rs_map:
+        raise RuntimeError(_("Model %(sub)s tried to register for API "
+                             "resource %(res)s which conflicts with model "
+                             "%(other)s.") %
+                           dict(sub=subclass,
+                                other=rs_map[resource],
+                                res=resource))
+    rs_map[resource] = subclass
+
+
+def get_standard_attr_resource_model_map(include_resources=True,
+                                         include_sub_resources=True):
     rs_map = {}
     for subclass in HasStandardAttributes.__subclasses__():
-        for resource in subclass.get_api_collections():
-            if resource in rs_map:
-                raise RuntimeError("Model %(sub)s tried to register for "
-                                   "API resource %(res)s which conflicts "
-                                   "with model %(other)s." %
-                                   dict(sub=subclass, other=rs_map[resource],
-                                        res=resource))
-            rs_map[resource] = subclass
+        if include_resources:
+            for resource in subclass.get_api_collections():
+                _resource_model_map_helper(rs_map, resource, subclass)
+        if include_sub_resources:
+            for sub_resource in subclass.get_api_sub_resources():
+                _resource_model_map_helper(rs_map, sub_resource, subclass)
     return rs_map
 
 
@@ -206,8 +232,8 @@ def get_tag_resource_parent_map():
 @event.listens_for(se.Session, 'after_bulk_delete')
 def throw_exception_on_bulk_delete_of_listened_for_objects(delete_context):
     if hasattr(delete_context.mapper.class_, 'revises_on_change'):
-        raise RuntimeError("%s may not be deleted in bulk because it "
-                           "bumps the revision of other resources via "
-                           "SQLAlchemy event handlers, which are not "
-                           "compatible with bulk deletes." %
+        raise RuntimeError(_("%s may not be deleted in bulk because it "
+                             "bumps the revision of other resources via "
+                             "SQLAlchemy event handlers, which are not "
+                             "compatible with bulk deletes.") %
                            delete_context.mapper.class_)

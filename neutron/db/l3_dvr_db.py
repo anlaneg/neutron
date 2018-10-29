@@ -20,10 +20,13 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.api import validators
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import exceptions
+from neutron_lib.callbacks import priority_group
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as const
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as n_exc
+from neutron_lib.exceptions import agent as agent_exc
 from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
@@ -38,7 +41,6 @@ from neutron._i18n import _
 from neutron.common import constants as l3_const
 from neutron.common import utils as n_utils
 from neutron.conf.db import l3_dvr_db
-from neutron.db import api as db_api
 from neutron.db import l3_attrs_db
 from neutron.db import l3_db
 from neutron.db.models import allowed_address_pair as aap_models
@@ -48,7 +50,6 @@ from neutron.objects import agent as ag_obj
 from neutron.objects import base as base_obj
 from neutron.objects import l3agent as rb_obj
 from neutron.objects import router as l3_obj
-from neutron.plugins.common import utils as p_utils
 
 
 LOG = logging.getLogger(__name__)
@@ -69,7 +70,8 @@ class DVRResourceOperationHandler(object):
     def l3plugin(self):
         return directory.get_plugin(plugin_constants.L3)
 
-    @registry.receives(resources.ROUTER, [events.PRECOMMIT_CREATE])
+    @registry.receives(resources.ROUTER, [events.PRECOMMIT_CREATE],
+                       priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     def _set_distributed_flag(self, resource, event, trigger, context,
                               router, router_db, **kwargs):
         """Event handler to set distributed flag on creation."""
@@ -107,7 +109,8 @@ class DVRResourceOperationHandler(object):
             raise l3_exc.RouterInUse(router_id=router_db['id'], reason=e)
         return True
 
-    @registry.receives(resources.ROUTER, [events.PRECOMMIT_UPDATE])
+    @registry.receives(resources.ROUTER, [events.PRECOMMIT_UPDATE],
+                       priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     def _handle_distributed_migration(self, resource, event,
                                       trigger, payload=None):
         """Event handler for router update migration to distributed."""
@@ -149,7 +152,8 @@ class DVRResourceOperationHandler(object):
             payload.context, payload.desired_state,
             'distributed', migrating_to_distributed)
 
-    @registry.receives(resources.ROUTER, [events.AFTER_UPDATE])
+    @registry.receives(resources.ROUTER, [events.AFTER_UPDATE],
+                       priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     def _delete_snat_interfaces_after_change(self, resource, event, trigger,
                                              context, router_id, router,
                                              request_attrs, router_db,
@@ -163,7 +167,8 @@ class DVRResourceOperationHandler(object):
 
     #在路由器创建及更新后，尝试创建sg口
     @registry.receives(resources.ROUTER,
-                       [events.AFTER_CREATE, events.AFTER_UPDATE])
+                       [events.AFTER_CREATE, events.AFTER_UPDATE],
+                       priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     def _create_snat_interfaces_after_change(self, resource, event, trigger,
                                              context, router_id, router,
                                              request_attrs, router_db,
@@ -202,17 +207,17 @@ class DVRResourceOperationHandler(object):
 
     #添加snat-router-interface接口
     def _add_csnat_router_interface_port(
-            self, context, router, network_id, subnet_id, do_pop=True):
+            self, context, router, network_id, subnets, do_pop=True):
         """Add SNAT interface to the specified router and subnet."""
         port_data = {'tenant_id': '',
                      'network_id': network_id,
-                     'fixed_ips': [{'subnet_id': subnet_id}],
+                     'fixed_ips': subnets,
                      'device_id': router.id,
                      'device_owner': const.DEVICE_OWNER_ROUTER_SNAT,#指明创建sg接口
                      'admin_state_up': True,
                      'name': ''}
-        snat_port = p_utils.create_port(self._core_plugin, context,
-                                        {'port': port_data})
+        snat_port = plugin_utils.create_port(
+            self._core_plugin, context, {'port': port_data})
         if not snat_port:
             #创建sg口失败
             msg = _("Unable to create the SNAT Interface Port")
@@ -254,16 +259,32 @@ class DVRResourceOperationHandler(object):
         )
         LOG.info('SNAT interface port list does not exist,'
                  ' so create one: %s', port_list)
+        v6_subnets = []
+        network = None
         for intf in int_ports:
             if intf.fixed_ips:
                 # Passing the subnet for the port to make sure the IP's
                 # are assigned on the right subnet if multiple subnet
                 # exists
-                #这个qr口有ip,需要尝试创建其对应的sg口
-                snat_port = self._add_csnat_router_interface_port(
-                    context, router, intf['network_id'],
-                    intf['fixed_ips'][0]['subnet_id'], do_pop=False)
-                port_list.append(snat_port)
+                for fixed_ip in intf['fixed_ips']:
+                    ip_version = n_utils.get_ip_version(
+                        fixed_ip.get('ip_address'))
+                    if ip_version == const.IP_VERSION_4:
+                        snat_port = self._add_csnat_router_interface_port(
+                            context, router, intf['network_id'],
+                            [{'subnet_id': fixed_ip['subnet_id']}],
+                            do_pop=False)
+                        port_list.append(snat_port)
+                    else:
+                        v6_subnets.append(
+                            {"subnet_id": fixed_ip['subnet_id']})
+                        network = intf['network_id']
+        if v6_subnets:
+            #这个qr口有ip,需要尝试创建其对应的sg口
+            snat_port = self._add_csnat_router_interface_port(
+                context, router, network,
+                v6_subnets, do_pop=False)
+            port_list.append(snat_port)
         if port_list:
             self.l3plugin._populate_mtu_and_subnets_for_ports(
                 context, port_list)
@@ -273,8 +294,7 @@ class DVRResourceOperationHandler(object):
     def _delete_dvr_internal_ports(self, event, trigger, resource,
                                    context, router, network_id,
                                    new_network_id, **kwargs):
-        """
-        GW port AFTER_DELETE event handler to cleanup DVR ports.
+        """GW port AFTER_DELETE event handler to cleanup DVR ports.
 
         This event is emitted when a router gateway port is being deleted,
         so go ahead and delete the csnat ports and the floatingip
@@ -401,7 +421,7 @@ class DVRResourceOperationHandler(object):
         admin_context = context.elevated()
         self._add_csnat_router_interface_port(
             admin_context, router_db, port['network_id'],
-            port['fixed_ips'][-1]['subnet_id'])
+            [{'subnet_id': port['fixed_ips'][-1]['subnet_id']}])
 
     @registry.receives(resources.ROUTER_INTERFACE, [events.AFTER_CREATE])
     @db_api.retry_if_session_inactive()
@@ -516,19 +536,17 @@ class DVRResourceOperationHandler(object):
         if not router.extra_attributes.distributed:
             return
 
-        plugin = directory.get_plugin(plugin_constants.L3)
-
         # we calculate which hosts to notify by checking the hosts for
         # the removed port's subnets and then subtract out any hosts still
         # hosting the router for the remaining interfaces
-        router_hosts_for_removed = plugin._get_dvr_hosts_for_subnets(
+        router_hosts_for_removed = self.l3plugin._get_dvr_hosts_for_subnets(
             context, subnet_ids={ip['subnet_id'] for ip in port['fixed_ips']})
-        router_hosts_after = plugin._get_dvr_hosts_for_router(
+        router_hosts_after = self.l3plugin._get_dvr_hosts_for_router(
             context, router_id)
         removed_hosts = set(router_hosts_for_removed) - set(router_hosts_after)
         if removed_hosts:
-            agents = plugin.get_l3_agents(context,
-                                          filters={'host': removed_hosts})
+            agents = self.l3plugin.get_l3_agents(
+                context, filters={'host': removed_hosts})
             bindings = rb_obj.RouterL3AgentBinding.get_objects(
                 context, router_id=router_id)
             snat_binding = bindings.pop() if bindings else None
@@ -598,29 +616,31 @@ class _DVRAgentInterfaceMixin(object):
         LOG.debug("Return the SNAT ports: %s", interfaces)
         return interfaces
 
+    def _get_gateway_port_host(self, context, router, gw_ports):
+        binding_objs = rb_obj.RouterL3AgentBinding.get_objects(
+            context, router_id=[router['id']])
+        if not binding_objs:
+            return
+
+        gw_port_id = router['gw_port_id']
+        # Collect gw ports only if available
+        if gw_port_id and gw_ports.get(gw_port_id):
+            l3_agent = ag_obj.Agent.get_object(context,
+                id=binding_objs[0].l3_agent_id)
+            return l3_agent.host
+
     def _build_routers_list(self, context, routers, gw_ports):
         # Perform a single query up front for all routers
         routers = super(_DVRAgentInterfaceMixin, self)._build_routers_list(
             context, routers, gw_ports)
         if not routers:
             return []
-        router_ids = [r['id'] for r in routers]
-        binding_objs = rb_obj.RouterL3AgentBinding.get_objects(
-            context, router_id=router_ids)
-        bindings = dict((b.router_id, b) for b in binding_objs)
-        for rtr in routers:
-            gw_port_id = rtr['gw_port_id']
-            # Collect gw ports only if available
-            if gw_port_id and gw_ports.get(gw_port_id):
-                binding = bindings.get(rtr['id'])
-                if not binding:
-                    rtr['gw_port_host'] = None
-                    LOG.debug('No snat is bound to router %s', rtr['id'])
-                    continue
-
-                l3_agent = ag_obj.Agent.get_object(context,
-                        id=binding.l3_agent_id)
-                rtr['gw_port_host'] = l3_agent.host
+        for router in routers:
+            gw_port_host = self._get_gateway_port_host(
+                context, router, gw_ports)
+            LOG.debug("Set router %s gateway port host: %s",
+                      router['id'], gw_port_host)
+            router['gw_port_host'] = gw_port_host
 
         return routers
 
@@ -874,8 +894,15 @@ class _DVRAgentInterfaceMixin(object):
         will return the existing port and will not
         create a new one.
         """
-        l3_agent_db = self._get_agent_by_type_and_host(
-            context, const.AGENT_TYPE_L3, host)#取指定主机上的l3-agent配置
+        try:
+            l3_agent_db = self._get_agent_by_type_and_host(
+                context, const.AGENT_TYPE_L3, host)#取指定主机上的l3-agent配置
+        except agent_exc.AgentNotFoundByTypeHost(
+            agent_type=const.AGENT_TYPE_L3, host=host):
+            LOG.warning("%(ag)s agent not found for the given host: %(host)s",
+                        {'ag': const.AGENT_TYPE_L3,
+                         'host': host})
+            return
         l3_agent_mode = self._get_agent_mode(l3_agent_db)
         if l3_agent_mode == const.L3_AGENT_MODE_DVR_NO_EXTERNAL:
             return
@@ -894,8 +921,8 @@ class _DVRAgentInterfaceMixin(object):
                              portbindings.HOST_ID: host,
                              'admin_state_up': True,
                              'name': ''}
-                agent_port = p_utils.create_port(self._core_plugin, context,
-                                                 {'port': port_data})
+                agent_port = plugin_utils.create_port(
+                    self._core_plugin, context, {'port': port_data})
                 if agent_port:
                     self._populate_mtu_and_subnets_for_ports(context,
                                                              [agent_port])
@@ -907,7 +934,7 @@ class _DVRAgentInterfaceMixin(object):
                 return f_port
 
     def _generate_arp_table_and_notify_agent(
-        self, context, fixed_ip, mac_address, notifier, nud_state='permanent'):
+        self, context, fixed_ip, mac_address, notifier):
         """Generates the arp table entry and notifies the l3 agent."""
         ip_address = fixed_ip['ip_address']
         subnet = fixed_ip['subnet_id']
@@ -919,8 +946,7 @@ class _DVRAgentInterfaceMixin(object):
             return
         arp_table = {'ip_address': ip_address,
                      'mac_address': mac_address,
-                     'subnet_id': subnet,
-                     'nud_state': nud_state}
+                     'subnet_id': subnet}
         notifier(context, router_id, arp_table)
 
     def _get_subnet_id_for_given_fixed_ip(
@@ -964,14 +990,11 @@ class _DVRAgentInterfaceMixin(object):
             return
         allowed_address_pair_fixed_ips = (
             self._get_allowed_address_pair_fixed_ips(context, port_dict))
-        for fixed_ip in fixed_ips:
+        changed_fixed_ips = fixed_ips + allowed_address_pair_fixed_ips
+        for fixed_ip in changed_fixed_ips:
             self._generate_arp_table_and_notify_agent(
                 context, fixed_ip, port_dict['mac_address'],
                 self.l3_rpc_notifier.add_arp_entry)
-        for fixed_ip in allowed_address_pair_fixed_ips:
-            self._generate_arp_table_and_notify_agent(
-                context, fixed_ip, port_dict['mac_address'],
-                self.l3_rpc_notifier.add_arp_entry, nud_state='reachable')
 
     def delete_arp_entry_for_dvr_service_port(
         self, context, port_dict, fixed_ips_to_delete=None):
@@ -1065,6 +1088,10 @@ class L3_NAT_with_dvr_db_mixin(_DVRAgentInterfaceMixin,
             if host is not None:
                 l3_agent_on_host = self.get_dvr_agent_on_host(
                     context, host)
+                if not l3_agent_on_host:
+                    LOG.warning("No valid L3 agent found for the given host: "
+                                "%s", host)
+                    return
                 agent_mode = self._get_agent_mode(l3_agent_on_host[0])
                 if agent_mode == const.L3_AGENT_MODE_DVR_NO_EXTERNAL:
                     # If the agent hosting the fixed port is in

@@ -18,6 +18,7 @@ import uuid
 
 import mock
 from neutron_lib import constants as const
+from oslo_config import cfg
 from ovsdbapp.backend.ovs_idl import idlutils
 
 from neutron.agent.common import ovs_lib
@@ -527,7 +528,6 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
                                        if_exists=False))
                 txn.add(ovsdb.db_set('Interface', port_name,
                                      ('type', 'internal')))
-        # native gives a more specific exception than vsctl
         self.assertRaises((RuntimeError, idlutils.RowNotFound),
                           del_port_mod_iface)
 
@@ -582,7 +582,7 @@ class OVSLibTestCase(base.BaseOVSLinuxTestCase):
         self.assertIn(conn_uri, self.ovs.get_manager())
         self.assertEqual(self.ovs.db_get_val('Manager', conn_uri,
                                              'inactivity_probe'),
-                         self.ovs.vsctl_timeout * 1000)
+                         self.ovs.ovsdb_timeout * 1000)
         self.ovs.remove_manager(conn_uri)
         self.assertNotIn(conn_uri, self.ovs.get_manager())
 
@@ -603,6 +603,9 @@ class OVSLibTestCase(base.BaseOVSLinuxTestCase):
 
     def test_bridge_lifecycle_ovsbridge(self):
         name = utils.get_rand_name(prefix=net_helpers.BR_PREFIX)
+        mac_table_size = 12345
+        cfg.CONF.set_override(
+            'bridge_mac_table_size', mac_table_size, group='OVS')
         br = ovs_lib.OVSBridge(name)
         self.assertEqual(br.br_name, name)
         # Make sure that instantiating an OVSBridge does not actually create
@@ -610,6 +613,11 @@ class OVSLibTestCase(base.BaseOVSLinuxTestCase):
         self.addCleanup(self.ovs.delete_bridge, name)
         br.create()
         self.assertTrue(self.ovs.bridge_exists(name))
+        br_other_config = self.ovs.ovsdb.db_find(
+            'Bridge', ('name', '=', name), columns=['other_config']
+        ).execute()[0]['other_config']
+        self.assertEqual(str(mac_table_size),
+                         br_other_config['mac-table-size'])
         br.destroy()
         self.assertFalse(self.ovs.bridge_exists(name))
 

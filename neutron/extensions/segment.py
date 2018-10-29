@@ -25,6 +25,8 @@ import six
 
 from neutron.api import extensions
 from neutron.api.v2 import base
+from neutron.extensions import _standard_attr_segment_lib as stdattrseg_apidef
+from neutron.extensions import standardattrdescription as ext_stddesc
 
 SEGMENT = 'segment'
 SEGMENTS = '%ss' % SEGMENT
@@ -42,6 +44,7 @@ RESOURCE_ATTRIBUTE_MAP = {
         'id': {'allow_post': False,
                'allow_put': False,
                'validate': {'type:uuid': None},
+               'is_filter': True,
                'is_visible': True,
                'primary_key': True},
         'tenant_id': {'allow_post': True,
@@ -52,17 +55,20 @@ RESOURCE_ATTRIBUTE_MAP = {
         'network_id': {'allow_post': True,
                        'allow_put': False,
                        'validate': {'type:uuid': None},
+                       'is_filter': True,
                        'is_visible': True},
         PHYSICAL_NETWORK: {'allow_post': True,
                            'allow_put': False,
                            'default': constants.ATTR_NOT_SPECIFIED,
                            'validate': {'type:string':
                                         providernet.PHYSICAL_NETWORK_MAX_LEN},
+                           'is_filter': True,
                            'is_visible': True},
         NETWORK_TYPE: {'allow_post': True,
                        'allow_put': False,
                        'validate': {'type:string':
                                     providernet.NETWORK_TYPE_MAX_LEN},
+                       'is_filter': True,
                        'is_visible': True},
         SEGMENTATION_ID: {'allow_post': True,
                           'allow_put': False,
@@ -73,18 +79,15 @@ RESOURCE_ATTRIBUTE_MAP = {
                  'allow_put': True,
                  'default': constants.ATTR_NOT_SPECIFIED,
                  'validate': {'type:string_or_none': NAME_LEN},
-                 'is_visible': True},
-        'description': {'allow_post': True,
-                        'allow_put': True,
-                        'default': constants.ATTR_NOT_SPECIFIED,
-                        'validate': {'type:string_or_none': DESC_LEN},
-                        'is_visible': True},
+                 'is_filter': True,
+                 'is_visible': True}
     },
     subnet_def.COLLECTION_NAME: {
         SEGMENT_ID: {'allow_post': True,
                      'allow_put': False,
                      'default': None,
                      'validate': {'type:uuid_or_none': None},
+                     'is_filter': True,
                      'is_visible': True, },
     },
 }
@@ -133,6 +136,10 @@ class Segment(api_extensions.ExtensionDescriptor):
             return RESOURCE_ATTRIBUTE_MAP
         else:
             return {}
+
+    def get_required_extensions(self):
+        return [ext_stddesc.Standardattrdescription.get_alias(),
+                stdattrseg_apidef.ALIAS]
 
 
 @six.add_metaclass(abc.ABCMeta)

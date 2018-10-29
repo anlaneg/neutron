@@ -21,6 +21,7 @@ from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
+from neutron_lib.db import utils as db_utils
 from neutron_lib import exceptions as n_exc
 from neutron_lib.exceptions import external_net as extnet_exc
 from neutron_lib.plugins import constants as plugin_constants
@@ -30,15 +31,11 @@ from sqlalchemy.sql import expression as expr
 from neutron._i18n import _
 from neutron.db import _model_query as model_query
 from neutron.db import _resource_extend as resource_extend
-from neutron.db import _utils as db_utils
 from neutron.db import models_v2
 from neutron.db import rbac_db_models as rbac_db
 from neutron.extensions import rbac as rbac_ext
 from neutron.objects import network as net_obj
 from neutron.objects import router as l3_obj
-
-
-DEVICE_OWNER_ROUTER_GW = constants.DEVICE_OWNER_ROUTER_GW
 
 
 def _network_filter_hook(context, original_model, conditions):
@@ -131,10 +128,9 @@ class External_net_db_mixin(object):
             # must make sure we do not have any external gateway ports
             # (and thus, possible floating IPs) on this network before
             # allow it to be update to external=False
-            port = context.session.query(models_v2.Port).filter_by(
-                device_owner=DEVICE_OWNER_ROUTER_GW,
-                network_id=net_data['id']).first()
-            if port:
+            if context.session.query(models_v2.Port.id).filter_by(
+                device_owner=constants.DEVICE_OWNER_ROUTER_GW,
+                network_id=net_data['id']).first():
                 raise extnet_exc.ExternalNetworkInUse(net_id=net_id)
 
             net_obj.ExternalNetwork.delete_objects(
@@ -179,12 +175,11 @@ class External_net_db_mixin(object):
         if (object_type != 'network' or
                 policy['action'] != 'access_as_external'):
             return
-        net_as_external = context.session.query(rbac_db.NetworkRBAC).filter(
-            rbac_db.NetworkRBAC.object_id == policy['object_id'],
-            rbac_db.NetworkRBAC.action == 'access_as_external').count()
         # If the network still have rbac policies, we should not
         # update external attribute.
-        if net_as_external:
+        if context.session.query(rbac_db.NetworkRBAC.object_id).filter(
+            rbac_db.NetworkRBAC.object_id == policy['object_id'],
+            rbac_db.NetworkRBAC.action == 'access_as_external').count():
             return
         net = self.get_network(context, policy['object_id'])
         self._process_l3_update(context, net,
@@ -205,7 +200,7 @@ class External_net_db_mixin(object):
                 # nothing to validate if the tenant didn't change
                 return
         gw_ports = context.session.query(models_v2.Port.id).filter_by(
-            device_owner=DEVICE_OWNER_ROUTER_GW,
+            device_owner=constants.DEVICE_OWNER_ROUTER_GW,
             network_id=policy['object_id'])
         gw_ports = [gw_port[0] for gw_port in gw_ports]
         rbac = rbac_db.NetworkRBAC
@@ -216,7 +211,7 @@ class External_net_db_mixin(object):
             }
             # if there is a wildcard entry we can safely proceed without the
             # router lookup because they will have access either way
-            if context.session.query(rbac_db.NetworkRBAC).filter(
+            if context.session.query(rbac_db.NetworkRBAC.object_id).filter(
                     rbac.object_id == policy['object_id'],
                     rbac.action == 'access_as_external',
                     rbac.target_tenant == '*').count():
@@ -252,5 +247,5 @@ class External_net_db_mixin(object):
 
     @registry.receives(resources.NETWORK, [events.BEFORE_DELETE])
     def _before_network_delete_handler(self, resource, event, trigger,
-                                       context, network_id, **kwargs):
-        self._process_l3_delete(context, network_id)
+                                       payload=None):
+        self._process_l3_delete(payload.context, payload.resource_id)

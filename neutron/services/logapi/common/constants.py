@@ -21,8 +21,16 @@ LOGGING_PLUGIN = 'logging-plugin'
 
 # supported logging types
 SECURITY_GROUP = 'security_group'
+# TODO(annp): Moving to neutron-lib
+SNAT = 'snat'
+
+# target resource types
+PORT = 'port'
 
 RPC_NAMESPACE_LOGGING = 'logging-plugin'
+
+# Define for rpc_method_key
+LOG_RESOURCE = 'log_resource'
 
 # String literal for identifying log resource
 LOGGING = 'log'

@@ -177,11 +177,11 @@ to allow users to experiment with configuring service subnets.
    .. code-block:: console
 
       $ openstack server list
-      +--------------------------------------+-----------------+---------+---------------------+
-      | ID                                   | Name            | Status  | Networks            |
-      +--------------------------------------+-----------------+---------+---------------------+
-      | 20181f46-5cd2-4af8-9af0-f4cf5c983008 | demo-instance1  | ACTIVE  | demo-net1=192.0.2.3 |
-      +--------------------------------------+-----------------+---------+---------------------+
+      +--------------------------------------+-----------------+---------+---------------------+--------+---------+
+      | ID                                   | Name            | Status  | Networks            | Image  | Flavor  |
+      +--------------------------------------+-----------------+---------+---------------------+--------+---------+
+      | 20181f46-5cd2-4af8-9af0-f4cf5c983008 | demo-instance1  | ACTIVE  | demo-net1=192.0.2.3 | cirros | m1.tiny |
+      +--------------------------------------+-----------------+---------+---------------------+--------+---------+
 
 Example 2 - DVR configuration
 -----------------------------
@@ -258,7 +258,7 @@ This example uses again the private network, ``demo-net1``
 
    .. code-block:: console
 
-      $ neutron router-gateway-set demo-router demo-ext-net
+      $ openstack router set --external-gateway demo-ext-net demo-router
 
 #. Launch an instance on a private network and retrieve the neutron
    port ID that was allocated. As above, use the ``cirros``
@@ -306,7 +306,7 @@ This example uses again the private network, ``demo-net1``
 
    .. code-block:: console
 
-      $ neutron port-show f148ffeb-3c26-4067-bc5f-5c3dfddae2f5
+      $ openstack port show f148ffeb-3c26-4067-bc5f-5c3dfddae2f5
       +-----------------------+--------------------------------------------------------------------------+
       | Field                 | Value                                                                    |
       +-----------------------+--------------------------------------------------------------------------+
@@ -329,7 +329,7 @@ This example uses again the private network, ``demo-net1``
 
    .. code-block:: console
 
-      $ neutron port-show a2d1e756-8ae1-4f96-9aa1-e7ea16a6a68a
+      $ openstack port show a2d1e756-8ae1-4f96-9aa1-e7ea16a6a68a
       +-----------------------+--------------------------------------------------------------------------+
       | Field                 | Value                                                                    |
       +-----------------------+--------------------------------------------------------------------------+

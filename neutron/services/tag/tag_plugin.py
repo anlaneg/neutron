@@ -12,8 +12,7 @@
 #    under the License.
 #
 
-import functools
-
+from neutron_lib.db import api as db_api
 from neutron_lib.objects import exceptions as obj_exc
 from neutron_lib.plugins import directory
 from oslo_log import helpers as log_helpers
@@ -21,10 +20,8 @@ from sqlalchemy.orm import exc
 
 from neutron.db import _model_query as model_query
 from neutron.db import _resource_extend as resource_extend
-from neutron.db import api as db_api
 from neutron.db import common_db_mixin
 from neutron.db import standard_attr
-from neutron.db import tag_db as tag_methods
 from neutron.extensions import tagging
 from neutron.objects import tag as tag_obj
 
@@ -39,16 +36,11 @@ class TagPlugin(common_db_mixin.CommonDbMixin, tagging.TagPluginBase):
 
     supported_extension_aliases = ['standard-attr-tag']
 
+    __filter_validation_support = True
+
     def __new__(cls, *args, **kwargs):
         inst = super(TagPlugin, cls).__new__(cls, *args, **kwargs)
-        inst._filter_methods = []  # prevent GC of our partial functions
-        for model in resource_model_map.values():
-            method = functools.partial(tag_methods.apply_tag_filters, model)
-            inst._filter_methods.append(method)
-            model_query.register_hook(model, "tag",
-                                      query_hook=None,
-                                      filter_hook=None,
-                                      result_filters=method)
+        tag_obj.register_tag_hooks()
         return inst
 
     @staticmethod
@@ -82,7 +74,7 @@ class TagPlugin(common_db_mixin.CommonDbMixin, tagging.TagPluginBase):
     @log_helpers.log_method_call
     @db_api.retry_if_session_inactive()
     def update_tags(self, context, resource, resource_id, body):
-        with db_api.context_manager.writer.using(context):
+        with db_api.CONTEXT_WRITER.using(context):
             # We get and do all operations with objects in one session
             res = self._get_resource(context, resource, resource_id)
             new_tags = set(body['tags'])

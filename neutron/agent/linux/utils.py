@@ -36,18 +36,13 @@ from six.moves import http_client as httplib
 
 from neutron._i18n import _
 from neutron.agent.linux import xenapi_root_helper
+from neutron.common import exceptions
 from neutron.common import utils
 from neutron.conf.agent import common as config
 from neutron import wsgi
 
 
 LOG = logging.getLogger(__name__)
-
-
-class ProcessExecutionError(RuntimeError):
-    def __init__(self, message, returncode):
-        super(ProcessExecutionError, self).__init__(message)
-        self.returncode = returncode
 
 
 class RootwrapDaemonHelper(object):
@@ -159,7 +154,8 @@ def execute(cmd, process_input=None, addl_env=None,
             if log_fail_as_error:
                 LOG.error(msg)
             if check_exit_code:
-                raise ProcessExecutionError(msg, returncode=returncode)
+                raise exceptions.ProcessExecutionError(msg,
+                                                       returncode=returncode)
 
     finally:
         # NOTE(termie): this appears to be necessary to let the subprocess
@@ -178,7 +174,7 @@ def find_child_pids(pid, recursive=False):
     try:
         raw_pids = execute(['ps', '--ppid', pid, '-o', 'pid='],
                            log_fail_as_error=False)
-    except ProcessExecutionError as e:
+    except exceptions.ProcessExecutionError as e:
         # Unexpected errors are the responsibility of the caller
         with excutils.save_and_reraise_exception() as ctxt:
             # Exception has already been logged by execute
@@ -202,7 +198,7 @@ def find_parent_pid(pid):
     try:
         ppid = execute(['ps', '-o', 'ppid=', pid],
                        log_fail_as_error=False)
-    except ProcessExecutionError as e:
+    except exceptions.ProcessExecutionError as e:
         # Unexpected errors are the responsibility of the caller
         with excutils.save_and_reraise_exception() as ctxt:
             # Exception has already been logged by execute
@@ -232,7 +228,7 @@ def kill_process(pid, signal, run_as_root=False):
     """Kill the process with the given pid using the given signal."""
     try:
         execute(['kill', '-%d' % signal, pid], run_as_root=run_as_root)
-    except ProcessExecutionError:
+    except exceptions.ProcessExecutionError:
         if process_is_running(pid):
             raise
 
@@ -272,8 +268,7 @@ def remove_conf_files(cfg_root, uuid):
 
 
 def get_root_helper_child_pid(pid, expected_cmd, run_as_root=False):
-    """
-    Get the first non root_helper child pid in the process hierarchy.
+    """Get the first non root_helper child pid in the process hierarchy.
 
     If root helper was used, two or more processes would be created:
 
@@ -398,24 +393,36 @@ class UnixDomainHTTPConnection(httplib.HTTPConnection):
 
 
 class UnixDomainHttpProtocol(eventlet.wsgi.HttpProtocol):
-    def __init__(self, request, client_address, server):
-        if not client_address:
-            client_address = ('<local>', 0)
-
+    def __init__(self, *args):
         # NOTE(yamahata): from eventlet v0.22 HttpProtocol.__init__
         # signature was changed by changeset of
         # 7f53465578543156e7251e243c0636e087a8445f
-        # try the new signature first, and then fallback to the old
-        # signature for compatibility
-        try:
-            conn_state = [client_address, request, eventlet.wsgi.STATE_CLOSE]
+        # Both have server as last arg, but first arg(s) differ
+        server = args[-1]
+
+        # Because the caller is eventlet.wsgi.Server.process_request,
+        # the number of arguments will dictate if it is new or old style.
+        if len(args) == 2:
+            conn_state = args[0]
+            client_address = conn_state[0]
+            if not client_address:
+                conn_state[0] = ('<local>', 0)
             # base class is old-style, so super does not work properly
             eventlet.wsgi.HttpProtocol.__init__(self, conn_state, server)
-        except (AttributeError, TypeError):
-            # AttributeError: missing STATE_CLOSE
-            # TypeError: signature mismatch
+        elif len(args) == 3:
+            request = args[0]
+            client_address = args[1]
+            if not client_address:
+                client_address = ('<local>', 0)
+            # base class is old-style, so super does not work properly
+            # NOTE: eventlet 0.22 or later changes the number of args to 2.
+            # If we install eventlet 0.22 or later into a venv for pylint,
+            # pylint complains this. Let's skip it. (bug 1791178)
+            # pylint: disable=too-many-function-args
             eventlet.wsgi.HttpProtocol.__init__(
                 self, request, client_address, server)
+        else:
+            eventlet.wsgi.HttpProtocol.__init__(self, *args)
 
 
 class UnixDomainWSGIServer(wsgi.Server):

@@ -15,9 +15,9 @@
 
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import port as port_def
+from neutron_lib.db import api as db_api
 
 from neutron.db import _resource_extend as resource_extend
-from neutron.db import api as db_api
 from neutron.objects.port.extensions import extra_dhcp_opt as obj_extra_dhcp
 
 
@@ -44,7 +44,7 @@ class ExtraDhcpOptMixin(object):
         #这些信息是需要dhcp注入到对应主机中的信息
         if not extra_dhcp_opts:
             return port
-        with db_api.context_manager.writer.using(context):
+        with db_api.CONTEXT_WRITER.using(context):
             for dopt in extra_dhcp_opts:
                 if self._is_valid_opt_value(dopt['opt_name'],
                                             dopt['opt_value']):
@@ -85,7 +85,7 @@ class ExtraDhcpOptMixin(object):
                                 context, port_id=id)
             # if there are currently no dhcp_options associated to
             # this port, Then just insert the new ones and be done.
-            with db_api.context_manager.writer.using(context):
+            with db_api.CONTEXT_WRITER.using(context):
                 for upd_rec in dopts:
                     for opt in opts:
                         if (opt['opt_name'] == upd_rec['opt_name'] and

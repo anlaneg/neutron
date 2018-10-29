@@ -101,6 +101,9 @@ the network when running :command:`openstack network list` and
 on that network. No other users (other than admins and the owner)
 will be able to see the network.
 
+.. note::
+   Subnets inherit the RBAC policy entries of their network.
+
 To remove access for that project, delete the policy that allows
 it using the :command:`openstack network rbac delete` command:
 
@@ -259,7 +262,7 @@ command:
    +-------------------------------+-------------+--------------------------------+
 
 
-Use the :command:`neutron rbac-show` command to see the details:
+Use the :command:`openstack network rbac show` command to see the details:
 
 .. code-block:: console
 

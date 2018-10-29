@@ -36,9 +36,7 @@ load_tests = testlib_api.module_load_tests
 
 
 class IpamTestCase(testlib_api.SqlTestCase):
-    """
-    Base class for tests that aim to test ip allocation.
-    """
+    """Base class for tests that aim to test ip allocation."""
     def setUp(self):
         super(IpamTestCase, self).setUp()
         cfg.CONF.set_override('notify_nova_on_port_status_changes', False)
@@ -89,7 +87,7 @@ class IpamTestCase(testlib_api.SqlTestCase):
                   'id': self.subnet_id,
                   'name': 'test_sub',
                   'network_id': self.network_id,
-                  'ip_version': 4,
+                  'ip_version': constants.IP_VERSION_4,
                   'cidr': '10.10.10.0/29',
                   'enable_dhcp': False,
                   'gateway_ip': '10.10.10.1',

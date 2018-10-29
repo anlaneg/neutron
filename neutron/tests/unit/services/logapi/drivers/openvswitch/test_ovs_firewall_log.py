@@ -18,7 +18,6 @@ from neutron_lib import constants
 from oslo_config import cfg
 from oslo_utils import uuidutils
 
-from neutron.agent.linux.openvswitch_firewall import constants as ovsfw_consts
 from neutron.common import constants as n_const
 from neutron.objects.logapi import logging_resource as log_object
 from neutron.plugins.ml2.drivers.openvswitch.agent.common import constants \
@@ -174,7 +173,6 @@ class TestOVSFirewallLoggingDriver(base.BaseTestCase):
             mock.call(
                 actions='controller',
                 cookie=accept_cookie.id,
-                ct_state=ovsfw_consts.OF_STATE_NEW_NOT_ESTABLISHED,
                 reg5=self.port_ofport,
                 dl_type="0x{:04x}".format(n_const.ETHERTYPE_IP),
                 nw_proto=constants.PROTO_NUM_TCP,
@@ -183,9 +181,9 @@ class TestOVSFirewallLoggingDriver(base.BaseTestCase):
                 tcp_dst='0x007b'),
             # log egress tcp6
             mock.call(
-                actions='controller',
+                actions='resubmit(,%d),controller' % (
+                    ovs_consts.ACCEPTED_EGRESS_TRAFFIC_NORMAL_TABLE),
                 cookie=accept_cookie.id,
-                ct_state=ovsfw_consts.OF_STATE_NEW_NOT_ESTABLISHED,
                 reg5=self.port_ofport,
                 dl_type="0x{:04x}".format(n_const.ETHERTYPE_IPV6),
                 priority=70,
@@ -193,9 +191,9 @@ class TestOVSFirewallLoggingDriver(base.BaseTestCase):
                 table=ovs_consts.ACCEPTED_EGRESS_TRAFFIC_TABLE),
             # log egress udp
             mock.call(
-                actions='controller',
+                actions='resubmit(,%d),controller' % (
+                    ovs_consts.ACCEPTED_EGRESS_TRAFFIC_NORMAL_TABLE),
                 cookie=accept_cookie.id,
-                ct_state=ovsfw_consts.OF_STATE_NEW_NOT_ESTABLISHED,
                 reg5=self.port_ofport,
                 dl_type="0x{:04x}".format(n_const.ETHERTYPE_IP),
                 nw_proto=constants.PROTO_NUM_UDP,
@@ -273,7 +271,6 @@ class TestOVSFirewallLoggingDriver(base.BaseTestCase):
             mock.call(
                 actions='controller',
                 cookie=accept_cookie.id,
-                ct_state=ovsfw_consts.OF_STATE_NEW_NOT_ESTABLISHED,
                 reg5=self.port_ofport,
                 dl_type="0x{:04x}".format(n_const.ETHERTYPE_IP),
                 nw_proto=constants.PROTO_NUM_TCP,

@@ -16,10 +16,12 @@
 import datetime
 
 import mock
+from neutron_lib.api.definitions import dhcpagentscheduler as das_apidef
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
+from neutron_lib.tests.unit import fake_notifier
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 import oslo_messaging
@@ -30,15 +32,14 @@ from neutron.api import extensions
 from neutron.api.rpc.agentnotifiers import l3_rpc_agent_api
 from neutron.api.rpc.handlers import dhcp_rpc
 from neutron.api.rpc.handlers import l3_rpc
+from neutron.common import rpc as n_rpc
 from neutron.db import agents_db
 from neutron.db import agentschedulers_db
 from neutron.db.models import agent as agent_model
-from neutron.extensions import dhcpagentscheduler
 from neutron.extensions import l3agentscheduler
 from neutron.objects import agent as ag_obj
 from neutron.objects import l3agent as rb_obj
 from neutron.tests.common import helpers
-from neutron.tests import fake_notifier
 from neutron.tests.unit.api import test_extensions
 from neutron.tests.unit.db import test_db_base_plugin_v2 as test_plugin
 from neutron.tests.unit.extensions import test_agent
@@ -110,7 +111,7 @@ class AgentSchedulerTestMixIn(object):
                                             expected_code=exc.HTTPOk.code,
                                             admin_context=True):
         path = "/agents/%s/%s.%s" % (agent_id,
-                                     dhcpagentscheduler.DHCP_NETS,
+                                     das_apidef.DHCP_NETS,
                                      self.fmt)
         return self._request_list(path, expected_code=expected_code,
                                   admin_context=admin_context)
@@ -128,7 +129,7 @@ class AgentSchedulerTestMixIn(object):
                                           expected_code=exc.HTTPOk.code,
                                           admin_context=True):
         path = "/networks/%s/%s.%s" % (network_id,
-                                       dhcpagentscheduler.DHCP_AGENTS,
+                                       das_apidef.DHCP_AGENTS,
                                        self.fmt)
         return self._request_list(path, expected_code=expected_code,
                                   admin_context=admin_context)
@@ -149,7 +150,7 @@ class AgentSchedulerTestMixIn(object):
                                    expected_code=exc.HTTPCreated.code,
                                    admin_context=True):
         path = "/agents/%s/%s.%s" % (id,
-                                     dhcpagentscheduler.DHCP_NETS,
+                                     das_apidef.DHCP_NETS,
                                      self.fmt)
         req = self._path_create_request(path,
                                         {'network_id': network_id},
@@ -161,7 +162,7 @@ class AgentSchedulerTestMixIn(object):
                                         expected_code=exc.HTTPNoContent.code,
                                         admin_context=True):
         path = "/agents/%s/%s/%s.%s" % (id,
-                                        dhcpagentscheduler.DHCP_NETS,
+                                        das_apidef.DHCP_NETS,
                                         network_id,
                                         self.fmt)
         req = self._path_delete_request(path,
@@ -239,8 +240,8 @@ class OvsAgentSchedulerTestCaseBase(test_l3.L3NatTestCaseMixin,
         # NOTE(ivasilevskaya) mocking this way allows some control over mocked
         # client like further method mocking with asserting calls
         self.client_mock = mock.MagicMock(name="mocked client")
-        mock.patch('neutron.common.rpc.get_client'
-                   ).start().return_value = self.client_mock
+        mock.patch.object(
+            n_rpc, 'get_client').start().return_value = self.client_mock
         super(OvsAgentSchedulerTestCaseBase, self).setUp(
             'ml2', service_plugins=service_plugins)
         mock.patch.object(
@@ -600,13 +601,22 @@ class OvsAgentSchedulerTestCase(OvsAgentSchedulerTestCaseBase):
             'enable_services_on_agents_with_admin_state_down', True)
         self._test_network_add_to_dhcp_agent(admin_state_up=False)
 
-    def test_network_remove_from_dhcp_agent(self):
+    def _test_network_remove_from_dhcp_agent(self,
+                                             concurrent_port_delete=False):
         agent = helpers.register_dhcp_agent(DHCP_HOSTA)
         hosta_id = agent.id
-        with self.port() as port1:
+        with self.port(device_owner=constants.DEVICE_OWNER_DHCP,
+                       host=DHCP_HOSTA) as port1:
             num_before_remove = len(
                 self._list_networks_hosted_by_dhcp_agent(
                     hosta_id)['networks'])
+            if concurrent_port_delete:
+                plugin = directory.get_plugin()
+                # Return a foo port to emulate the port not found scenario
+                # caused by a concurrent port deletion during unscheduling
+                port = {'id': 'foo_port_id', 'device_id': 'foo_device_id'}
+                mock.patch.object(plugin, 'get_ports',
+                                  return_value=[port]).start()
             self._remove_network_from_dhcp_agent(hosta_id,
                                                  port1['port']['network_id'])
             num_after_remove = len(
@@ -614,6 +624,12 @@ class OvsAgentSchedulerTestCase(OvsAgentSchedulerTestCaseBase):
                     hosta_id)['networks'])
         self.assertEqual(1, num_before_remove)
         self.assertEqual(0, num_after_remove)
+
+    def test_network_remove_from_dhcp_agent(self):
+        self._test_network_remove_from_dhcp_agent()
+
+    def test_network_remove_from_dhcp_agent_on_concurrent_port_delete(self):
+        self._test_network_remove_from_dhcp_agent(concurrent_port_delete=True)
 
     def test_list_active_networks_on_not_registered_yet_dhcp_agent(self):
         plugin = directory.get_plugin()
@@ -840,6 +856,58 @@ class OvsAgentSchedulerTestCase(OvsAgentSchedulerTestCaseBase):
             l3_agents = self._list_l3_agents_hosting_router(
                 router['router']['id'])['agents']
             self.assertEqual(0, len(l3_agents))
+
+    def test_router_reschedule_no_remove_if_agent_has_dvr_service_ports(self):
+        l3_notifier = self.l3plugin.agent_notifiers[constants.AGENT_TYPE_L3]
+        agent_a = helpers.register_l3_agent(
+            host=L3_HOSTA, agent_mode=constants.L3_AGENT_MODE_DVR_SNAT)
+        agent_b = helpers.register_l3_agent(
+            host=L3_HOSTB, agent_mode=constants.L3_AGENT_MODE_DVR_SNAT)
+        with self.subnet() as s, \
+                mock.patch.object(l3_notifier.client, 'prepare',
+                    return_value=l3_notifier.client) as mock_prepare, \
+                mock.patch.object(l3_notifier.client, 'cast') as mock_cast, \
+                mock.patch.object(l3_notifier.client, 'call'):
+            net_id = s['subnet']['network_id']
+            self._set_net_external(net_id)
+            router = {'name': 'router1',
+                      'external_gateway_info': {'network_id': net_id},
+                      'tenant_id': 'tenant_id',
+                      'admin_state_up': True,
+                      'distributed': True}
+            r = self.l3plugin.create_router(self.adminContext,
+                                            {'router': router})
+
+            # schedule the dvr to one of the agents
+            self.l3plugin.schedule_router(self.adminContext, r['id'])
+            l3agents = self.l3plugin.list_l3_agents_hosting_router(
+                    self.adminContext, r['id'])
+            agent = l3agents['agents'][0]
+            # emulating dvr serviceable ports exist on the host
+            with mock.patch.object(
+                    self.l3plugin, '_check_dvr_serviceable_ports_on_host') \
+                    as ports_exist:
+                ports_exist.return_value = True
+                # reschedule the dvr to one of the other agent
+                candidate_agent = (agent_b if agent['host'] == L3_HOSTA
+                                   else agent_a)
+                self.l3plugin.reschedule_router(self.adminContext, r['id'],
+                        candidates=[candidate_agent])
+                # make sure dvr serviceable ports are checked when rescheduling
+                self.assertTrue(ports_exist.called)
+
+            # make sure sending update instead of removing for dvr
+            mock_prepare.assert_called_with(server=candidate_agent['host'])
+            mock_cast.assert_called_with(
+                    mock.ANY, 'routers_updated',
+                    routers=[r['id']])
+
+            # make sure the rescheduling completes
+            l3agents = self.l3plugin.list_l3_agents_hosting_router(
+                    self.adminContext, r['id'])
+            self.assertEqual(1, len(l3agents['agents']))
+            new_agent_host = l3agents['agents'][0]['host']
+            self.assertNotEqual(agent['host'], new_agent_host)
 
     def test_router_auto_schedule_with_invalid_router(self):
         with self.router() as router:

@@ -20,13 +20,13 @@ from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import context
+from neutron_lib.db import api as db_api
 from neutron_lib.plugins import directory
 from neutron_lib.services import base as service_base
 from oslo_log import log as logging
 from oslo_utils import uuidutils
 
 from neutron.db import _resource_extend as resource_extend
-from neutron.db import api as db_api
 from neutron.db import common_db_mixin
 from neutron.db import db_base_plugin_common
 from neutron.objects import base as objects_base
@@ -50,6 +50,7 @@ class TrunkPlugin(service_base.ServicePluginBase,
 
     __native_pagination_support = True
     __native_sorting_support = True
+    __filter_validation_support = True
 
     def __init__(self):
         self._rpc_backend = None

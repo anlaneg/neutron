@@ -20,8 +20,10 @@ import mock
 import netaddr
 from neutron_lib import constants
 from neutron_lib import context
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as n_exc
 from neutron_lib.objects import exceptions as o_exc
+from neutron_lib.objects import utils as obj_utils
 from neutron_lib.utils import helpers
 from oslo_db import exception as obj_exc
 from oslo_db.sqlalchemy import utils as db_utils
@@ -32,7 +34,6 @@ from oslo_versionedobjects import fields as obj_fields
 import testtools
 
 from neutron.db import _model_query as model_query
-from neutron.db import api as db_api
 from neutron import objects
 from neutron.objects import agent
 from neutron.objects import base
@@ -48,7 +49,6 @@ from neutron.objects import router
 from neutron.objects import securitygroup
 from neutron.objects import stdattrs
 from neutron.objects import subnet
-from neutron.objects import utils as obj_utils
 from neutron.tests import base as test_base
 from neutron.tests import tools
 from neutron.tests.unit.db import test_db_base_plugin_v2
@@ -281,8 +281,8 @@ class FakeNeutronObjectUniqueKey(base.NeutronDbObject):
 
 @base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectRenamedField(base.NeutronDbObject):
-    """
-    Testing renaming the parameter from DB to NeutronDbObject
+    """Testing renaming the parameter from DB to NeutronDbObject
+
     For tests:
         - db fields: id, field_db, field2
         - object: id, field_ovo, field2
@@ -523,6 +523,8 @@ FIELD_TYPE_VALUE_GENERATOR_MAP = {
     obj_fields.DateTimeField: tools.get_random_datetime,
     obj_fields.DictOfStringsField: get_random_dict_of_strings,
     obj_fields.IPAddressField: tools.get_random_ip_address,
+    obj_fields.IPV4AddressField: lambda: tools.get_random_ip_address(
+        version=constants.IP_VERSION_4),
     obj_fields.IntegerField: tools.get_random_integer,
     obj_fields.ListOfObjectsField: lambda: [],
     obj_fields.ListOfStringsField: tools.get_random_string_list,
@@ -1489,7 +1491,7 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
             'project_id': uuidutils.generate_uuid(),
             'name': 'test-subnet1',
             'network_id': network_id,
-            'ip_version': 4,
+            'ip_version': constants.IP_VERSION_4,
             'cidr': netaddr.IPNetwork('10.0.0.0/24'),
             'gateway_ip': '10.0.0.1',
             'enable_dhcp': 1,
@@ -1710,7 +1712,7 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
 
     def test_get_objects_single_transaction_enginefacade(self):
         with mock.patch(self._get_ro_txn_exit_func_name()) as mock_exit:
-            with db_api.context_manager.reader.using(self.context):
+            with db_api.CONTEXT_READER.using(self.context):
                 self._test_class.get_objects(self.context)
         self.assertEqual(1, mock_exit.call_count)
 
@@ -1729,7 +1731,7 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         obj.create()
 
         with mock.patch(self._get_ro_txn_exit_func_name()) as mock_exit:
-            with db_api.context_manager.reader.using(self.context):
+            with db_api.CONTEXT_READER.using(self.context):
                 obj = self._test_class.get_object(self.context,
                                                   **obj._get_composite_keys())
         self.assertEqual(1, mock_exit.call_count)
@@ -1816,15 +1818,42 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
             for local_field, foreign_key in foreign_keys.items():
                 objclass_fields[local_field] = obj.get(foreign_key)
 
+            # remember which fields were nullified so that later we know what
+            # to assert for each child field
+            nullified_fields = set()
+
+            # cut off more depth levels to simplify object field generation
+            # (for example, nullify segment field for PortBindingLevel objects
+            # to avoid creating a Segment object (and back-linking it to the
+            # original network of the port)
+            for child_field in self._get_object_synthetic_fields(objclass):
+                if objclass.fields[child_field].nullable:
+                    objclass_fields[child_field] = None
+                    nullified_fields.add(child_field)
+
+            # initialize the child object
             synth_field_obj = objclass(self.context, **objclass_fields)
+
+            # nullify nullable UUID fields since they may otherwise trigger
+            # foreign key violations
+            for field_name in get_obj_persistent_fields(synth_field_obj):
+                child_field = objclass.fields[field_name]
+                if child_field.nullable:
+                    if isinstance(child_field, common_types.UUIDField):
+                        synth_field_obj[field_name] = None
+                        nullified_fields.add(field_name)
+
             synth_field_obj.create()
 
             # reload the parent object under test
             obj = cls_.get_object(self.context, **obj._get_composite_keys())
 
-            # check that the stored database model now has filled relationships
+            # check that the stored database model now has correct attr values
             dbattr = obj.fields_need_translation.get(field, field)
-            self.assertTrue(getattr(obj.db_obj, dbattr, None))
+            if field in nullified_fields:
+                self.assertIsNone(getattr(obj.db_obj, dbattr, None))
+            else:
+                self.assertIsNotNone(getattr(obj.db_obj, dbattr, None))
 
             # reset the object so that we can compare it to other clean objects
             obj.obj_reset_changes([field])
@@ -1862,6 +1891,7 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         cls_ = resource
         return cls_.get_objects(neutron_context)
 
+    @test_base.unstable_test("bug 1775220")
     def test_get_objects_queries_constant(self):
         iter_db_obj = iter(self.db_objs)
 
@@ -2014,12 +2044,16 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
 
         fields_to_update = self.get_updatable_fields(self.obj_fields[1])
         if fields_to_update:
-            old_model = copy.deepcopy(obj.db_obj)
+            old_fields = {}
             for key, val in fields_to_update.items():
+                db_model_attr = (
+                    obj.fields_need_translation.get(key, key))
+                old_fields[db_model_attr] = obj.db_obj[db_model_attr]
                 setattr(obj, key, val)
             obj.update()
             self.assertIsNotNone(obj.db_obj)
-            self.assertNotEqual(old_model, obj.db_obj)
+            for k, v in obj.modify_fields_to_db(fields_to_update).items():
+                self.assertEqual(v, obj.db_obj[k], '%s attribute differs' % k)
 
         obj.delete()
         self.assertIsNone(obj.db_obj)

@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.db import api as db_api
 from neutron_lib.services import base as service_base
 from oslo_log import log as logging
 import sqlalchemy
@@ -20,7 +21,6 @@ import webob.exc
 
 from neutron._i18n import _
 from neutron.db import _resource_extend as resource_extend
-from neutron.db import api as db_api
 from neutron.db import standard_attr
 
 LOG = logging.getLogger(__name__)
@@ -32,6 +32,8 @@ class RevisionPlugin(service_base.ServicePluginBase):
 
     supported_extension_aliases = ['standard-attr-revisions',
                                    'revision-if-match']
+
+    __filter_validation_support = True
 
     def __init__(self):
         super(RevisionPlugin, self).__init__()

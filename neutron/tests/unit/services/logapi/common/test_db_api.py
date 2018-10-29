@@ -20,6 +20,7 @@ from oslo_utils import uuidutils
 
 from neutron.common import utils
 from neutron.objects.logapi import logging_resource as log_object
+from neutron.services.logapi.common import constants as log_const
 from neutron.services.logapi.common import db_api
 from neutron.services.logapi.common import validators
 from neutron.services.logapi.rpc import server as server_rpc
@@ -49,6 +50,7 @@ class LoggingDBApiTestCase(test_sg.SecurityGroupDBTestCase):
         super(LoggingDBApiTestCase, self).setUp()
         self.context = context.get_admin_context()
         self.sg_id, self.port_id, self.tenant_id = self._create_sg_and_port()
+        self.context.tenant_id = self.tenant_id
 
     def _create_sg_and_port(self):
         with self.network() as network, \
@@ -71,6 +73,12 @@ class LoggingDBApiTestCase(test_sg.SecurityGroupDBTestCase):
             self.assertEqual(
                 [log], db_api.get_logs_bound_port(self.context, self.port_id))
 
+            # Test get log objects with required resource type
+            calls = [mock.call(self.context, project_id=self.tenant_id,
+                               resource_type=log_const.SECURITY_GROUP,
+                               enabled=True)]
+            log_object.Log.get_objects.assert_has_calls(calls)
+
     def test_get_logs_not_bound_port(self):
         fake_sg_id = uuidutils.generate_uuid()
         log = _create_log(resource_id=fake_sg_id, tenant_id=self.tenant_id)
@@ -79,12 +87,24 @@ class LoggingDBApiTestCase(test_sg.SecurityGroupDBTestCase):
             self.assertEqual(
                 [], db_api.get_logs_bound_port(self.context, self.port_id))
 
+            # Test get log objects with required resource type
+            calls = [mock.call(self.context, project_id=self.tenant_id,
+                               resource_type=log_const.SECURITY_GROUP,
+                               enabled=True)]
+            log_object.Log.get_objects.assert_has_calls(calls)
+
     def test_get_logs_bound_sg(self):
         log = _create_log(resource_id=self.sg_id, tenant_id=self.tenant_id)
         with mock.patch.object(log_object.Log, 'get_objects',
                                return_value=[log]):
             self.assertEqual(
                 [log], db_api.get_logs_bound_sg(self.context, self.sg_id))
+
+            # Test get log objects with required resource type
+            calls = [mock.call(self.context, project_id=self.tenant_id,
+                               resource_type=log_const.SECURITY_GROUP,
+                               enabled=True)]
+            log_object.Log.get_objects.assert_has_calls(calls)
 
     def test_get_logs_not_bound_sg(self):
         with self.network() as network, \
@@ -100,6 +120,12 @@ class LoggingDBApiTestCase(test_sg.SecurityGroupDBTestCase):
                                    return_value=[log]):
                 self.assertEqual(
                     [], db_api.get_logs_bound_sg(self.context, self.sg_id))
+
+                # Test get log objects with required resource type
+                calls = [mock.call(self.context, project_id=self.tenant_id,
+                                   resource_type=log_const.SECURITY_GROUP,
+                                   enabled=True)]
+                log_object.Log.get_objects.assert_has_calls(calls)
 
     def test__get_ports_being_logged(self):
         log1 = _create_log(target_id=self.port_id,
@@ -162,41 +188,49 @@ class LoggingRpcCallbackTestCase(test_sg.SecurityGroupDBTestCase):
             ports_rest = self.deserialize(self.fmt, res)
             port_id = ports_rest['port']['id']
             log = _create_log(resource_id=sg_id, tenant_id=tenant_id)
-            with mock.patch.object(validators, 'validate_log_type_for_port',
-                                   return_value=True):
-                ports_log = (
-                    self.rpc_callback.get_sg_log_info_for_log_resources(
-                        self.context, log_resources=[log])
-                )
-                expected = [{
-                    'event': log.event,
-                    'id': log.id,
-                    'ports_log': [{
-                        'port_id': port_id,
-                        'security_group_rules': [
-                            {'direction': 'egress',
-                             'ethertype': u'IPv4',
-                             'security_group_id': sg_id},
-                            {'direction': 'egress',
-                             'ethertype': u'IPv6',
-                             'security_group_id': sg_id},
-                            {'direction': 'ingress',
-                             'ethertype': u'IPv4',
-                             'port_range_max': 22,
-                             'port_range_min': 22,
-                             'protocol': u'tcp',
-                             'security_group_id': sg_id},
-                            {'direction': 'egress',
-                             'ethertype': u'IPv4',
-                             'protocol': u'tcp',
-                             'dest_ip_prefix':
-                                 utils.AuthenticIPNetwork('10.0.0.1/32'),
-                             'security_group_id': sg_id}]
-                    }],
-                    'project_id': tenant_id
-                }]
-                self.assertEqual(expected, ports_log)
-            self._delete('ports', port_id)
+            with mock.patch.object(
+                    server_rpc,
+                    'get_rpc_method',
+                    return_value=server_rpc.get_sg_log_info_for_log_resources
+            ):
+                with mock.patch.object(validators,
+                                       'validate_log_type_for_port',
+                                       return_value=True):
+                    ports_log = (
+                        self.rpc_callback.get_sg_log_info_for_log_resources(
+                            self.context,
+                            resource_type=log_const.SECURITY_GROUP,
+                            log_resources=[log])
+                    )
+                    expected = [{
+                        'event': log.event,
+                        'id': log.id,
+                        'ports_log': [{
+                            'port_id': port_id,
+                            'security_group_rules': [
+                                {'direction': 'egress',
+                                 'ethertype': u'IPv4',
+                                 'security_group_id': sg_id},
+                                {'direction': 'egress',
+                                 'ethertype': u'IPv6',
+                                 'security_group_id': sg_id},
+                                {'direction': 'ingress',
+                                 'ethertype': u'IPv4',
+                                 'port_range_max': 22,
+                                 'port_range_min': 22,
+                                 'protocol': u'tcp',
+                                 'security_group_id': sg_id},
+                                {'direction': 'egress',
+                                 'ethertype': u'IPv4',
+                                 'protocol': u'tcp',
+                                 'dest_ip_prefix':
+                                     utils.AuthenticIPNetwork('10.0.0.1/32'),
+                                 'security_group_id': sg_id}]
+                        }],
+                        'project_id': tenant_id
+                    }]
+                    self.assertEqual(expected, ports_log)
+                self._delete('ports', port_id)
 
     def test_get_sg_log_info_for_port_added_event(self):
         with self.network() as network, \
@@ -228,39 +262,48 @@ class LoggingRpcCallbackTestCase(test_sg.SecurityGroupDBTestCase):
             with mock.patch.object(
                     log_object.Log, 'get_objects', return_value=[log]):
                 with mock.patch.object(
-                        validators, 'validate_log_type_for_port',
-                        return_value=True):
-                    ports_log = (
-                        self.rpc_callback.get_sg_log_info_for_port(
-                            self.context, port_id=port_id)
-                    )
-                    expected = [{
-                        'event': log.event,
-                        'id': log.id,
-                        'ports_log': [{
-                            'port_id': port_id,
-                            'security_group_rules': [
-                                {'direction': 'egress',
-                                 'ethertype': u'IPv4',
-                                 'security_group_id': sg_id},
-                                {'direction': 'egress',
-                                 'ethertype': u'IPv6',
-                                 'security_group_id': sg_id},
-                                {'direction': 'ingress',
-                                 'ethertype': u'IPv4',
-                                 'port_range_max': 13,
-                                 'port_range_min': 11,
-                                 'protocol': u'tcp',
-                                 'source_ip_prefix':
-                                     utils.AuthenticIPNetwork('10.0.0.1/32'),
-                                 'security_group_id': sg_id},
-                                {'direction': 'egress',
-                                 'ethertype': u'IPv4',
-                                 'protocol': u'icmp',
-                                 'security_group_id': sg_id}]
-                        }],
-                        'project_id': tenant_id
-                    }]
+                        server_rpc,
+                        'get_rpc_method',
+                        return_value=server_rpc.get_sg_log_info_for_port
+                ):
+                    with mock.patch.object(
+                            validators,
+                            'validate_log_type_for_port',
+                            return_value=True):
+                        ports_log = (
+                            self.rpc_callback.get_sg_log_info_for_port(
+                                self.context,
+                                resource_type=log_const.SECURITY_GROUP,
+                                port_id=port_id)
+                        )
+                        expected = [{
+                            'event': log.event,
+                            'id': log.id,
+                            'ports_log': [{
+                                'port_id': port_id,
+                                'security_group_rules': [
+                                    {'direction': 'egress',
+                                     'ethertype': u'IPv4',
+                                     'security_group_id': sg_id},
+                                    {'direction': 'egress',
+                                     'ethertype': u'IPv6',
+                                     'security_group_id': sg_id},
+                                    {'direction': 'ingress',
+                                     'ethertype': u'IPv4',
+                                     'port_range_max': 13,
+                                     'port_range_min': 11,
+                                     'protocol': u'tcp',
+                                     'source_ip_prefix':
+                                         utils.AuthenticIPNetwork(
+                                             '10.0.0.1/32'),
+                                     'security_group_id': sg_id},
+                                    {'direction': 'egress',
+                                     'ethertype': u'IPv4',
+                                     'protocol': u'icmp',
+                                     'security_group_id': sg_id}]
+                            }],
+                            'project_id': tenant_id
+                        }]
 
-                    self.assertEqual(expected, ports_log)
-                self._delete('ports', port_id)
+                        self.assertEqual(expected, ports_log)
+                    self._delete('ports', port_id)

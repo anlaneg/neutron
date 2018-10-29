@@ -42,7 +42,7 @@ ovs_conf.register_ovs_agent_opts()
 _connection = None
 
 
-def api_factory(context):
+def api_factory():
     global _connection
     if _connection is None:
         _connection = connection.Connection(
@@ -82,7 +82,8 @@ class OvsCleanup(command.BaseCommand):
 
 class NeutronOvsdbIdl(impl_idl.OvsdbIdl):
     def __init__(self, connection):
-        vlog.use_python_logger()
+        max_level = None if cfg.CONF.OVS.ovsdb_debug else vlog.INFO
+        vlog.use_python_logger(max_level=max_level)
         super(NeutronOvsdbIdl, self).__init__(connection)
 
     def ovs_cleanup(self, bridges, all_ports=False):

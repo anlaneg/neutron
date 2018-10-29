@@ -53,22 +53,28 @@ def get_ha_interface(ip='169.254.192.1', mac='12:34:56:78:2b:5d'):
             'priority': 1}
 
 
-def prepare_router_data(ip_version=4, enable_snat=None, num_internal_ports=1,
+def prepare_router_data(ip_version=lib_constants.IP_VERSION_4,
+                        enable_snat=None, num_internal_ports=1,
                         enable_floating_ip=False, enable_ha=False,
-                        extra_routes=False, dual_stack=False,
-                        enable_gw=True, v6_ext_gw_with_sub=True, **kwargs):
+                        extra_routes=False, dual_stack=False, enable_gw=True,
+                        v6_ext_gw_with_sub=True,
+                        snat_bound_fip=False,
+                        **kwargs):
     fixed_ips = []
     subnets = []
     gateway_mac = kwargs.get('gateway_mac', 'ca:fe:de:ad:be:ee')
     extra_subnets = []
-    for loop_version in (4, 6):
-        if loop_version == 4 and (ip_version == 4 or dual_stack):
+    for loop_version in (lib_constants.IP_VERSION_4,
+                         lib_constants.IP_VERSION_6):
+        if (loop_version == lib_constants.IP_VERSION_4 and
+                (ip_version == lib_constants.IP_VERSION_4 or dual_stack)):
             ip_address = kwargs.get('ip_address', '19.4.4.4')
             prefixlen = 24
             subnet_cidr = kwargs.get('subnet_cidr', '19.4.4.0/24')
             gateway_ip = kwargs.get('gateway_ip', '19.4.4.1')
             _extra_subnet = {'cidr': '9.4.5.0/24'}
-        elif (loop_version == 6 and (ip_version == 6 or dual_stack) and
+        elif (loop_version == lib_constants.IP_VERSION_6 and
+              (ip_version == lib_constants.IP_VERSION_6 or dual_stack) and
               v6_ext_gw_with_sub):
             ip_address = kwargs.get('ip_address', 'fd00::4')
             prefixlen = 64
@@ -110,6 +116,7 @@ def prepare_router_data(ip_version=4, enable_snat=None, num_internal_ports=1,
         'routes': routes,
         'gw_port': ex_gw_port}
 
+    router_fips = router.get(lib_constants.FLOATINGIP_KEY, [])
     if enable_floating_ip:
         fip = {'id': _uuid(),
                'port_id': _uuid(),
@@ -119,7 +126,19 @@ def prepare_router_data(ip_version=4, enable_snat=None, num_internal_ports=1,
         qos_policy_id = kwargs.get(qos_consts.QOS_POLICY_ID)
         if qos_policy_id:
             fip[qos_consts.QOS_POLICY_ID] = qos_policy_id
-        router[lib_constants.FLOATINGIP_KEY] = [fip]
+        router_fips.append(fip)
+
+    if snat_bound_fip:
+        fip = {'id': _uuid(),
+               'port_id': _uuid(),
+               'status': 'DOWN',
+               'floating_ip_address': '19.4.4.3',
+               'fixed_ip_address': '10.0.0.2'}
+        qos_policy_id = kwargs.get(qos_consts.QOS_POLICY_ID)
+        if qos_policy_id:
+            fip[qos_consts.QOS_POLICY_ID] = qos_policy_id
+        router_fips.append(fip)
+    router[lib_constants.FLOATINGIP_KEY] = router_fips
 
     router_append_interface(router, count=num_internal_ports,
                             ip_version=ip_version, dual_stack=dual_stack)
@@ -137,8 +156,10 @@ def get_subnet_id(port):
     return port['fixed_ips'][0]['subnet_id']
 
 
-def router_append_interface(router, count=1, ip_version=4, ra_mode=None,
-                            addr_mode=None, dual_stack=False, same_port=False):
+def router_append_interface(router, count=1,
+                            ip_version=lib_constants.IP_VERSION_4,
+                            ra_mode=None, addr_mode=None, dual_stack=False,
+                            same_port=False):
     interfaces = router[lib_constants.INTERFACE_KEY]
     current = sum(
         [netaddr.IPNetwork(subnet['cidr']).version == ip_version
@@ -148,7 +169,7 @@ def router_append_interface(router, count=1, ip_version=4, ra_mode=None,
     # If same_port=True, create ip_version number of subnets on a single port
     # Else create just an ip_version subnet on each port
     if dual_stack:
-        ip_versions = [4, 6]
+        ip_versions = [lib_constants.IP_VERSION_4, lib_constants.IP_VERSION_6]
     elif same_port:
         ip_versions = [ip_version] * count
         count = 1
@@ -161,12 +182,14 @@ def router_append_interface(router, count=1, ip_version=4, ra_mode=None,
         fixed_ips = []
         subnets = []
         for loop_version in ip_versions:
-            if loop_version == 4 and (ip_version == 4 or dual_stack):
+            if (loop_version == lib_constants.IP_VERSION_4 and
+                    (ip_version == lib_constants.IP_VERSION_4 or dual_stack)):
                 ip_pool = '35.4.%i.4'
                 cidr_pool = '35.4.%i.0/24'
                 prefixlen = 24
                 gw_pool = '35.4.%i.1'
-            elif loop_version == 6 and (ip_version == 6 or dual_stack):
+            elif (loop_version == lib_constants.IP_VERSION_6 and
+                    (ip_version == lib_constants.IP_VERSION_6 or dual_stack)):
                 ip_pool = 'fd01:%x:1::6'
                 cidr_pool = 'fd01:%x:1::/64'
                 prefixlen = 64
@@ -196,10 +219,11 @@ def router_append_interface(router, count=1, ip_version=4, ra_mode=None,
         mac_address.value += 1
 
 
-def router_append_subnet(router, count=1, ip_version=4,
+def router_append_subnet(router, count=1,
+                         ip_version=lib_constants.IP_VERSION_4,
                          ipv6_subnet_modes=None, interface_id=None,
                          dns_nameservers=None, network_mtu=0):
-    if ip_version == 6:
+    if ip_version == lib_constants.IP_VERSION_6:
         subnet_mode_none = {'ra_mode': None, 'address_mode': None}
         if not ipv6_subnet_modes:
             ipv6_subnet_modes = [subnet_mode_none] * count
@@ -208,12 +232,12 @@ def router_append_subnet(router, count=1, ip_version=4,
                                       moves.range(len(ipv6_subnet_modes),
                                                   count)])
 
-    if ip_version == 4:
+    if ip_version == lib_constants.IP_VERSION_4:
         ip_pool = '35.4.%i.4'
         cidr_pool = '35.4.%i.0/24'
         prefixlen = 24
         gw_pool = '35.4.%i.1'
-    elif ip_version == 6:
+    elif ip_version == lib_constants.IP_VERSION_6:
         ip_pool = 'fd01:%x::6'
         cidr_pool = 'fd01:%x::/64'
         prefixlen = 64
@@ -269,7 +293,9 @@ def router_append_subnet(router, count=1, ip_version=4,
     router[lib_constants.INTERFACE_KEY] = interfaces
 
 
-def router_append_pd_enabled_subnet(router, count=1):
+def router_append_pd_enabled_subnet(router, count=1, prefix=None):
+    if not prefix:
+        prefix = lib_constants.PROVISIONAL_IPV6_PD_PREFIX
     interfaces = router[lib_constants.INTERFACE_KEY]
     current = sum(netaddr.IPNetwork(subnet['cidr']).version == 6
                   for p in interfaces for subnet in p['subnets'])
@@ -288,7 +314,7 @@ def router_append_pd_enabled_subnet(router, count=1):
                                'subnet_id': subnet_id}],
                 'mac_address': str(mac_address),
                 'subnets': [{'id': subnet_id,
-                             'cidr': lib_constants.PROVISIONAL_IPV6_PD_PREFIX,
+                             'cidr': prefix,
                              'gateway_ip': '::1',
                              'ipv6_ra_mode': lib_constants.IPV6_SLAAC,
                              'subnetpool_id': lib_constants.IPV6_PD_POOL_ID}]}
@@ -303,6 +329,17 @@ def get_unassigned_pd_interfaces(router):
         for subnet in intf['subnets']:
             if (ipv6_utils.is_ipv6_pd_enabled(subnet) and
                     subnet['cidr'] ==
+                    lib_constants.PROVISIONAL_IPV6_PD_PREFIX):
+                pd_intfs.append(intf)
+    return pd_intfs
+
+
+def get_assigned_pd_interfaces(router):
+    pd_intfs = []
+    for intf in router[lib_constants.INTERFACE_KEY]:
+        for subnet in intf['subnets']:
+            if (ipv6_utils.is_ipv6_pd_enabled(subnet) and
+                    subnet['cidr'] !=
                     lib_constants.PROVISIONAL_IPV6_PD_PREFIX):
                 pd_intfs.append(intf)
     return pd_intfs

@@ -16,14 +16,14 @@
 from neutron_lib.api import extensions
 from neutron_lib.db import constants as db_const
 
-from neutron.db import standard_attr
+from neutron.extensions import stdattrs_common
 
 
 DESCRIPTION_BODY = {
     'description': {'allow_post': True, 'allow_put': True,
                     'validate': {
                         'type:string': db_const.DESCRIPTION_FIELD_SIZE},
-                    'is_visible': True, 'default': ''}
+                    'is_visible': True, 'default': '', 'is_filter': True}
 }
 
 
@@ -51,5 +51,4 @@ class Standardattrdescription(extensions.ExtensionDescriptor):
     def get_extended_resources(self, version):
         if version != "2.0":
             return {}
-        rs_map = standard_attr.get_standard_attr_resource_model_map()
-        return {resource: DESCRIPTION_BODY for resource in rs_map}
+        return stdattrs_common.stdattrs_extended_resources(DESCRIPTION_BODY)

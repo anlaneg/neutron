@@ -18,122 +18,19 @@ NOTE: This module shall not be used by external projects. It will be moved
 """
 
 from neutron_lib.api import attributes
+from neutron_lib.db import model_query
 from neutron_lib.db import utils as db_utils
+from neutron_lib.objects import utils as obj_utils
+from neutron_lib.utils import helpers
 from oslo_db.sqlalchemy import utils as sa_utils
 from sqlalchemy import sql, or_, and_
 from sqlalchemy.ext import associationproxy
 
-from neutron.common import utils
-from neutron.db import _utils as ndb_utils
-from neutron.objects import utils as obj_utils
 
-# Classes implementing extensions will register hooks into this dictionary
-# for "augmenting" the "core way" of building a query for retrieving objects
-# from a model class. Hooks are registered by invoking register_hook().
-_model_query_hooks = {
-    # model1 : {
-    #              hook1: {
-    #                         'query': query_hook,
-    #                         'filter': filter_hook,
-    #                         'result_filters': result_filters
-    #              },
-    #              hook2: {
-    #                         'query': query_hook,
-    #                         'filter': filter_hook,
-    #                         'result_filters': result_filters
-    #              },
-    #              ...
-    #          },
-    # model2 : {
-    #              hook1: {
-    #                         'query': query_hook,
-    #                         'filter': filter_hook,
-    #                         'result_filters': result_filters
-    #              },
-    #              hook2: {
-    #                         'query': query_hook,
-    #                         'filter': filter_hook,
-    #                         'result_filters': result_filters
-    #              },
-    #              ...
-    #          },
-    # ...
-}
-
-
-def register_hook(model, name, query_hook, filter_hook,
-                  result_filters=None):
-    """Register a hook to be invoked when a query is executed.
-
-    :param model: The DB Model that the hook applies to.
-    :type model: sqlalchemy orm model
-
-    :param name: A name for the hook.
-    :type name: str
-
-    :param query_hook: The method to be called to augment the query.
-    :type query_hook: callable or None
-
-    :param filter_hook: A method to be called to augment the query filter.
-    :type filter_hook: callable or None
-
-    :param result_filters: A Method to be called to filter the query result.
-    :type result_filters: callable or None
-
-    Adds the hook components to the _model_query_hooks dict. Models are the
-    keys of this dict, whereas the value is another dict mapping hook names
-    to callables performing the hook.
-
-    Each hook has three components:
-        "query", used to build the query expression
-        "filter", used to build the filter expression
-        "result_filters", used for final filtering on the query result
-
-    Query hooks take as input the query being built and return a
-    transformed query expression.
-        def mymodel_query_hook(context, original_model, query):
-            augmented_query = ...
-            return augmented_query
-
-    Filter hooks take as input the filter expression being built and return
-    a transformed filter expression
-        def mymodel_filter_hook(context, original_model, filters):
-            refined_filters = ...
-            return refined_filters
-
-    Result filter hooks take as input the query expression and the filter
-    expression, and return a final transformed query expression.
-        def mymodel_result_filter_hook(query, filters):
-            final_filters = ...
-            return query.filter(final_filters)
-
-    """
-    if callable(query_hook):
-        query_hook = utils.make_weak_ref(query_hook)
-    if callable(filter_hook):
-        filter_hook = utils.make_weak_ref(filter_hook)
-    if callable(result_filters):
-        result_filters = utils.make_weak_ref(result_filters)
-    #为model表，注册名称为name的hook
-    _model_query_hooks.setdefault(model, {})[name] = {
-        'query': query_hook,
-        'filter': filter_hook,
-        'result_filters': result_filters
-    }
-
-
-def get_hooks(model):
-    """Retrieve the model query hooks for a model.
-
-    :param model: The DB Model to look up for query hooks.
-    :type model: sqlalchemy orm model
-
-    :return: list of hooks
-    :rtype: list of dict of callable
-
-    """
-    #为表model注册的所有hook
-    return _model_query_hooks.get(model, {}).values()
+# TODO(boden): remove shims
+_model_query_hooks = model_query._model_query_hooks
+register_hook = model_query.register_hook
+get_hooks = model_query.get_hooks
 
 
 #执行model定义的hooks
@@ -142,7 +39,7 @@ def query_with_hooks(context, model):
     query = context.session.query(model)
     # define basic filter condition for model query
     query_filter = None
-    if ndb_utils.model_query_scope_is_project(context, model):
+    if db_utils.model_query_scope_is_project(context, model):
         if hasattr(model, 'rbac_entries'):
             query = query.outerjoin(model.rbac_entries)
             rbac_model = model.rbac_entries.property.mapper.class_
@@ -158,12 +55,12 @@ def query_with_hooks(context, model):
             query_filter = (model.tenant_id == context.tenant_id)
     # Execute query hooks registered from mixins and plugins
     for hook in get_hooks(model):
-        query_hook = utils.resolve_ref(hook.get('query'))
+        query_hook = helpers.resolve_ref(hook.get('query'))
         if query_hook:
             #使能此model的query hook (针对query可做一些连接）
             query = query_hook(context, model, query)
 
-        filter_hook = utils.resolve_ref(hook.get('filter'))
+        filter_hook = helpers.resolve_ref(hook.get('filter'))
         if filter_hook:
             #使能此model的filter hook（针对query_filter,可增加一些filter)
             query_filter = filter_hook(context, model, query_filter)
@@ -247,15 +144,16 @@ def apply_filters(query, model, filters, context=None):
                         query.session.query(rbac.object_id).filter(is_shared)
                     )
                 elif (not context or
-                      not ndb_utils.model_query_scope_is_project(context,
-                                                                 model)):
+                      not db_utils.model_query_scope_is_project(
+                          context, model)):
                     # we only want to join if we aren't using the subquery
                     # and if we aren't already joined because this is a
                     # scoped query
                     query = query.outerjoin(model.rbac_entries)
                 query = query.filter(is_shared)
         for hook in get_hooks(model):
-            result_filter = utils.resolve_ref(hook.get('result_filters', None))
+            result_filter = helpers.resolve_ref(
+                hook.get('result_filters', None))
             if result_filter:
                 #执行result_filter（hook可能在query时引入新的表，故result_filters时，可提供提执行filter)
                 query = result_filter(query, filters)

@@ -20,6 +20,7 @@ from neutron_lib.api import attributes
 from neutron_lib.api import faults
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions
 from oslo_log import log as logging
 from oslo_policy import policy as oslo_policy
@@ -32,7 +33,6 @@ from neutron.api.v2 import resource as wsgi_resource
 from neutron.common import constants as n_const
 from neutron.common import exceptions as n_exc
 from neutron.common import rpc as n_rpc
-from neutron.db import api as db_api
 from neutron import policy
 from neutron import quota
 from neutron.quota import resource_registry
@@ -104,6 +104,7 @@ class Controller(object):
         self._native_bulk = self._is_native_bulk_supported()
         self._native_pagination = self._is_native_pagination_supported()
         self._native_sorting = self._is_native_sorting_supported()
+        self._filter_validation = self._is_filter_validation_supported()
         self._policy_attrs = self._init_policy_attrs()
         self._notifier = n_rpc.get_notifier('network')
         self._member_actions = member_actions
@@ -149,6 +150,9 @@ class Controller(object):
 
     def _is_native_sorting_supported(self):
         return api_common.is_native_sorting_supported(self._plugin)
+
+    def _is_filter_validation_supported(self):
+        return api_common.is_filter_validation_supported(self._plugin)
 
     def _exclude_attributes_by_policy(self, context, data):
         """Identifies attributes to exclude according to authZ policies.
@@ -281,9 +285,11 @@ class Controller(object):
         # plugin before returning.
         original_fields, fields_to_add = self._do_field_list(
             api_common.list_args(request, 'fields'))
-        filters = api_common.get_filters(request, self._attr_info,
-                                         ['fields', 'sort_key', 'sort_dir',
-                                          'limit', 'marker', 'page_reverse'])
+        filters = api_common.get_filters(
+            request, self._attr_info,
+            ['fields', 'sort_key', 'sort_dir',
+             'limit', 'marker', 'page_reverse'],
+            is_filter_validation_supported=self._filter_validation)
         kwargs = {'filters': filters,
                   'fields': original_fields}
         sorting_helper = self._get_sorting_helper(request)
@@ -303,12 +309,15 @@ class Controller(object):
             # FIXME(salvatore-orlando): obj_getter might return references to
             # other resources. Must check authZ on them too.
             # Omit items from list that should not be visible
-            obj_list = [obj for obj in obj_list
-                        if policy.check(request.context,
-                                        self._plugin_handlers[self.SHOW],
-                                        obj,
-                                        plugin=self._plugin,
-                                        pluralized=self._collection)]
+            tmp_list = []
+            for obj in obj_list:
+                self._set_parent_id_into_ext_resources_request(
+                    request, obj, parent_id, is_get=True)
+                if policy.check(
+                        request.context, self._plugin_handlers[self.SHOW],
+                        obj, plugin=self._plugin, pluralized=self._collection):
+                    tmp_list.append(obj)
+            obj_list = tmp_list
         # Use the first element in the list for discriminating which attributes
         # should be filtered out because of authZ policies
         # fields_to_add contains a list of attributes added for request policy
@@ -339,6 +348,8 @@ class Controller(object):
             kwargs[self._parent_id_name] = parent_id
         obj_getter = getattr(self._plugin, action)
         obj = obj_getter(request.context, id, **kwargs)
+        self._set_parent_id_into_ext_resources_request(
+            request, obj, parent_id, is_get=True)
         # Check authz
         # FIXME(salvatore-orlando): obj_getter might return references to
         # other resources. Must check authZ on them too.
@@ -451,6 +462,11 @@ class Controller(object):
         for item in items:
             self._validate_network_tenant_ownership(request,
                                                     item[self._resource])
+            # For ext resources policy check, we support two types, such as
+            # parent_id is in request body, another type is parent_id is in
+            # request url, which we can get from kwargs.
+            self._set_parent_id_into_ext_resources_request(
+                request, item[self._resource], parent_id)
             policy.enforce(request.context,
                            action,
                            item[self._resource],
@@ -477,7 +493,7 @@ class Controller(object):
         def notify(create_result):
             # Ensure usage trackers for all resources affected by this API
             # operation are marked as dirty
-            with db_api.context_manager.writer.using(request.context):
+            with db_api.CONTEXT_WRITER.using(request.context):
                 # Commit the reservation(s)
                 for reservation in reservations:
                     quota.QUOTAS.commit_reservation(
@@ -626,6 +642,10 @@ class Controller(object):
         # Ensure policy engine is initialized
         policy.init()
         parent_id = kwargs.get(self._parent_id_name)
+        # If the parent_id exist, we should get orig_obj with
+        # self._parent_id_name field.
+        if parent_id and self._parent_id_name not in field_list:
+            field_list.append(self._parent_id_name)
         orig_obj = self._item(request, id, field_list=field_list,
                               parent_id=parent_id)
         orig_object_copy = copy.copy(orig_obj)
@@ -634,6 +654,10 @@ class Controller(object):
         # which attributes are set explicitly so that it can distinguish them
         # from the ones that are set to their default values.
         orig_obj[n_const.ATTRIBUTES_TO_UPDATE] = body[self._resource].keys()
+        # Then get the ext_parent_id, format to ext_parent_parent_resource_id
+        if self._parent_id_name in orig_obj:
+            self._set_parent_id_into_ext_resources_request(
+                request, orig_obj, parent_id)
         try:
             policy.enforce(request.context,
                            action,
@@ -711,6 +735,9 @@ class Controller(object):
         if res_dict is None:
             msg = _("Unable to find '%s' in request body") % resource
             raise webob.exc.HTTPBadRequest(msg)
+        if not isinstance(res_dict, dict):
+            msg = _("Object '%s' contains invalid data") % resource
+            raise webob.exc.HTTPBadRequest(msg)
 
         attr_ops = attributes.AttributeInfo(attr_info)
         attr_ops.populate_project_id(context, res_dict, is_create)
@@ -749,6 +776,37 @@ class Controller(object):
             # network from the tenant since they don't have access to it.
             msg = _('The resource could not be found.')
             raise webob.exc.HTTPNotFound(msg)
+
+    def _set_parent_id_into_ext_resources_request(
+            self, request, resource_item, parent_id, is_get=False):
+        if not parent_id:
+            return
+
+        # This will pass most create/update/delete cases
+        if not is_get and (request.context.is_admin or
+                           request.context.is_advsvc or
+                           self.parent['member_name'] not in
+                           n_const.EXT_PARENT_RESOURCE_MAPPING or
+                           resource_item.get(self._parent_id_name)):
+            return
+
+        # Then we arrive here, that means the request or get obj contains
+        # ext_parent. If this func is called by list/get, and it contains
+        # _parent_id_name. We need to re-add the ex_parent prefix to policy.
+        if is_get:
+            if (not request.context.is_admin or
+                    not request.context.is_advsvc and
+                    self.parent['member_name'] in
+                    n_const.EXT_PARENT_RESOURCE_MAPPING):
+                resource_item.setdefault(
+                    "%s_%s" % (n_const.EXT_PARENT_PREFIX,
+                               self._parent_id_name),
+                    parent_id)
+        # If this func is called by create/update/delete, we just add.
+        else:
+            resource_item.setdefault(
+                "%s_%s" % (n_const.EXT_PARENT_PREFIX, self._parent_id_name),
+                parent_id)
 
 
 def create_resource(collection, resource, plugin, params, allow_bulk=False,

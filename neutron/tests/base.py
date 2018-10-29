@@ -27,11 +27,12 @@ import eventlet.timeout
 import fixtures
 import mock
 from neutron_lib.callbacks import manager as registry_manager
+from neutron_lib.db import api as db_api
 from neutron_lib import fixture
+from neutron_lib.tests.unit import fake_notifier
 from oslo_concurrency.fixture import lockutils
 from oslo_config import cfg
 from oslo_db import options as db_options
-from oslo_messaging import conffixture as messaging_conffixture
 from oslo_utils import excutils
 from oslo_utils import fileutils
 from oslo_utils import strutils
@@ -44,16 +45,12 @@ from neutron.agent.linux import external_process
 from neutron.api.rpc.callbacks.consumer import registry as rpc_consumer_reg
 from neutron.api.rpc.callbacks.producer import registry as rpc_producer_reg
 from neutron.common import config
-from neutron.common import rpc as n_rpc
 from neutron.conf.agent import common as agent_config
-from neutron.db import _model_query as model_query
 from neutron.db import _resource_extend as resource_extend
 from neutron.db import agentschedulers_db
-from neutron.db import api as db_api
 from neutron import manager
 from neutron import policy
 from neutron.quota import resource_registry
-from neutron.tests import fake_notifier
 from neutron.tests import post_mortem_debug
 from neutron.tests import tools
 
@@ -112,6 +109,22 @@ def unstable_test(reason):
     return decor
 
 
+def set_timeout(timeout):
+    """Timeout decorator for test methods.
+
+    Use this decorator for tests that are expected to pass in very specific
+    amount of time, not common for all other tests.
+    It can have either big or small value.
+    """
+    def decor(f):
+        @functools.wraps(f)
+        def inner(self, *args, **kwargs):
+            self.useFixture(fixtures.Timeout(timeout, gentle=True))
+            return f(self, *args, **kwargs)
+        return inner
+    return decor
+
+
 def get_rootwrap_cmd():
     return os.environ.get('OS_ROOTWRAP_CMD', SUDO_CMD)
 
@@ -122,9 +135,7 @@ def get_rootwrap_daemon_cmd():
 
 class AttributeDict(dict):
 
-    """
-    Provide attribute access (dict.key) to dictionary values.
-    """
+    """Provide attribute access (dict.key) to dictionary values."""
 
     def __getattr__(self, name):
         """Allow attribute access for all keys in the dict."""
@@ -184,6 +195,8 @@ class DietTestCase(base.BaseTestCase):
         # Make sure we see all relevant deprecation warnings when running tests
         self.useFixture(tools.WarningsFixture())
 
+        self.useFixture(fixture.DBQueryHooksFixture())
+
         # NOTE(ihrachys): oslotest already sets stopall for cleanup, but it
         # does it using six.moves.mock (the library was moved into
         # unittest.mock in Python 3.4). So until we switch to six.moves.mock
@@ -192,17 +205,12 @@ class DietTestCase(base.BaseTestCase):
         # six before removing the cleanup callback from here.
         self.addCleanup(mock.patch.stopall)
 
-        self.addCleanup(self.reset_model_query_hooks)
         self.addCleanup(self.reset_resource_extend_functions)
 
         self.addOnException(self.check_for_systemexit)
         self.orig_pid = os.getpid()
 
         tools.reset_random_seed()
-
-    @staticmethod
-    def reset_model_query_hooks():
-        model_query._model_query_hooks = {}
 
     @staticmethod
     def reset_resource_extend_functions():
@@ -297,7 +305,6 @@ class BaseTestCase(DietTestCase):
     @staticmethod
     def config_parse(conf=None, args=None):
         """Create the default configurations."""
-        # neutron.conf includes rpc_backend which needs to be cleaned up
         if args is None:
             args = []
         args += ['--config-file', etcdir('neutron.conf')]
@@ -325,7 +332,8 @@ class BaseTestCase(DietTestCase):
             'oslo_config.cfg.find_config_files',
             lambda project=None, prog=None, extension=None: []))
 
-        self.setup_rpc_mocks()
+        self.useFixture(fixture.RPCFixture())
+
         self.setup_config()
 
         self._callback_manager = registry_manager.CallbacksManager()
@@ -376,24 +384,6 @@ class BaseTestCase(DietTestCase):
         """
         root = root or self.get_default_temp_dir()
         return root.join(filename)
-
-    def setup_rpc_mocks(self):
-        # don't actually start RPC listeners when testing
-        mock.patch(
-            'neutron.common.rpc.Connection.consume_in_threads',
-            return_value=[]).start()
-
-        self.useFixture(fixtures.MonkeyPatch(
-            'oslo_messaging.Notifier', fake_notifier.FakeNotifier))
-
-        self.messaging_conf = messaging_conffixture.ConfFixture(CONF)
-        self.messaging_conf.transport_driver = 'fake'
-        # NOTE(russellb) We want all calls to return immediately.
-        self.messaging_conf.response_timeout = 0
-        self.useFixture(self.messaging_conf)
-
-        self.addCleanup(n_rpc.cleanup)
-        n_rpc.init(CONF)
 
     def setup_config(self, args=None):
         """Tests that need a non-default config can override this method."""

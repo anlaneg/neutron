@@ -17,13 +17,13 @@ from neutron_lib.callbacks import events
 from neutron_lib.callbacks import exceptions as c_exc
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
+from neutron_lib.db import api as db_api
+from neutron_lib.db import utils as db_utils
 from neutron_lib import exceptions as n_exc
 from oslo_db import exception as db_exc
 from sqlalchemy.orm import exc
 
 from neutron.db import _model_query as model_query
-from neutron.db import _utils as db_utils
-from neutron.db import api as db_api
 from neutron.db import common_db_mixin
 from neutron.db import rbac_db_models as models
 from neutron.extensions import rbac as ext_rbac
@@ -142,7 +142,7 @@ class RbacPluginMixin(common_db_mixin.CommonDbMixin):
         if entry_id in self.object_type_cache:
             return self.object_type_cache[entry_id]
         for otype, model in models.get_type_model_map().items():
-            if (context.session.query(model).
+            if (context.session.query(model.id).
                     filter(model.id == entry_id).first()):
                 self.object_type_cache[entry_id] = otype
                 return otype

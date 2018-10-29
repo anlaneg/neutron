@@ -21,6 +21,7 @@ import random
 
 from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib import constants as lib_const
+from neutron_lib.db import api as lib_db_api
 from neutron_lib.exceptions import l3 as l3_exc
 from oslo_config import cfg
 from oslo_db import exception as db_exc
@@ -29,7 +30,6 @@ import six
 
 from neutron.common import utils
 from neutron.conf.db import l3_hamode_db
-from neutron.db import api as db_api
 from neutron.db.models import l3agent as rb_model
 from neutron.objects import l3agent as rb_obj
 
@@ -55,7 +55,7 @@ class L3Scheduler(object):
     def _router_has_binding(self, context, router_id, l3_agent_id):
         router_binding_model = rb_model.RouterL3AgentBinding
 
-        query = context.session.query(router_binding_model)
+        query = context.session.query(router_binding_model.router_id)
         query = query.filter(router_binding_model.router_id == router_id,
                              router_binding_model.l3_agent_id == l3_agent_id)
 
@@ -155,7 +155,7 @@ class L3Scheduler(object):
             else:
                 self.bind_router(plugin, context, router['id'], l3_agent.id)
 
-    @db_api.retry_db_errors
+    @lib_db_api.retry_db_errors
     def bind_router(self, plugin, context, router_id, agent_id,
                     is_manual_scheduling=False, is_ha=False):
         """Bind the router to the l3 agent which has been chosen.
@@ -286,7 +286,7 @@ class L3Scheduler(object):
             port_binding = utils.create_object_with_dependency(
                 creator, dep_getter, dep_creator,
                 dep_id_attr, dep_deleter)[0]
-            with db_api.autonested_transaction(context.session):
+            with lib_db_api.autonested_transaction(context.session):
                 port_binding.l3_agent_id = agent['id']
         except db_exc.DBDuplicateEntry:
             LOG.debug("Router %(router)s already scheduled for agent "

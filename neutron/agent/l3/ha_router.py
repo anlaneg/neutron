@@ -46,9 +46,13 @@ class HaRouterNamespace(namespaces.RouterNamespace):
     This namespace sets the ip_nonlocal_bind to 0 for HA router namespaces.
     It does so to prevent sending gratuitous ARPs for interfaces that got VIP
     removed in the middle of processing.
+    It also disables ipv6 forwarding by default. Forwarding will be
+    enabled during router configuration processing only for the master node.
+    It has to be disabled on all other nodes to avoid sending MLD packets
+    which cause lost connectivity to Floating IPs.
     """
     def create(self):
-        super(HaRouterNamespace, self).create()
+        super(HaRouterNamespace, self).create(ipv6_forwarding=False)
         # HA router namespaces should not have ip_nonlocal_bind enabled
         ip_lib.set_ip_nonlocal_bind_for_namespace(self.name)
 
@@ -238,6 +242,7 @@ class HaRouter(router.RouterInfo):
             keepalived.KeepalivedVirtualRoute(
                 route['destination'], route['nexthop'])
             for route in new_routes]
+        super(HaRouter, self).routes_updated(old_routes, new_routes)
 
     def _add_default_gw_virtual_route(self, ex_gw_port, interface_name):
         gateway_ips = self._get_external_gw_ips(ex_gw_port)

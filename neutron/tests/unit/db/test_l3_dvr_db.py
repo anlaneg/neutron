@@ -33,6 +33,7 @@ from neutron.db import l3_dvrscheduler_db
 from neutron.db.models import l3 as l3_models
 from neutron.db import models_v2
 from neutron.objects import agent as agent_obj
+from neutron.objects import l3agent as rb_obj
 from neutron.objects import router as router_obj
 from neutron.tests.unit.db import test_db_base_plugin_v2
 
@@ -596,6 +597,72 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
     def test_distributed_to_ha_csnat_ports_removal(self):
         self._test_csnat_ports_removal(ha=True)
 
+    def test_update_router_gw_info_csnat_ports_add(self):
+        router_dict = {'name': 'test_router',
+                       'admin_state_up': True,
+                       'distributed': True}
+        router = self._create_router(router_dict)
+        with self.network() as net_ext,\
+                self.network() as net_int,\
+                self.subnet(
+                    network=net_int,
+                    cidr='2001:db8:1::/64',
+                    gateway_ip='2001:db8:1::1',
+                    ip_version=const.IP_VERSION_6) as v6_subnet1,\
+                self.subnet(
+                    network=net_int,
+                    cidr='2001:db8:2::/64',
+                    gateway_ip='2001:db8:2::1',
+                    ip_version=const.IP_VERSION_6) as v6_subnet2,\
+                self.subnet(
+                    network=net_int,
+                    cidr='10.10.10.0/24') as v4_subnet:
+
+            self.core_plugin.update_network(
+                self.ctx, net_ext['network']['id'],
+                {'network': {'router:external': True}})
+
+            # Add router interface, then set router gateway
+            self.mixin.add_router_interface(self.ctx, router['id'],
+                {'subnet_id': v6_subnet1['subnet']['id']})
+            self.mixin.add_router_interface(self.ctx, router['id'],
+                {'subnet_id': v6_subnet2['subnet']['id']})
+            self.mixin.add_router_interface(self.ctx, router['id'],
+                {'subnet_id': v4_subnet['subnet']['id']})
+
+            dvr_filters = {'device_owner':
+                           [const.DEVICE_OWNER_DVR_INTERFACE]}
+            dvr_ports = self.core_plugin.get_ports(
+                self.ctx, filters=dvr_filters)
+            # One for IPv4, one for two IPv6 subnets
+            self.assertEqual(2, len(dvr_ports))
+
+            self.mixin.update_router(
+                self.ctx, router['id'],
+                {'router': {'external_gateway_info':
+                            {'network_id': net_ext['network']['id']}}})
+
+            csnat_filters = {'device_owner':
+                             [const.DEVICE_OWNER_ROUTER_SNAT]}
+            csnat_ports = self.core_plugin.get_ports(
+                self.ctx, filters=csnat_filters)
+            # One for IPv4, one for two IPv6 subnets
+            self.assertEqual(2, len(csnat_ports))
+
+            # Remove v4 subnet interface from router
+            self.mixin.remove_router_interface(
+                self.ctx, router['id'],
+                {'subnet_id': v4_subnet['subnet']['id']})
+
+            dvr_ports = self.core_plugin.get_ports(
+                self.ctx, filters=dvr_filters)
+            self.assertEqual(1, len(dvr_ports))
+
+            csnat_ports = self.core_plugin.get_ports(
+                self.ctx, filters=csnat_filters)
+            self.assertEqual(1, len(csnat_ports))
+            self.assertEqual(2, len(csnat_ports[0]['fixed_ips']))
+
     def test_remove_router_interface_csnat_ports_removal(self):
         router_dict = {'name': 'test_router', 'admin_state_up': True,
                        'distributed': True}
@@ -656,9 +723,9 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
                             {'network_id': ext_net_id}}})
             with self.subnet(
                 network=net_int, cidr='20.0.0.0/24') as subnet_v4,\
-                self.subnet(
-                    network=net_int, cidr='fe80::/64',
-                    gateway_ip='fe80::1', ip_version=6) as subnet_v6:
+                self.subnet(network=net_int, cidr='fe80::/64',
+                            gateway_ip='fe80::1', ip_version=const.IP_VERSION_6
+                            ) as subnet_v6:
                 self.mixin.add_router_interface(self.ctx, router['id'],
                     {'subnet_id': subnet_v4['subnet']['id']})
                 self.mixin.add_router_interface(self.ctx, router['id'],
@@ -692,7 +759,8 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
         self.mixin._core_plugin.update_port = update_port
 
         with self.subnet(network=net, cidr='fe81::/64',
-                         gateway_ip='fe81::1', ip_version=6) as subnet2_v6:
+                         gateway_ip='fe81::1', ip_version=const.IP_VERSION_6
+                         ) as subnet2_v6:
             self.mixin.add_router_interface(self.ctx, router['id'],
                 {'subnet_id': subnet2_v6['subnet']['id']})
             if fail_revert:
@@ -940,3 +1008,36 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
             self.assertEqual(port_dict['device_id'], port_info['device_id'])
             self.assertEqual(port_dict['device_owner'],
                              port_info['device_owner'])
+
+    def test__get_sync_routers_check_gw_port_host(self):
+        router_dict = {'name': 'test_router', 'admin_state_up': True,
+                       'distributed': True}
+        router = self._create_router(router_dict)
+        with self.network() as public,\
+                self.subnet() as subnet:
+            ext_net_1_id = public['network']['id']
+            self.core_plugin.update_network(
+                self.ctx, ext_net_1_id,
+                {'network': {'router:external': True}})
+            self.mixin.update_router(
+                self.ctx, router['id'],
+                {'router': {'external_gateway_info':
+                            {'network_id': ext_net_1_id}}})
+            self.mixin.add_router_interface(self.ctx, router['id'],
+                {'subnet_id': subnet['subnet']['id']})
+            routers = self.mixin._get_sync_routers(self.ctx,
+                                                   router_ids=[router['id']])
+            self.assertIsNone(routers[0]['gw_port_host'])
+
+            agent = mock.Mock()
+            agent.host = "fake-host"
+            bind = mock.Mock()
+            bind.l3_agent_id = "fake-id"
+            with mock.patch.object(
+                rb_obj.RouterL3AgentBinding, 'get_objects',
+                return_value=[bind]), mock.patch.object(
+                    agent_obj.Agent, 'get_object',
+                    return_value=agent):
+                routers = self.mixin._get_sync_routers(
+                    self.ctx, router_ids=[router['id']])
+                self.assertEqual("fake-host", routers[0]['gw_port_host'])

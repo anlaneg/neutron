@@ -30,6 +30,7 @@ from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources as callback_resources
 from neutron_lib import constants as n_const
 from neutron_lib import context
+from neutron_lib.placement import utils as place_utils
 from neutron_lib.plugins import utils as plugin_utils
 from neutron_lib.utils import helpers
 from oslo_config import cfg
@@ -39,15 +40,15 @@ from oslo_service import loopingcall
 from oslo_service import systemd
 from oslo_utils import netutils
 from osprofiler import profiler
-from six import moves
+import six
 
 from neutron._i18n import _
 from neutron.agent.common import ip_lib
 from neutron.agent.common import ovs_lib
+from neutron.agent.common import ovsdb_monitor
 from neutron.agent.common import polling
 from neutron.agent.common import utils
 from neutron.agent.l2 import l2_agent_extensions_manager as ext_manager
-from neutron.agent.linux import ovsdb_monitor
 from neutron.agent.linux import xenapi_root_helper
 from neutron.agent import rpc as agent_rpc
 from neutron.agent import securitygroups_rpc as agent_sg_rpc
@@ -55,6 +56,7 @@ from neutron.api.rpc.callbacks import resources
 from neutron.api.rpc.handlers import dvr_rpc
 from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
 from neutron.common import config
+from neutron.common import constants as c_const
 from neutron.common import utils as n_utils
 from neutron.conf.agent import xenapi_conf
 from neutron.plugins.ml2.drivers.agent import capabilities
@@ -124,7 +126,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
     #   1.2 Support DVR (Distributed Virtual Router) RPC
     #   1.3 Added param devices_to_update to security_groups_provider_updated
     #   1.4 Added support for network_update
-    target = oslo_messaging.Target(version='1.4')
+    #   1.5 Added binding_activate and binding_deactivate
+    target = oslo_messaging.Target(version='1.5')
 
     def __init__(self, bridge_classes, ext_manager, conf=None):
         '''Constructor.
@@ -152,8 +155,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         self.use_veth_interconnection = ovs_conf.use_veth_interconnection
         self.veth_mtu = agent_conf.veth_mtu
         # 将可用的本地vlan处理为1－4094
-        self.available_local_vlans = set(moves.range(n_const.MIN_VLAN_TAG,
-                                                     n_const.MAX_VLAN_TAG + 1))
+        self.available_local_vlans = set(six.moves.range(
+            n_const.MIN_VLAN_TAG, n_const.MAX_VLAN_TAG + 1))
         #配置的要采用的隧道类型
         self.tunnel_types = agent_conf.tunnel_types or []
         #是否启用l2　pop功能
@@ -184,6 +187,10 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         # Stores port delete notifications
         # 用于存储收到被删除通知的port
         self.deleted_ports = set()
+        # Stores the port IDs whose binding has been deactivated
+        self.deactivated_bindings = set()
+        # Stores the port IDs whose binding has been activated
+        self.activated_bindings = set()
 
         #用于存储给定network中的所有ports{映射表，用于记录每个network中有哪些port)
         self.network_ports = collections.defaultdict(set)
@@ -193,6 +200,15 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         #物理桥与网络name之间的映射
         self.bridge_mappings = self._parse_bridge_mappings(
             ovs_conf.bridge_mappings)
+        self.rp_bandwidths = place_utils.parse_rp_bandwidths(
+            ovs_conf.resource_provider_bandwidths)
+
+        br_set = set(six.itervalues(self.bridge_mappings))
+        n_utils.validate_rp_bandwidth(self.rp_bandwidths,
+                                      br_set)
+        self.rp_inventory_defaults = place_utils.parse_rp_inventory_defaults(
+            ovs_conf.resource_provider_inventory_defaults)
+
         #配置物理桥
         self.setup_physical_bridges(self.bridge_mappings)
         #生成本机vlan管理器
@@ -279,6 +295,11 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             'host': host,
             'topic': n_const.L2_AGENT_TOPIC,
             'configurations': {'bridge_mappings': self.bridge_mappings,
+                               c_const.RP_BANDWIDTHS: self.rp_bandwidths,
+                               c_const.RP_INVENTORY_DEFAULTS:
+                                   self.rp_inventory_defaults,
+                               'integration_bridge':
+                               ovs_conf.integration_bridge,
                                'tunnel_types': self.tunnel_types,
                                'tunneling_ip': self.local_ip,
                                'l2_population': self.l2_pop,
@@ -438,6 +459,18 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                   {'network_id': network_id,
                    'ports': self.network_ports[network_id]})
 
+    def binding_deactivate(self, context, **kwargs):
+        if kwargs.get('host') != self.conf.host:
+            return
+        port_id = kwargs.get('port_id')
+        self.deactivated_bindings.add(port_id)
+
+    def binding_activate(self, context, **kwargs):
+        if kwargs.get('host') != self.conf.host:
+            return
+        port_id = kwargs.get('port_id')
+        self.activated_bindings.add(port_id)
+
     #agent维护了某个network下有哪些port的信息表
     #这个函数的处理是，自此信息表中移除掉指定port的记录
     def _clean_network_ports(self, port_id):
@@ -478,6 +511,26 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         # Flush firewall rules after ports are put on dead VLAN to be
         # more secure
         self.sg_agent.remove_devices_filter(deleted_ports)
+
+    def process_deactivated_bindings(self, port_info):
+        # don't try to deactivate bindings for removed ports since they are
+        # already gone
+        if 'removed' in port_info:
+            self.deactivated_bindings -= port_info['removed']
+        while self.deactivated_bindings:
+            port_id = self.deactivated_bindings.pop()
+            port = self.int_br.get_vif_port_by_id(port_id)
+            if not port:
+                continue
+            self.int_br.delete_port(port.port_name)
+            LOG.debug(("Port id %s unplugged from integration bridge because "
+                       "its binding was de-activated"), port_id)
+
+    def process_activated_bindings(self, port_info, activated_bindings_copy):
+        # Compute which ports for activated bindings are still present...
+        activated_bindings_copy &= port_info['current']
+        # ...and treat them as just added
+        port_info['added'] |= activated_bindings_copy
 
     #处理tunnel口配置变化，按配置参数，响应类型变化，ip变化
     def tunnel_update(self, context, **kwargs):
@@ -1079,7 +1132,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
         '''
         # Ensure the integration bridge is created.
-        # ovs_lib.OVSBridge.create() will run
+        # ovs_lib.OVSBridge.create() will run the equivalent of
         #   ovs-vsctl -- --may-exist add-br BRIDGE_NAME
         # which does nothing if bridge already exists.
         #　尝试着创建集成桥，并将设置为安全模式，删除掉已有的所有controller
@@ -1399,7 +1452,9 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
     #readd_registered_ports 是否重新登记的ports
     def _get_port_info(self, registered_ports, cur_ports,
                        readd_registered_ports):
-        port_info = {'current': cur_ports}
+        port_info = {'current': cur_ports,
+                     'added': set(),
+                     'removed': set()}
         # FIXME(salv-orlando): It's not really necessary to return early
         # if nothing has changed.
         if not readd_registered_ports and cur_ports == registered_ports:
@@ -1722,6 +1777,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
     def treat_devices_added_or_updated(self, devices, provisioning_needed):
         skipped_devices = []
         need_binding_devices = []
+        binding_no_activated_devices = set()
         #自缓存中请求设备详情，有获取到的，有没有获取到的，还有获取失败的
         devices_details_list = (
             self.plugin_rpc.get_devices_details_list_and_failed_devices(
@@ -1771,13 +1827,21 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 self.ext_manager.handle_port(self.context, details)
             else:
                 #这些接口是没有获得缓存的，需要置为dead
-                LOG.warning(
-                    "Device %s not defined on plugin or binding failed",
-                    device)
+                if c_const.NO_ACTIVE_BINDING in details:
+                    # Port was added to the bridge, but its binding in this
+                    # agent hasn't been activated yet. It will be treated as
+                    # added when binding is activated
+                    binding_no_activated_devices.add(device)
+                    LOG.debug("Device %s has no active binding in host",
+                              device)
+                else:
+                    LOG.warning(
+                        "Device %s not defined on plugin or binding failed",
+                        device)
                 if (port and port.ofport != -1):
                     self.port_dead(port)
-        return (skipped_devices, need_binding_devices,
-                failed_devices)
+        return (skipped_devices, binding_no_activated_devices,
+                need_binding_devices, failed_devices)
 
     #更新port-id的network-id
     def _update_port_network(self, port_id, network_id):
@@ -1871,19 +1935,23 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                  port_info.get('updated', set()))
         need_binding_devices = []
         skipped_devices = set()
+        binding_no_activated_devices = set()
         if devices_added_updated:
             start = time.time()
-            (skipped_devices, need_binding_devices,
-            failed_devices['added']) = (
+            (skipped_devices, binding_no_activated_devices,
+             need_binding_devices, failed_devices['added']) = (
                 self.treat_devices_added_or_updated(
                     devices_added_updated, provisioning_needed))
             LOG.debug("process_network_ports - iteration:%(iter_num)d - "
                       "treat_devices_added_or_updated completed. "
-                      "Skipped %(num_skipped)d devices of "
-                      "%(num_current)d devices currently available. "
+                      "Skipped %(num_skipped)d and no activated binding "
+                      "devices %(num_no_active_binding)d of %(num_current)d "
+                      "devices currently available. "
                       "Time elapsed: %(elapsed).3f",
                       {'iter_num': self.iter_num,
                        'num_skipped': len(skipped_devices),
+                       'num_no_active_binding':
+                           len(binding_no_activated_devices),
                        'num_current': len(port_info['current']),
                        'elapsed': time.time() - start})
             # Update the list of current ports storing only those which
@@ -1893,7 +1961,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
         # TODO(salv-orlando): Optimize avoiding applying filters
         # unnecessarily, (eg: when there are no IP address changes)
-        added_ports = port_info.get('added', set()) - skipped_devices
+        added_ports = (port_info.get('added', set()) - skipped_devices -
+                       binding_no_activated_devices)
         self._add_port_tag_info(need_binding_devices)
         self.sg_agent.setup_port_filters(added_ports,
                                          port_info.get('updated', set()))
@@ -2014,6 +2083,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         return (polling_manager.is_polling_required or
                 self.updated_ports or
                 self.deleted_ports or
+                self.deactivated_bindings or
+                self.activated_bindings or
                 self.sg_agent.firewall_refresh_needed())
 
     def _port_info_has_changes(self, port_info):
@@ -2258,6 +2329,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         sync = False
         ports = set()
         updated_ports_copy = set()
+        activated_bindings_copy = set()
         ancillary_ports = set()
         tunnel_sync = True
         ovs_restarted = False
@@ -2349,6 +2421,9 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     sync = False
                     #处理neutron rpc通知的port删除任务,self.deleted_ports
                     self.process_deleted_ports(port_info)
+                    self.process_deactivated_bindings(port_info)
+                    self.process_activated_bindings(port_info,
+                                                    activated_bindings_copy)
                     #检查ofport number发生变化的port,需要更新其规则
                     ofport_changed_ports = self.update_stale_ofport_rules()
                     if ofport_changed_ports:
@@ -2407,6 +2482,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     LOG.exception("Error while processing VIF ports")
                     # Put the ports back in self.updated_port
                     self.updated_ports |= updated_ports_copy
+                    self.activated_bindings |= activated_bindings_copy
                     sync = True
             port_stats = self.get_port_stats(port_info, ancillary_port_info)
             self.loop_count_and_wait(start, port_stats)

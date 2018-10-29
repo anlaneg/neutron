@@ -15,13 +15,13 @@
 import mock
 from neutron_lib.api.definitions import metering as metering_apidef
 from neutron_lib import context
+from neutron_lib.db import api as db_api
 from neutron_lib.plugins import constants
 from neutron_lib.plugins import directory
 from oslo_utils import uuidutils
 
 from neutron.api.rpc.agentnotifiers import metering_rpc_agent_api
 from neutron.common import utils
-from neutron.db import api as db_api
 from neutron.db.metering import metering_rpc
 from neutron.extensions import l3 as ext_l3
 from neutron.extensions import metering as ext_metering
@@ -292,9 +292,9 @@ class TestMeteringPlugin(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
         with self.router(tenant_id=self.tenant_id, set_context=True):
             with self.metering_label(tenant_id=self.tenant_id,
                                      set_context=True) as label:
-                l = label['metering_label']
+                la = label['metering_label']
                 self.mock_uuid.return_value = second_uuid
-                with self.metering_label_rule(l['id']):
+                with self.metering_label_rule(la['id']):
                     self.mock_add_rule.assert_called_with(self.ctx,
                                                           expected_add)
                     self._delete('metering-label-rules', second_uuid)

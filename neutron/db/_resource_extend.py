@@ -19,7 +19,8 @@ NOTE: This module shall not be used by external projects. It will be moved
 import collections
 import inspect
 
-from neutron.common import utils
+from neutron_lib.utils import helpers
+
 
 # This dictionary will store methods for extending API resources.
 # Extensions can add their own methods by invoking register_funcs().
@@ -52,7 +53,7 @@ def register_funcs(resource, funcs):
             return foo_res
 
     """
-    funcs = [utils.make_weak_ref(f) if callable(f) else f
+    funcs = [helpers.make_weak_ref(f) if callable(f) else f
              for f in funcs]
     _resource_extend_functions.setdefault(resource, []).extend(funcs)
 
@@ -72,7 +73,7 @@ def get_funcs(resource):
 #针对某种reource调用func
 def apply_funcs(resource_type, response, db_object):
     for func in get_funcs(resource_type):
-        resolved_func = utils.resolve_ref(func)
+        resolved_func = helpers.resolve_ref(func)
         if resolved_func:
             resolved_func(response, db_object)
 

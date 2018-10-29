@@ -81,6 +81,8 @@ class RouterInfo(object):
         self.process_monitor = None
         # radvd is a neutron.agent.linux.ra.DaemonMonitor
         self.radvd = None
+        self.centralized_port_forwarding_fip_set = set()
+        self.fip_managed_by_port_forwardings = None
 
     def initialize(self, process_monitor):
         """Initialize the router on the system.
@@ -397,7 +399,9 @@ class RouterInfo(object):
                 # that's how the caller determines that it was removed
                 fip_statuses[fip['id']] = FLOATINGIP_STATUS_NOCHANGE
         fips_to_remove = (
-            ip_cidr for ip_cidr in existing_cidrs - new_cidrs - gw_cidrs
+            ip_cidr
+            for ip_cidr in (existing_cidrs - new_cidrs - gw_cidrs -
+                            self.centralized_port_forwarding_fip_set)
             if common_utils.is_cidr_host(ip_cidr))
         for ip_cidr in fips_to_remove:
             LOG.debug("Removing floating ip %s from interface %s in "
@@ -594,6 +598,10 @@ class RouterInfo(object):
                     self.agent.pd.enable_subnet(self.router_id, subnet['id'],
                                      subnet['cidr'],
                                      interface_name, p['mac_address'])
+                    if (subnet['cidr'] !=
+                            lib_constants.PROVISIONAL_IPV6_PD_PREFIX):
+                        self.pd_subnets[subnet['id']] = subnet['cidr']
+
         #删除port
         for p in old_ports:
             self.internal_network_removed(p)
@@ -782,13 +790,15 @@ class RouterInfo(object):
                    for gw_ip in gateway_ips)
 
     def external_gateway_added(self, ex_gw_port, interface_name):
-        preserve_ips = self._list_floating_ip_cidrs()
+        preserve_ips = self._list_floating_ip_cidrs() + list(
+            self.centralized_port_forwarding_fip_set)
         preserve_ips.extend(self.agent.pd.get_preserve_ips(self.router_id))
         self._external_gateway_added(
             ex_gw_port, interface_name, self.ns_name, preserve_ips)
 
     def external_gateway_updated(self, ex_gw_port, interface_name):
-        preserve_ips = self._list_floating_ip_cidrs()
+        preserve_ips = self._list_floating_ip_cidrs() + list(
+            self.centralized_port_forwarding_fip_set)
         preserve_ips.extend(self.agent.pd.get_preserve_ips(self.router_id))
         self._external_gateway_added(
             ex_gw_port, interface_name, self.ns_name, preserve_ips)
@@ -1199,6 +1209,8 @@ class RouterInfo(object):
         :param agent: Passes the agent in order to send RPC messages.
         """
         LOG.debug("Process updates, router %s", self.router['id'])
+        self.centralized_port_forwarding_fip_set = set(self.router.get(
+            'port_forwardings_fip_set', set()))
         self._process_internal_ports()
         self.agent.pd.sync_router(self.router['id'])
         self.process_external()
@@ -1212,3 +1224,5 @@ class RouterInfo(object):
         self.fip_map = dict([(fip['floating_ip_address'],
                               fip['fixed_ip_address'])
                              for fip in self.get_floating_ips()])
+        self.fip_managed_by_port_forwardings = self.router.get(
+            'fip_managed_by_port_forwardings')

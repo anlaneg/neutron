@@ -36,9 +36,9 @@ from neutron.tests.common import base as common_base
 from neutron.tests.common import helpers
 from neutron.tests.common import net_helpers
 from neutron.tests.functional.agent import test_ovs_lib
-from neutron.tests.functional import base
 from neutron.tests import tools
 
+load_tests = testscenarios.load_tests_apply_scenarios
 
 OVS_TRACE_FINAL_FLOW = 'Final flow'
 OVS_TRACE_DATAPATH_ACTIONS = 'Datapath actions'
@@ -47,14 +47,12 @@ cfg.CONF.import_group('OVS', 'neutron.plugins.ml2.drivers.openvswitch.agent.'
                       'common.config')
 
 
-class OVSAgentTestBase(test_ovs_lib.OVSBridgeTestBase,
-                       base.BaseSudoTestCase):
-    scenarios = testscenarios.multiply_scenarios([
+class OVSAgentTestBase(test_ovs_lib.OVSBridgeTestBase):
+    scenarios = [
         ('ofctl', {'main_module': ('neutron.plugins.ml2.drivers.openvswitch.'
                                   'agent.openflow.ovs_ofctl.main')}),
         ('native', {'main_module': ('neutron.plugins.ml2.drivers.openvswitch.'
-                                  'agent.openflow.native.main')})],
-        test_ovs_lib.OVSBridgeTestBase.scenarios)
+                                  'agent.openflow.native.main')})]
 
     def setUp(self):
         super(OVSAgentTestBase, self).setUp()
@@ -458,6 +456,26 @@ class OVSFlowTestCase(OVSAgentTestBase):
         dst_ofp = self.br_tun.get_port_ofport(dst_p.name)
         self.br_tun.install_instructions("pop_vlan,output:%d" % dst_ofp,
                                          priority=10, **kwargs)
+        trace = self._run_trace(self.br_tun.br_name,
+                                "in_port=%(in_port)d,dl_src=12:34:56:78:aa:bb,"
+                                "dl_dst=24:12:56:78:aa:bb,dl_type=0x0800,"
+                                "nw_src=192.168.0.1,nw_dst=192.168.0.2,"
+                                "nw_proto=1,nw_tos=0,nw_ttl=128,"
+                                "icmp_type=8,icmp_code=0,vlan_tci=%(vlan_tci)d"
+                                % kwargs)
+        self.assertIn("pop_vlan,", trace["Datapath actions"])
+
+    def test_bundled_install(self):
+        if 'ovs_ofctl' in self.main_module:
+            self.skip("ovs-ofctl of_interface doesn't have bundled()")
+
+        kwargs = {'in_port': 345, 'vlan_tci': 0x1321}
+        dst_p = self.useFixture(
+            net_helpers.OVSPortFixture(self.br_tun, self.namespace)).port
+        dst_ofp = self.br_tun.get_port_ofport(dst_p.name)
+        with self.br_tun.bundled() as br:
+            br.install_instructions("pop_vlan,output:%d" % dst_ofp,
+                                    priority=10, **kwargs)
         trace = self._run_trace(self.br_tun.br_name,
                                 "in_port=%(in_port)d,dl_src=12:34:56:78:aa:bb,"
                                 "dl_dst=24:12:56:78:aa:bb,dl_type=0x0800,"

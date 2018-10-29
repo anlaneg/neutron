@@ -18,6 +18,7 @@ Configuration
    config-dns-int-ext-serv
    config-dns-res
    config-dvr-ha-snat
+   config-fip-port-forwardings
    config-ipam
    config-ipv6
    config-lbaas
@@ -35,6 +36,7 @@ Configuration
    config-subnet-pools
    config-service-subnets
    config-trunking
+   config-wsgi
 
 .. note::
 

@@ -17,6 +17,7 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.api import extensions
 from neutron_lib import constants
 from neutron_lib import context as neutron_context
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions
 from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
@@ -26,7 +27,6 @@ from oslo_log import log as logging
 import oslo_messaging
 
 from neutron.common import constants as n_const
-from neutron.db import api as db_api
 
 
 LOG = logging.getLogger(__name__)
@@ -122,6 +122,9 @@ class L3RpcCallback(object):
             self._ensure_host_set_on_ports(context, host, routers)
             # refresh the data structure after ports are bound
             routers = self._routers_to_sync(context, router_ids, host)
+        pf_plugin = directory.get_plugin(plugin_constants.PORTFORWARDING)
+        if pf_plugin:
+            pf_plugin.sync_port_forwarding_fip(context, routers)
         return routers
 
     def _routers_to_sync(self, context, router_ids, host=None):

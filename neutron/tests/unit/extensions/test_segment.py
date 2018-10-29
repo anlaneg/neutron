@@ -42,6 +42,7 @@ from neutron.db import db_base_plugin_v2
 from neutron.db import portbindings_db
 from neutron.db import segments_db
 from neutron.extensions import segment as ext_segment
+from neutron.extensions import standardattrdescription as ext_stddesc
 from neutron.objects import network
 from neutron.services.segments import db
 from neutron.services.segments import exceptions as segment_exc
@@ -62,6 +63,8 @@ HTTP_NOT_FOUND = 404
 class SegmentTestExtensionManager(object):
 
     def get_resources(self):
+        ext_segment.Segment().update_attributes_map(
+            {ext_segment.SEGMENTS: ext_stddesc.DESCRIPTION_BODY})
         return ext_segment.Segment.get_resources()
 
     def get_actions(self):
@@ -161,14 +164,14 @@ class TestSegmentNameDescription(SegmentTestCase):
                 continue
             d.setdefault('network_id', self.network['id'])
             d.setdefault('name', None)
-            d.setdefault('description', None)
+            d.setdefault('description', 'desc')
             d.setdefault('physical_network', 'phys_net')
             d.setdefault('network_type', 'net_type')
             d.setdefault('segmentation_id', 200)
         return super(TestSegmentNameDescription, self)._test_create_segment(
             expected, **kwargs)
 
-    def test_create_segment_no_name_description(self):
+    def test_create_segment_no_name(self):
         self._test_create_segment(expected={})
 
     def test_create_segment_with_name(self):
@@ -209,11 +212,9 @@ class TestSegmentNameDescription(SegmentTestCase):
     def test_update_segment_set_description_to_none(self):
         segment = self._test_create_segment(
             description='A segment', name='segment')
-        result = self._update('segments',
-                              segment['segment']['id'],
-                              {'segment': {'description': None}},
-                              expected_code=webob.exc.HTTPOk.code)
-        self.assertIsNone(result['segment']['description'])
+        self._update('segments', segment['segment']['id'],
+                     {'segment': {'description': None}},
+                     expected_code=webob.exc.HTTPBadRequest.code)
 
 
 class TestSegment(SegmentTestCase):
@@ -520,6 +521,109 @@ class TestSegmentSubnetAssociation(SegmentTestCase):
                                   cidr='10.0.0.0/24',
                                   segment_id=segment['id'])
         self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
+
+    def test_associate_existing_subnet_with_segment(self):
+        with self.network() as network:
+            net = network['network']
+
+        segment = self._test_create_segment(network_id=net['id'],
+                                            physical_network='phys_net',
+                                            segmentation_id=200)['segment']
+        with self.subnet(network=network, segment_id=None) as subnet:
+            subnet = subnet['subnet']
+
+        data = {'subnet': {'segment_id': segment['id']}}
+        request = self.new_update_request('subnets', data, subnet['id'])
+        response = request.get_response(self.api)
+        res = self.deserialize(self.fmt, response)
+
+        self.assertEqual(webob.exc.HTTPOk.code, response.status_int)
+        self.assertEqual(res['subnet']['segment_id'], segment['id'])
+
+    def test_update_subnet_with_current_segment_id(self):
+        with self.network() as network:
+            net = network['network']
+
+        segment1 = self._test_create_segment(network_id=net['id'],
+                                            physical_network='phys_net1',
+                                            segmentation_id=200)['segment']
+        self._test_create_segment(network_id=net['id'],
+                                  physical_network='phys_net2',
+                                  segmentation_id=200)['segment']
+        with self.subnet(network=network, segment_id=segment1['id']) as subnet:
+            subnet = subnet['subnet']
+
+        data = {'subnet': {'segment_id': segment1['id']}}
+        request = self.new_update_request('subnets', data, subnet['id'])
+        response = request.get_response(self.api)
+        res = self.deserialize(self.fmt, response)
+
+        self.assertEqual(webob.exc.HTTPOk.code, response.status_int)
+        self.assertEqual(res['subnet']['segment_id'], segment1['id'])
+
+    def test_associate_existing_subnet_fail_if_multiple_segments(self):
+        with self.network() as network:
+            net = network['network']
+
+        segment1 = self._test_create_segment(network_id=net['id'],
+                                             physical_network='phys_net1',
+                                             segmentation_id=201)['segment']
+        self._test_create_segment(network_id=net['id'],
+                                  physical_network='phys_net2',
+                                  segmentation_id=202)['segment']
+
+        with self.subnet(network=network, segment_id=None) as subnet:
+            subnet = subnet['subnet']
+
+        data = {'subnet': {'segment_id': segment1['id']}}
+        request = self.new_update_request('subnets', data, subnet['id'])
+        response = request.get_response(self.api)
+
+        self.assertEqual(webob.exc.HTTPBadRequest.code, response.status_int)
+
+    def test_associate_existing_subnet_fail_if_multiple_subnets(self):
+        with self.network() as network:
+            net = network['network']
+
+        segment1 = self._test_create_segment(network_id=net['id'],
+                                             physical_network='phys_net1',
+                                             segmentation_id=201)['segment']
+
+        with self.subnet(network=network, segment_id=None,
+                         ip_version=constants.IP_VERSION_4,
+                         cidr='10.0.0.0/24') as subnet1, \
+                self.subnet(network=network, segment_id=None,
+                            ip_version=constants.IP_VERSION_4,
+                            cidr='10.0.1.0/24') as subnet2:
+            subnet1 = subnet1['subnet']
+            subnet2 = subnet2['subnet']
+
+        data = {'subnet': {'segment_id': segment1['id']}}
+        request = self.new_update_request('subnets', data, subnet1['id'])
+        response = request.get_response(self.api)
+
+        self.assertEqual(webob.exc.HTTPBadRequest.code, response.status_int)
+
+    def test_change_existing_subnet_segment_association_not_allowed(self):
+        with self.network() as network:
+            net = network['network']
+
+        segment1 = self._test_create_segment(network_id=net['id'],
+                                            physical_network='phys_net2',
+                                            segmentation_id=201)['segment']
+
+        with self.subnet(network=network, segment_id=segment1['id']) as subnet:
+            subnet = subnet['subnet']
+
+        segment2 = self._test_create_segment(network_id=net['id'],
+                                             physical_network='phys_net2',
+                                             segmentation_id=202)['segment']
+
+        data = {'subnet': {'segment_id': segment2['id']}}
+        request = self.new_update_request('subnets', data, subnet['id'])
+        response = request.get_response(self.api)
+
+        self.assertEqual(webob.exc.HTTPBadRequest.code, response.status_int)
 
 
 class HostSegmentMappingTestCase(SegmentTestCase):
@@ -1000,7 +1104,7 @@ class TestSegmentAwareIpam(SegmentAwareIpamTestCase):
         """Binding information is provided, subnets not on segments"""
         with self.network() as network:
             with self.subnet(network=network,
-                             ip_version=6,
+                             ip_version=constants.IP_VERSION_6,
                              cidr='2001:db8:0:0::/64') as subnet:
                 segment = self._test_create_segment(
                     network_id=network['network']['id'],
@@ -1620,6 +1724,33 @@ class TestNovaSegmentNotifier(SegmentAwareIpamTestCase):
     def test_first_subnet_association_with_segment(self):
         self._test_first_subnet_association_with_segment()
 
+    def test_update_subnet_association_with_segment(self, cidr='10.0.0.0/24',
+                                                    allocation_pools=None):
+        with self.network() as network:
+            segment_id = self._list('segments')['segments'][0]['id']
+            network_id = network['network']['id']
+
+        self._setup_host_mappings([(segment_id, 'fakehost')])
+        self.mock_p_client.get_inventory.side_effect = (
+            placement_exc.PlacementResourceProviderNotFound(
+                resource_provider=segment_id,
+                resource_class=seg_plugin.IPV4_RESOURCE_CLASS))
+        aggregate = mock.MagicMock()
+        aggregate.uuid = uuidutils.generate_uuid()
+        aggregate.id = 1
+        self.mock_n_client.aggregates.create.return_value = aggregate
+        ip_version = netaddr.IPNetwork(cidr).version
+        with self.subnet(network=network, cidr=cidr, ip_version=ip_version,
+                         allocation_pools=allocation_pools,
+                         segment_id=None) as subnet:
+            self._validate_l2_adjacency(network_id, is_adjacent=True)
+            data = {'subnet': {'segment_id': segment_id}}
+            self.new_update_request('subnets', data, subnet['subnet']['id'])
+            self.new_update_request(
+                'subnets', data, subnet['subnet']['id']).get_response(self.api)
+            self._validate_l2_adjacency(network_id, is_adjacent=False)
+            self._assert_inventory_creation(segment_id, aggregate, subnet)
+
     def _assert_inventory_update(self, segment_id, inventory, subnet=None,
                                  original_subnet=None):
         self.batch_notifier._notify()
@@ -2116,7 +2247,7 @@ class TestDhcpAgentSegmentScheduling(HostSegmentMappingTestCase):
     def _test_create_subnet(self, network, segment, cidr=None,
                             enable_dhcp=True):
         cidr = cidr or '10.0.0.0/24'
-        ip_version = 4
+        ip_version = constants.IP_VERSION_4
         with self.subnet(network={'network': network},
                          segment_id=segment['id'],
                          ip_version=ip_version,
@@ -2193,16 +2324,17 @@ class PlacementAPIClientTestCase(base.DietTestCase):
         self.mock_request = self.mock_request_p.start()
         self.client = placement_client.PlacementAPIClient()
 
-    @mock.patch('keystoneauth1.session.Session')
+    @mock.patch('keystoneauth1.loading.load_session_from_conf_options')
     @mock.patch('keystoneauth1.loading.load_auth_from_conf_options')
-    def test_constructor(self, load_auth_mock, ks_sess_mock):
+    def test_constructor(self, load_auth_mock, load_sess_mock):
+        mock_auth = mock.Mock()
+        load_auth_mock.return_value = mock_auth
+
         placement_client.PlacementAPIClient()
 
         load_auth_mock.assert_called_once_with(cfg.CONF, 'placement')
-        ks_sess_mock.assert_called_once_with(auth=load_auth_mock.return_value,
-                                             cert=None,
-                                             timeout=None,
-                                             verify=True)
+        load_sess_mock.assert_called_once_with(
+            cfg.CONF, 'placement', auth=mock_auth)
 
     def test_create_resource_provider(self):
         expected_payload = 'fake_resource_provider'
@@ -2319,3 +2451,213 @@ class PlacementAPIClientTestCase(base.DietTestCase):
         self.mock_request.side_effect = ks_exc.EndpointNotFound
         self.assertRaises(placement_exc.PlacementEndpointNotFound,
                           self.client.list_aggregates, rp_uuid)
+
+
+class TestSegmentHostRoutes(TestSegmentML2):
+
+    VLAN_MIN = 200
+    VLAN_MAX = 209
+
+    def setUp(self):
+        # NOTE(mlavalle): ml2_type_vlan requires to be registered before used.
+        # This piece was refactored and removed from .config, so it causes
+        # a problem, when tests are executed with pdb.
+        # There is no problem when tests are running without debugger.
+        driver_type.register_ml2_drivers_vlan_opts()
+        cfg.CONF.set_override(
+            'network_vlan_ranges',
+            ['physnet:%s:%s' % (self.VLAN_MIN, self.VLAN_MAX),
+             'physnet0:%s:%s' % (self.VLAN_MIN, self.VLAN_MAX),
+             'physnet1:%s:%s' % (self.VLAN_MIN, self.VLAN_MAX),
+             'physnet2:%s:%s' % (self.VLAN_MIN, self.VLAN_MAX)],
+            group='ml2_type_vlan')
+        super(TestSegmentHostRoutes, self).setUp()
+
+    def _create_subnets_segments(self, gateway_ips, cidrs):
+        with self.network() as network:
+            net = network['network']
+            segment0 = self._test_create_segment(
+                network_id=net['id'],
+                physical_network='physnet1',
+                network_type=constants.TYPE_VLAN,
+                segmentation_id=201)['segment']
+            segment1 = self._test_create_segment(
+                network_id=net['id'],
+                physical_network='physnet2',
+                network_type=constants.TYPE_VLAN,
+                segmentation_id=202)['segment']
+
+            with self.subnet(network=network,
+                             segment_id=segment0['id'],
+                             gateway_ip=gateway_ips[0],
+                             cidr=cidrs[0]) as subnet0, \
+                    self.subnet(network=network,
+                                segment_id=segment1['id'],
+                                gateway_ip=gateway_ips[1],
+                                cidr=cidrs[1]) as subnet1:
+                pass
+
+        return net, subnet0['subnet'], subnet1['subnet']
+
+    def test_host_routes_two_subnets_with_segments_association(self):
+        """Creates two subnets associated to different segments.
+
+        Since the two subnets are associated with different segments on the
+        same network host routes will be created.
+        """
+        gateway_ips = ['10.0.1.1', '10.0.2.1']
+        cidrs = ['10.0.1.0/24', '10.0.2.0/24']
+        host_routes = [{'destination': cidrs[1], 'nexthop': gateway_ips[0]},
+                       {'destination': cidrs[0], 'nexthop': gateway_ips[1]}]
+        net, subnet0, subnet1 = self._create_subnets_segments(gateway_ips,
+                                                              cidrs)
+
+        net_req = self.new_show_request('networks', net['id'])
+        raw_res = net_req.get_response(self.api)
+        net_res = self.deserialize(self.fmt, raw_res)
+        for subnet_id in net_res['network']['subnets']:
+            sub_req = self.new_show_request('subnets', subnet_id)
+            raw_res = sub_req.get_response(self.api)
+            sub_res = self.deserialize(self.fmt, raw_res)['subnet']
+            self.assertIn(sub_res['cidr'], cidrs)
+            self.assertIn(sub_res['gateway_ip'], gateway_ips)
+            self.assertIn(sub_res['host_routes'][0], host_routes)
+
+    def test_host_routes_two_subnets_with_same_segment_association(self):
+        """Creates two subnets associated to the same segment.
+
+        Since the two subnets are both associated with the same segment no host
+        routes will be created.
+        """
+        gateway_ips = ['10.0.1.1', '10.0.2.1']
+        cidrs = ['10.0.1.0/24', '10.0.2.0/24']
+        with self.network() as network:
+            net = network['network']
+            segment = self._test_create_segment(
+                network_id=net['id'],
+                physical_network='physnet1',
+                network_type=constants.TYPE_VLAN,
+                segmentation_id=201)['segment']
+
+            with self.subnet(network=network,
+                             segment_id=segment['id'],
+                             gateway_ip=gateway_ips[0],
+                             cidr=cidrs[0]) as subnet0, \
+                    self.subnet(network=network,
+                                segment_id=segment['id'],
+                                gateway_ip=gateway_ips[1],
+                                cidr=cidrs[1]) as subnet1:
+                    subnet0 = subnet0['subnet']
+                    subnet1 = subnet1['subnet']
+
+        req = self.new_show_request('subnets', subnet0['id'])
+        res = req.get_response(self.api)
+        res_subnet0 = self.deserialize(self.fmt, res)
+
+        req = self.new_show_request('subnets', subnet1['id'])
+        res = req.get_response(self.api)
+        res_subnet1 = self.deserialize(self.fmt, res)
+
+        self.assertEqual([], res_subnet0['subnet']['host_routes'])
+        self.assertEqual([], res_subnet1['subnet']['host_routes'])
+
+    def test_host_routes_create_two_subnets_then_delete_one(self):
+        """Delete subnet after creating two subnets associated same segment.
+
+        Host routes with destination to the subnet that is deleted are removed
+        from the remaining subnets.
+        """
+        gateway_ips = ['10.0.1.1', '10.0.2.1']
+        cidrs = ['10.0.1.0/24', '10.0.2.0/24']
+        net, subnet0, subnet1 = self._create_subnets_segments(gateway_ips,
+                                                              cidrs)
+
+        sh_req = self.new_show_request('subnets', subnet1['id'])
+        raw_res = sh_req.get_response(self.api)
+        sub_res = self.deserialize(self.fmt, raw_res)
+        self.assertEqual([{'destination': cidrs[0],
+                           'nexthop': gateway_ips[1]}],
+                         sub_res['subnet']['host_routes'])
+
+        del_req = self.new_delete_request('subnets', subnet0['id'])
+        del_req.get_response(self.api)
+
+        sh_req = self.new_show_request('subnets', subnet1['id'])
+        raw_res = sh_req.get_response(self.api)
+        sub_res = self.deserialize(self.fmt, raw_res)
+
+        self.assertEqual([], sub_res['subnet']['host_routes'])
+
+    def test_host_routes_two_subnets_then_change_gateway_ip(self):
+        gateway_ips = ['10.0.1.1', '10.0.2.1']
+        cidrs = ['10.0.1.0/24', '10.0.2.0/24']
+        host_routes = [{'destination': cidrs[1], 'nexthop': gateway_ips[0]},
+                       {'destination': cidrs[0], 'nexthop': gateway_ips[1]}]
+        net, subnet0, subnet1 = self._create_subnets_segments(gateway_ips,
+                                                              cidrs)
+
+        net_req = self.new_show_request('networks', net['id'])
+        raw_res = net_req.get_response(self.api)
+        net_res = self.deserialize(self.fmt, raw_res)
+        for subnet_id in net_res['network']['subnets']:
+            sub_req = self.new_show_request('subnets', subnet_id)
+            raw_res = sub_req.get_response(self.api)
+            sub_res = self.deserialize(self.fmt, raw_res)['subnet']
+            self.assertIn(sub_res['cidr'], cidrs)
+            self.assertIn(sub_res['gateway_ip'], gateway_ips)
+            self.assertIn(sub_res['host_routes'][0], host_routes)
+
+        new_gateway_ip = '10.0.1.254'
+        data = {'subnet': {'gateway_ip': new_gateway_ip,
+                           'allocation_pools': [{'start': '10.0.1.1',
+                                                 'end': '10.0.1.253'}]}}
+        self.new_update_request(
+            'subnets', data, subnet0['id']).get_response(self.api)
+
+        sh_req = self.new_show_request('subnets', subnet0['id'])
+        raw_res = sh_req.get_response(self.api)
+        sub_res = self.deserialize(self.fmt, raw_res)
+
+        self.assertEqual([{'destination': cidrs[1],
+                           'nexthop': new_gateway_ip}],
+                         sub_res['subnet']['host_routes'])
+
+    def test_host_routes_two_subnets_summary_route_in_request(self):
+        gateway_ips = ['10.0.1.1', '10.0.2.1']
+        cidrs = ['10.0.1.0/24', '10.0.2.0/24']
+        summary_net = '10.0.0.0/16'
+        host_routes = [{'destination': summary_net, 'nexthop': gateway_ips[0]},
+                       {'destination': summary_net, 'nexthop': gateway_ips[1]}]
+
+        with self.network() as network:
+            net = network['network']
+            segment0 = self._test_create_segment(
+                network_id=net['id'],
+                physical_network='physnet1',
+                network_type=constants.TYPE_VLAN,
+                segmentation_id=201)['segment']
+            segment1 = self._test_create_segment(
+                network_id=net['id'],
+                physical_network='physnet2',
+                network_type=constants.TYPE_VLAN,
+                segmentation_id=202)['segment']
+
+            self.subnet(network=network, segment_id=segment0['id'],
+                        gateway_ip=gateway_ips[0], cidr=cidrs[0],
+                        host_routes=[host_routes[0]])
+            self.subnet(network=network, segment_id=segment1['id'],
+                        gateway_ip=gateway_ips[1],
+                        cidr=cidrs[1], host_routes=[host_routes[1]])
+
+        net_req = self.new_show_request('networks', net['id'])
+        raw_res = net_req.get_response(self.api)
+        net_res = self.deserialize(self.fmt, raw_res)
+
+        for subnet_id in net_res['network']['subnets']:
+            sub_req = self.new_show_request('subnets', subnet_id)
+            raw_res = sub_req.get_response(self.api)
+            sub_res = self.deserialize(self.fmt, raw_res)['subnet']
+            self.assertIn(sub_res['cidr'], cidrs)
+            self.assertIn(sub_res['gateway_ip'], gateway_ips)
+            self.assertEqual(len(sub_res['host_routes']), 1)
+            self.assertIn(sub_res['host_routes'][0], host_routes)

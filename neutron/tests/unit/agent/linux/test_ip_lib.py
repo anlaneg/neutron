@@ -18,6 +18,7 @@ import socket
 
 import mock
 import netaddr
+from neutron_lib import constants
 from neutron_lib import exceptions
 import pyroute2
 from pyroute2.netlink.rtnl import ifinfmsg
@@ -262,9 +263,9 @@ class TestIpWrapper(base.BaseTestCase):
     @mock.patch('neutron.agent.common.utils.execute')
     def test_get_devices_exclude_loopback_and_gre(self, mocked_execute):
         device_name = 'somedevice'
-        mocked_execute.return_value = 'lo gre0 gretap0 ' + device_name
+        mocked_execute.return_value = 'lo gre0 sit0 ip6gre0 ' + device_name
         devices = ip_lib.IPWrapper(namespace='foo').get_devices(
-            exclude_loopback=True, exclude_gre_devices=True)
+            exclude_loopback=True, exclude_fb_tun_devices=True)
         somedevice = devices.pop()
         self.assertEqual(device_name, somedevice.name)
         self.assertFalse(devices)
@@ -300,12 +301,11 @@ class TestIpWrapper(base.BaseTestCase):
         ip_lib.IPWrapper().add_tuntap('tap0')
         create.assert_called_once_with('tap0', None, 'tuntap', mode='tap')
 
-    def test_add_veth(self):
+    @mock.patch.object(priv_lib, 'create_interface')
+    def test_add_veth(self, create):
         ip_lib.IPWrapper().add_veth('tap0', 'tap1')
-        self.execute.assert_called_once_with([], 'link',
-                                             ('add', 'tap0', 'type', 'veth',
-                                              'peer', 'name', 'tap1'),
-                                             run_as_root=True, namespace=None)
+        create.assert_called_once_with(
+            'tap0', None, 'veth', peer={'ifname': 'tap1'})
 
     @mock.patch.object(priv_lib, 'create_interface')
     def test_add_macvtap(self, create):
@@ -319,16 +319,15 @@ class TestIpWrapper(base.BaseTestCase):
         ip_lib.IPWrapper().del_veth('fpr-1234')
         delete.assert_called_once_with('fpr-1234', None)
 
-    def test_add_veth_with_namespaces(self):
+    @mock.patch.object(priv_lib, 'create_interface')
+    def test_add_veth_with_namespaces(self, create):
         ns2 = 'ns2'
         with mock.patch.object(ip_lib.IPWrapper, 'ensure_namespace') as en:
             ip_lib.IPWrapper().add_veth('tap0', 'tap1', namespace2=ns2)
             en.assert_has_calls([mock.call(ns2)])
-        self.execute.assert_called_once_with([], 'link',
-                                             ('add', 'tap0', 'type', 'veth',
-                                              'peer', 'name', 'tap1',
-                                              'netns', ns2),
-                                             run_as_root=True, namespace=None)
+        create.assert_called_once_with(
+            'tap0', None, 'veth',
+            peer={'ifname': 'tap1', 'net_ns_fd': 'ns2'})
 
     @mock.patch.object(priv_lib, 'create_interface')
     def test_add_dummy(self, create):
@@ -971,7 +970,7 @@ class TestIpRouteCommand(TestIPCmdBase):
         self.parent.name = 'eth0'
         self.command = 'route'
         self.route_cmd = ip_lib.IpRouteCommand(self.parent)
-        self.ip_version = 4
+        self.ip_version = constants.IP_VERSION_4
         self.table = 14
         self.metric = 100
         self.cidr = '192.168.45.100/24'
@@ -1161,7 +1160,7 @@ class TestIpRouteCommand(TestIPCmdBase):
 class TestIPv6IpRouteCommand(TestIpRouteCommand):
     def setUp(self):
         super(TestIPv6IpRouteCommand, self).setUp()
-        self.ip_version = 6
+        self.ip_version = constants.IP_VERSION_6
         self.cidr = '2001:db8::/64'
         self.ip = '2001:db8::100'
         self.gateway = '2001:db8::1'
@@ -1553,6 +1552,55 @@ class TestGetRoutingTable(base.BaseTestCase):
         }
     ]
 
+    ip_db_multipath_routes = [
+        {
+            'dst_len': 24,
+            'family': socket.AF_INET,
+            'proto': 3,
+            'tos': 0,
+            'dst': '10.0.1.0/24',
+            'flags': 16,
+            'ipdb_priority': 0,
+            'metrics': {},
+            'scope': 0,
+            'encap': {},
+            'src_len': 0,
+            'table': 254,
+            'multipath': ({'oif': 1, 'family': socket.AF_INET},
+                          {'oif': 2, 'dst_len': 24, 'family': socket.AF_INET,
+                           'proto': 2, 'tos': 0, 'pref': '00',
+                           'priority': 256, 'flags': 0, 'encap': {},
+                           'src_len': 0, 'table': 254, 'type': 1,
+                           'scope': 0}),
+            'type': 1,
+            'gateway': '10.0.0.1',
+            'ipdb_scope': 'system'
+        }, {
+            'metrics': {},
+            'dst_len': 64,
+            'family': socket.AF_INET6,
+            'proto': 2,
+            'tos': 0,
+            'dst': '1111:1111:1111:1111::/64',
+            'pref': '00',
+            'ipdb_priority': 0,
+            'priority': 256,
+            'flags': 0,
+            'encap': {},
+            'src_len': 0,
+            'table': 254,
+            'multipath': ({'oif': 1, 'family': socket.AF_INET6},
+                          {'oif': 2, 'dst_len': 64, 'family': socket.AF_INET6,
+                           'proto': 2, 'tos': 0, 'pref': '00',
+                           'priority': 256, 'flags': 0, 'encap': {},
+                           'src_len': 0, 'table': 254, 'type': 1,
+                           'scope': 0}),
+            'type': 1,
+            'scope': 0,
+            'ipdb_scope': 'system'
+        }
+    ]
+
     def setUp(self):
         super(TestGetRoutingTable, self).setUp()
         self.addCleanup(privileged.default.set_client_mode, True)
@@ -1610,6 +1658,28 @@ class TestGetRoutingTable(base.BaseTestCase):
                      'scope': 'universe'}]
         self._test_get_routing_table(6, self.ip_db_routes, expected)
 
+    def test_get_routing_table_multipath_4(self):
+        expected = [{'destination': '10.0.1.0/24',
+                     'nexthop': '10.0.0.1',
+                     'device': 'lo',
+                     'scope': 'universe'},
+                    {'destination': '10.0.1.0/24',
+                     'nexthop': '10.0.0.1',
+                     'device': 'tap-1',
+                     'scope': 'universe'}]
+        self._test_get_routing_table(4, self.ip_db_multipath_routes, expected)
+
+    def test_get_routing_table_multipath_6(self):
+        expected = [{'destination': '1111:1111:1111:1111::/64',
+                     'nexthop': None,
+                     'device': 'lo',
+                     'scope': 'universe'},
+                    {'destination': '1111:1111:1111:1111::/64',
+                     'nexthop': None,
+                     'device': 'tap-1',
+                     'scope': 'universe'}]
+        self._test_get_routing_table(6, self.ip_db_multipath_routes, expected)
+
 
 class TestIpNeighCommand(TestIPCmdBase):
     def setUp(self):
@@ -1634,23 +1704,6 @@ class TestIpNeighCommand(TestIPCmdBase):
             family=2,
             ifindex=1,
             state=ndmsg.states['permanent'])
-
-    @mock.patch.object(pyroute2, 'NetNS')
-    def test_add_entry_with_state_override(self, mock_netns):
-        mock_netns_instance = mock_netns.return_value
-        mock_netns_enter = mock_netns_instance.__enter__.return_value
-        mock_netns_enter.link_lookup.return_value = [1]
-        self.neigh_cmd.add(
-            '192.168.45.100', 'cc:dd:ee:ff:ab:cd', nud_state='reachable')
-        mock_netns_enter.link_lookup.assert_called_once_with(ifname='tap0')
-        mock_netns_enter.neigh.assert_called_once_with(
-            'replace',
-            dst='192.168.45.100',
-            lladdr='cc:dd:ee:ff:ab:cd',
-            family=2,
-            ifindex=1,
-            state=ndmsg.states['reachable'],
-            nud_state='reachable')
 
     @mock.patch.object(pyroute2, 'NetNS')
     def test_add_entry_nonexistent_namespace(self, mock_netns):
@@ -1808,3 +1861,21 @@ class TestSysctl(base.BaseTestCase):
                                return_value=False):
             dev.disable_ipv6()
             self.assertFalse(self.execute.called)
+
+
+class TestConntrack(base.BaseTestCase):
+    def setUp(self):
+        super(TestConntrack, self).setUp()
+        self.execute_p = mock.patch.object(ip_lib.IpNetnsCommand, 'execute')
+        self.execute = self.execute_p.start()
+
+    def test_delete_socket_conntrack_state(self):
+        device = ip_lib.IPDevice('tap0', 'ns1')
+        ip_str = '1.1.1.1'
+        dport = '3378'
+        protocol = 'tcp'
+        expect_cmd = ["conntrack", "-D", "-d", ip_str, '-p', protocol,
+                      '--dport', dport]
+        device.delete_socket_conntrack_state(ip_str, dport, protocol)
+        self.execute.assert_called_once_with(expect_cmd, check_exit_code=True,
+                                             extra_ok_codes=[1])

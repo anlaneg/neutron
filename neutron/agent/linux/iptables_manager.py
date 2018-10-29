@@ -35,6 +35,7 @@ from neutron._i18n import _
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_comments as ic
 from neutron.agent.linux import utils as linux_utils
+from neutron.common import constants
 from neutron.common import exceptions as n_exc
 from neutron.conf.agent import common as config
 
@@ -51,12 +52,8 @@ def get_binary_name():
     """Grab the name of the binary we're running in."""
     return os.path.basename(sys.argv[0])[:16].replace(' ', '_')
 
-binary_name = get_binary_name()
 
-# A length of a chain name must be less than or equal to 11 characters.
-# <max length of iptables chain name> - (<binary_name> + '-') = 28-(16+1) = 11
-MAX_CHAIN_LEN_WRAP = 11
-MAX_CHAIN_LEN_NOWRAP = 28
+binary_name = get_binary_name()
 
 # Number of iptables rules to print before and after a rule that causes a
 # a failure during iptables-restore
@@ -87,9 +84,9 @@ def comment_rule(rule, comment):
 #依据是否需要包装，取子串，构造不同的链名称（长度不同）
 def get_chain_name(chain_name, wrap=True):
     if wrap:
-        return chain_name[:MAX_CHAIN_LEN_WRAP]
+        return chain_name[:constants.MAX_IPTABLES_CHAIN_LEN_WRAP]
     else:
-        return chain_name[:MAX_CHAIN_LEN_NOWRAP]
+        return chain_name[:constants.MAX_IPTABLES_CHAIN_LEN_NOWRAP]
 
 
 class IptablesRule(object):
@@ -529,7 +526,7 @@ class IptablesManager(object):
             return self._do_run_restore(args, commands, lock=True)
 
         err = self._do_run_restore(args, commands)
-        if (isinstance(err, linux_utils.ProcessExecutionError) and
+        if (isinstance(err, n_exc.ProcessExecutionError) and
                 err.returncode == XTABLES_RESOURCE_PROBLEM_CODE):
             # maybe we run on a platform that includes iptables commit
             # 999eaa241212d3952ddff39a99d0d55a74e3639e (for example, latest
@@ -693,7 +690,7 @@ class IptablesManager(object):
 
         # the unwrapped chains (e.g. neutron-filter-top) may already exist in
         # the new_filter since they aren't marked by the wrap_name so we only
-        # want to add them if they arent' already there
+        # want to add them if they aren't already there
         # 针对所有不包装的链名，如果它不包含在new_filter中，则记录
         our_chains += [':%s' % name for name in unwrapped_chains
                        if not any(':%s' % name in s for s in new_filter)]

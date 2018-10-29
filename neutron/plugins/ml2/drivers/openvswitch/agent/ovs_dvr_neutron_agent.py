@@ -17,20 +17,15 @@ import sys
 
 import netaddr
 from neutron_lib import constants as n_const
-from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging
 from oslo_utils import excutils
 from osprofiler import profiler
 
-from neutron.agent.common import ovs_lib
 from neutron.common import utils as n_utils
 from neutron.plugins.ml2.drivers.openvswitch.agent.common import constants
 
 LOG = logging.getLogger(__name__)
-
-cfg.CONF.import_group('AGENT', 'neutron.plugins.ml2.drivers.openvswitch.'
-                      'agent.common.config')
 
 
 # A class to represent a DVR-hosted subnet including vif_ports resident on
@@ -119,9 +114,7 @@ class OVSPort(object):
 #openstack在解决此问题上，采用了dvr agent mac,故需要ovs配合完成mac替换
 @profiler.trace_cls("ovs_dvr_agent")
 class OVSDVRNeutronAgent(object):
-    '''
-    Implements OVS-based DVR(Distributed Virtual Router), for overlay networks.
-    '''
+    '''Implements OVS-based DVR (Distributed Virtual Router) agent'''
     # history
     #   1.0 Initial version
 
@@ -147,7 +140,6 @@ class OVSDVRNeutronAgent(object):
         self.dvr_mac_address = None
         if self.enable_distributed_routing:
             self.get_dvr_mac_address()
-        self.conf = cfg.CONF
 
     #安装dvr流表
     def setup_dvr_flows(self):
@@ -220,11 +212,6 @@ class OVSDVRNeutronAgent(object):
 
         LOG.info("L2 Agent operating in DVR Mode with MAC %s",
                  self.dvr_mac_address)
-        # Remove existing flows in integration bridge
-        # 如果启动时需要移除所有流，则移除所有流定义
-        if self.conf.AGENT.drop_flows_on_start:
-            self.int_br.uninstall_flows(cookie=ovs_lib.COOKIE_ANY)
-
         # Add a canary flow to int_br to track OVS restarts
         # 标记表，用于跟踪ovs重启情况
         self.int_br.setup_canary_table()
@@ -464,36 +451,16 @@ class OVSDVRNeutronAgent(object):
             br = self.tun_br
         # TODO(vivek) remove the IPv6 related flows once SNAT is not
         # used for IPv6 DVR.
-        port_net_info = None
-        net_shared_only = False
-        try:
-            port_net_info = (
-                self.plugin_rpc.get_network_info_for_id(
-                    self.context, subnet_info.get('network_id')))
-        except oslo_messaging.RemoteError as e:
-            LOG.error('L2 agent could not get network_info_for_id '
-                      'due to RPC error. It happens when the server '
-                      'does not support this RPC API. Detailed message: '
-                      '%s', e)
-        if port_net_info:
-            net_shared_only = (
-                port_net_info[0]['shared'] and
-                not port_net_info[0]['router:external'])
-        if net_shared_only:
-            LOG.debug("Not applying DVR rules to tunnel bridge because %s "
-                      "is a shared network", subnet_info.get('network_id'))
+        if ip_version == 4:
+            if subnet_info['gateway_ip']:
+                br.install_dvr_process_ipv4(
+                    vlan_tag=lvm.vlan, gateway_ip=subnet_info['gateway_ip'])
         else:
-            if ip_version == 4:
-                if subnet_info['gateway_ip']:
-                    br.install_dvr_process_ipv4(
-                        vlan_tag=lvm.vlan,
-                        gateway_ip=subnet_info['gateway_ip'])
-            else:
-                br.install_dvr_process_ipv6(
-                    vlan_tag=lvm.vlan, gateway_mac=subnet_info['gateway_mac'])
-            br.install_dvr_process(
-                vlan_tag=lvm.vlan, vif_mac=port.vif_mac,
-                dvr_mac_address=self.dvr_mac_address)
+            br.install_dvr_process_ipv6(
+                vlan_tag=lvm.vlan, gateway_mac=subnet_info['gateway_mac'])
+        br.install_dvr_process(
+            vlan_tag=lvm.vlan, vif_mac=port.vif_mac,
+            dvr_mac_address=self.dvr_mac_address)
 
         # the dvr router interface is itself a port, so capture it
         # queue this subnet to that port. A subnet appears only once as
@@ -550,32 +517,32 @@ class OVSDVRNeutronAgent(object):
 
     def _bind_centralized_snat_port_on_dvr_subnet(self, port, lvm,
                                                   fixed_ips, device_owner):
-        # since centralized-SNAT (CSNAT) port must have only one fixed
-        # IP, directly use fixed_ips[0]
-        fixed_ip = fixed_ips[0]
+        # We only pass the subnet uuid so the server code will correctly
+        # use the gateway_ip value from the subnet when looking up the
+        # centralized-SNAT (CSNAT) port, get it early from the first fixed_ip.
+        subnet_uuid = fixed_ips[0]['subnet_id']
         if port.vif_id in self.local_ports:
             # throw an error if CSNAT port is already on a different
             # dvr routed subnet
             ovsport = self.local_ports[port.vif_id]
             subs = list(ovsport.get_subnets())
-            if subs[0] == fixed_ip['subnet_id']:
+            if subs[0] == subnet_uuid:
                 return
             LOG.error("Centralized-SNAT port %(port)s on subnet "
                       "%(port_subnet)s already seen on a different "
                       "subnet %(orig_subnet)s", {
                           "port": port.vif_id,
-                          "port_subnet": fixed_ip['subnet_id'],
+                          "port_subnet": subnet_uuid,
                           "orig_subnet": subs[0],
                       })
             return
-        subnet_uuid = fixed_ip['subnet_id']
         ldm = None
         subnet_info = None
         if subnet_uuid not in self.local_dvr_map:
             # no csnat ports seen on this subnet - create csnat state
             # for this subnet
             subnet_info = self.plugin_rpc.get_subnet_for_dvr(
-                self.context, subnet_uuid, fixed_ips=fixed_ips)
+                self.context, subnet_uuid, fixed_ips=None)
             if not subnet_info:
                 LOG.warning("DVR: Unable to retrieve subnet information "
                             "for subnet_id %s. The subnet or the gateway "

@@ -14,11 +14,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import weakref
+from neutron_lib.db import utils as db_utils
 
 from neutron.db import _model_query
 from neutron.db import _resource_extend
-from neutron.db import _utils as ndb_utils
 
 
 # TODO(HenryG): Deprecate and schedule for removal
@@ -37,22 +36,13 @@ class CommonDbMixin(object):
         #注册资源的扩展funcs
         _resource_extend.register_funcs(resource, funcs)
 
-    @property
-    # TODO(HenryG): Remove; used only by vmware-nsx.
-    def safe_reference(self):
-        return weakref.proxy(self)
-
-    @staticmethod
-    def model_query_scope(context, model):
-        return ndb_utils.model_query_scope_is_project(context, model)
-
     @staticmethod
     def _model_query(context, model):
         return _model_query.query_with_hooks(context, model)
 
     @staticmethod
     def _fields(resource, fields):
-        return ndb_utils.resource_fields(resource, fields)
+        return db_utils.resource_fields(resource, fields)
 
     @staticmethod
     def _get_by_id(context, model, id):
@@ -92,8 +82,8 @@ class CommonDbMixin(object):
 
     # TODO(HenryG): Remove this when available in neutron-lib
     def _get_marker_obj(self, context, resource, limit, marker):
-        return ndb_utils.get_marker_obj(self, context, resource, limit, marker)
+        return db_utils.get_marker_obj(self, context, resource, limit, marker)
 
     @staticmethod
     def _filter_non_model_columns(data, model):
-        return ndb_utils.filter_non_model_columns(data, model)
+        return db_utils.filter_non_model_columns(data, model)

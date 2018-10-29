@@ -17,6 +17,7 @@ import collections
 
 from neutron_lib import constants as lib_const
 from oslo_config import cfg
+from oslo_log import formatters
 from oslo_log import handlers
 from oslo_log import log as logging
 from ryu.base import app_manager
@@ -50,7 +51,13 @@ def setup_logging():
     if log_file:
         from logging import handlers as watch_handler
         log_file_handler = watch_handler.WatchedFileHandler(log_file)
+        log_file_handler.setLevel(
+            logging.DEBUG if cfg.CONF.debug else logging.INFO)
         LOG.logger.addHandler(log_file_handler)
+        log_file_handler.setFormatter(
+            formatters.ContextFormatter(
+                fmt=cfg.CONF.logging_default_format_string,
+                datefmt=cfg.CONF.log_date_format))
     elif cfg.CONF.use_journal:
         journal_handler = handlers.OSJournalHandler()
         LOG.logger.addHandler(journal_handler)
@@ -164,12 +171,12 @@ class OVSFirewallLoggingDriver(log_ext.LoggingDriver):
         pkt = packet.Packet(msg.data)
         try:
             cookie_entry = self._get_cookie_by_id(cookie_id)
-            LOG.debug("action=%s project_id=%s log_resource_ids=%s vm_port=%s "
-                      "pkt=%s", cookie_entry.action, cookie_entry.project,
-                      list(cookie_entry.log_object_refs),
-                      cookie_entry.port, pkt)
+            LOG.info("action=%s project_id=%s log_resource_ids=%s vm_port=%s "
+                     "pkt=%s", cookie_entry.action, cookie_entry.project,
+                     list(cookie_entry.log_object_refs),
+                     cookie_entry.port, pkt)
         except log_exc.CookieNotFound:
-            LOG.debug("Unknown cookie=%s packet_in pkt=%s", cookie_id, pkt)
+            LOG.warning("Unknown cookie=%s packet_in pkt=%s", cookie_id, pkt)
 
     def defer_apply_on(self):
         self._deferred = True
@@ -274,10 +281,14 @@ class OVSFirewallLoggingDriver(log_ext.LoggingDriver):
             # try to clean port flows log for port updated/create event
             self._cleanup_port_flows_log(port_id)
             logs_info = self.resource_rpc.get_sg_log_info_for_port(
-                context, port_id=port_id)
+                context,
+                resource_type=log_const.SECURITY_GROUP,
+                port_id=port_id)
         elif log_resources:
             logs_info = self.resource_rpc.get_sg_log_info_for_log_resources(
-                context, log_resources=log_resources)
+                context,
+                resource_type=log_const.SECURITY_GROUP,
+                log_resources=log_resources)
 
         for log_info in logs_info:
             log_id = log_info['id']
@@ -328,10 +339,13 @@ class OVSFirewallLoggingDriver(log_ext.LoggingDriver):
                 self.delete_port_flows_log(of_port_log, log_id)
 
     def _log_accept_flow(self, **flow):
-        # log first packet
-        flow['ct_state'] = ovsfw_consts.OF_STATE_NEW_NOT_ESTABLISHED
+        # log first accepted packet
         flow['table'] = OVS_FW_TO_LOG_TABLES[flow['table']]
         flow['actions'] = 'controller'
+        # forward egress accepted packet and log
+        if flow['table'] == ovs_consts.ACCEPTED_EGRESS_TRAFFIC_TABLE:
+            flow['actions'] = 'resubmit(,%d),controller' % (
+                ovs_consts.ACCEPTED_EGRESS_TRAFFIC_NORMAL_TABLE)
         self._add_flow(**flow)
 
     def _add_flow(self, **kwargs):

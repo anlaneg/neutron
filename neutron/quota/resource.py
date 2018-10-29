@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.db import api as db_api
 from neutron_lib.plugins import constants
 from neutron_lib.plugins import directory
 from oslo_config import cfg
@@ -20,7 +21,7 @@ from oslo_utils import excutils
 from sqlalchemy import exc as sql_exc
 from sqlalchemy.orm import session as se
 
-from neutron.db import api as db_api
+from neutron._i18n import _
 from neutron.db.quota import api as quota_api
 
 LOG = log.getLogger(__name__)
@@ -51,7 +52,7 @@ def _count_resource(context, collection_name, tenant_id):
             except (NotImplementedError, AttributeError):
                 pass
     raise NotImplementedError(
-        'No plugins that support counting %s found.' % collection_name)
+        _('No plugins that support counting %s found.') % collection_name)
 
 
 class BaseResource(object):
@@ -191,7 +192,7 @@ class TrackedResource(BaseResource):
     def mark_dirty(self, context):
         if not self._dirty_tenants:
             return
-        with db_api.context_manager.writer.using(context):
+        with db_api.CONTEXT_WRITER.using(context):
             # It is not necessary to protect this operation with a lock.
             # Indeed when this method is called the request has been processed
             # and therefore all resources created or deleted.
@@ -240,7 +241,8 @@ class TrackedResource(BaseResource):
         LOG.debug(("Synchronizing usage tracker for tenant:%(tenant_id)s on "
                    "resource:%(resource)s"),
                   {'tenant_id': tenant_id, 'resource': self.name})
-        in_use = context.session.query(self._model_class).filter_by(
+        in_use = context.session.query(
+            self._model_class.tenant_id).filter_by(
             tenant_id=tenant_id).count()
         # Update quota usage
         return self._resync(context, tenant_id, in_use)
@@ -269,7 +271,8 @@ class TrackedResource(BaseResource):
                        "%(tenant_id)s is out of sync, need to count used "
                        "quota"), {'resource': self.name,
                                   'tenant_id': tenant_id})
-            in_use = context.session.query(self._model_class).filter_by(
+            in_use = context.session.query(
+                self._model_class.tenant_id).filter_by(
                 tenant_id=tenant_id).count()
 
             # Update quota usage, if requested (by default do not do that, as
@@ -311,10 +314,10 @@ class TrackedResource(BaseResource):
 
     def _except_bulk_delete(self, delete_context):
         if delete_context.mapper.class_ == self._model_class:
-            raise RuntimeError("%s may not be deleted in bulk because "
-                               "it is tracked by the quota engine via "
-                               "SQLAlchemy event handlers, which are not "
-                               "compatible with bulk deletes." %
+            raise RuntimeError(_("%s may not be deleted in bulk because "
+                                 "it is tracked by the quota engine via "
+                                 "SQLAlchemy event handlers, which are not "
+                                 "compatible with bulk deletes.") %
                                self._model_class)
 
     def register_events(self):

@@ -57,6 +57,11 @@ class ClientFixture(fixtures.Fixture):
         resp = update(id, body=body)
         return resp[resource_type]
 
+    def _delete_resource(self, resource_type, id):
+        delete = getattr(self.client, 'delete_%s' % resource_type)
+
+        return delete(id)
+
     def create_router(self, tenant_id, name=None, ha=False,
                       external_network=None):
         resource_type = 'router'
@@ -70,7 +75,7 @@ class ClientFixture(fixtures.Fixture):
 
     def create_network(self, tenant_id, name=None, external=False,
                        network_type=None, segmentation_id=None,
-                       physical_network=None):
+                       physical_network=None, mtu=None):
         resource_type = 'network'
 
         name = name or utils.get_rand_name(prefix=resource_type)
@@ -83,11 +88,16 @@ class ClientFixture(fixtures.Fixture):
             spec['provider:network_type'] = network_type
         if physical_network is not None:
             spec['provider:physical_network'] = physical_network
+        if mtu is not None:
+            spec['mtu'] = mtu
 
         return self._create_resource(resource_type, spec)
 
     def update_network(self, id, **kwargs):
         return self._update_resource('network', id, kwargs)
+
+    def delete_network(self, id):
+        return self._delete_resource('network', id)
 
     def create_subnet(self, tenant_id, network_id,
                       cidr, gateway_ip=None, name=None, enable_dhcp=True,
@@ -156,12 +166,12 @@ class ClientFixture(fixtures.Fixture):
 
         def detach_and_delete_policy():
             qos_policy_id = policy['policy']['id']
-            ports_with_policy = self.client.list_ports(
-                qos_policy_id=qos_policy_id)['ports']
+            ports_with_policy = self.client.list_ports()['ports']
             for port in ports_with_policy:
-                self.client.update_port(
-                    port['id'],
-                    body={'port': {'qos_policy_id': None}})
+                if qos_policy_id == port['qos_policy_id']:
+                    self.client.update_port(
+                        port['id'],
+                        body={'port': {'qos_policy_id': None}})
             self.client.delete_qos_policy(qos_policy_id)
 
         # NOTE: We'll need to add support for detaching from network once
@@ -291,3 +301,16 @@ class ClientFixture(fixtures.Fixture):
         spec.update(kwargs)
 
         return self._create_resource(resource_type, spec)
+
+    def create_network_log(self, tenant_id, resource_type,
+                           enabled=True, **kwargs):
+
+        spec = {'project_id': tenant_id,
+                'resource_type': resource_type,
+                'enabled': enabled}
+        spec.update(kwargs)
+
+        net_log = self.client.create_network_log({'log': spec})
+        self.addCleanup(
+            _safe_method(self.client.delete_network_log), net_log['log']['id'])
+        return net_log

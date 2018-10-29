@@ -14,10 +14,10 @@
 #    under the License.
 
 from neutron_lib import constants as const
+from neutron_lib.db import api as db_api
 from oslo_log import log as logging
 from sqlalchemy.orm import exc as orm_exc
 
-from neutron.db import api as db_api
 from neutron.db.models import securitygroup as sg_db
 from neutron.objects.logapi import logging_resource as log_object
 from neutron.objects import ports as port_objects
@@ -31,7 +31,7 @@ LOG = logging.getLogger(__name__)
 def _get_ports_attached_to_sg(context, sg_id):
     """Return a list of ports attached to a security group"""
 
-    with db_api.context_manager.reader.using(context):
+    with db_api.CONTEXT_READER.using(context):
         ports = context.session.query(
             sg_db.SecurityGroupPortBinding.port_id).filter(
             sg_db.SecurityGroupPortBinding.security_group_id ==
@@ -44,7 +44,7 @@ def _get_ports_filter_in_tenant(context, tenant_id):
 
     try:
         sg_id = sg_db.SecurityGroupPortBinding.security_group_id
-        with db_api.context_manager.reader.using(context):
+        with db_api.CONTEXT_READER.using(context):
             ports = context.session.query(
                 sg_db.SecurityGroupPortBinding.port_id).join(
                 sg_db.SecurityGroup, sg_db.SecurityGroup.id == sg_id).filter(
@@ -57,7 +57,7 @@ def _get_ports_filter_in_tenant(context, tenant_id):
 def _get_sgs_attached_to_port(context, port_id):
     """Return a list of security groups are associated to a port"""
 
-    with db_api.context_manager.reader.using(context):
+    with db_api.CONTEXT_READER.using(context):
         sg_ids = context.session.query(
             sg_db.SecurityGroupPortBinding.security_group_id).filter(
             sg_db.SecurityGroupPortBinding.port_id == port_id).all()
@@ -170,8 +170,10 @@ def get_logs_bound_port(context, port_id):
 
     port = port_objects.Port.get_object(context, id=port_id)
     project_id = port['project_id']
-    logs = log_object.Log.get_objects(
-        context, project_id=project_id, enabled=True)
+    logs = log_object.Log.get_objects(context,
+                                      project_id=project_id,
+                                      resource_type=constants.SECURITY_GROUP,
+                                      enabled=True)
     is_bound = lambda log: (log.resource_id in port.security_group_ids or
                             log.target_id == port.id or
                             (not log.target_id and not log.resource_id))
@@ -183,7 +185,11 @@ def get_logs_bound_sg(context, sg_id):
 
     project_id = context.tenant_id
     log_objs = log_object.Log.get_objects(
-        context, project_id=project_id, enabled=True)
+        context,
+        project_id=project_id,
+        resource_type=constants.SECURITY_GROUP,
+        enabled=True)
+
     log_resources = []
     for log_obj in log_objs:
         if log_obj.resource_id == sg_id:

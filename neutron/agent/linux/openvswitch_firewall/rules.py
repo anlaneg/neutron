@@ -18,6 +18,7 @@ import collections
 import netaddr
 from neutron_lib import constants as n_consts
 
+from neutron._i18n import _
 from neutron.agent.linux.openvswitch_firewall import constants as ovsfw_consts
 from neutron.common import utils
 from neutron.plugins.ml2.drivers.openvswitch.agent.common import constants \
@@ -59,8 +60,8 @@ def _assert_mergeable_rules(rule_conj_list):
         rule1.pop('port_range_max', None)
         if rule_tmpl != rule1:
             raise RuntimeError(
-                "Incompatible SG rules detected: %(rule1)s and %(rule2)s. "
-                "They cannot be merged. This should not happen." %
+                _("Incompatible SG rules detected: %(rule1)s and %(rule2)s. "
+                  "They cannot be merged. This should not happen.") %
                 {'rule1': rule_tmpl, 'rule2': rule})
 
 
@@ -201,9 +202,7 @@ def populate_flow_common(direction, flow_template, port):
     """Initialize common flow fields."""
     if direction == n_consts.INGRESS_DIRECTION:
         flow_template['table'] = ovs_consts.RULES_INGRESS_TABLE
-        flow_template['actions'] = "output:{:d},resubmit(,{:d})".format(
-            port.ofport,
-            ovs_consts.ACCEPTED_INGRESS_TRAFFIC_TABLE)
+        flow_template['actions'] = "output:{:d}".format(port.ofport)
     elif direction == n_consts.EGRESS_DIRECTION:
         flow_template['table'] = ovs_consts.RULES_EGRESS_TABLE
         # Traffic can be both ingress and egress, check that no ingress rules
@@ -332,8 +331,11 @@ def create_accept_flows(flow):
     flow['ct_state'] = CT_STATES[1]
     if flow['table'] == ovs_consts.RULES_INGRESS_TABLE:
         flow['actions'] = (
-            'ct(commit,zone=NXM_NX_REG{:d}[0..15]),{:s}'.format(
-                ovsfw_consts.REG_NET, flow['actions']))
+            'ct(commit,zone=NXM_NX_REG{:d}[0..15]),{:s},'
+            'resubmit(,{:d})'.format(
+                ovsfw_consts.REG_NET, flow['actions'],
+                ovs_consts.ACCEPTED_INGRESS_TRAFFIC_TABLE)
+        )
     result.append(flow)
     return result
 

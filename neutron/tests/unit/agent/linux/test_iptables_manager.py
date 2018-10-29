@@ -362,6 +362,7 @@ def _generate_raw_restore_dump(iptables_args):
             'COMMIT\n'
             '# Completed by iptables_manager\n' % iptables_args)
 
+
 MANGLE_DUMP = _generate_mangle_dump(IPTABLES_ARG)
 MANGLE_DUMP_V6 = _generate_mangle_dump_v6(IPTABLES_ARG)
 RAW_DUMP = _generate_raw_dump(IPTABLES_ARG)
@@ -886,7 +887,7 @@ class IptablesManagerStateFulTestCase(IptablesManagerBaseTestCase):
                     # pretend line 11 failed
                     msg = ("Exit code: 1\nStdout: ''\n"
                            "Stderr: 'iptables-restore: line 11 failed\n'")
-                    raise linux_utils.ProcessExecutionError(
+                    raise n_exc.ProcessExecutionError(
                         msg, iptables_manager.XTABLES_RESOURCE_PROBLEM_CODE)
                 return FILTER_DUMP
             self.execute.side_effect = iptables_restore_failer
@@ -925,7 +926,7 @@ class IptablesManagerStateFulTestCase(IptablesManagerBaseTestCase):
     def test_iptables_use_table_lock(self):
         # Under normal operation, if we do call iptables-restore with a -w
         # and it succeeds, the next call will only use -w.
-        PE_error = linux_utils.ProcessExecutionError(
+        PE_error = n_exc.ProcessExecutionError(
                        "", iptables_manager.XTABLES_RESOURCE_PROBLEM_CODE)
 
         num_calls = 3

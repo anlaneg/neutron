@@ -14,11 +14,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from debtcollector import removals
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as n_const
+from neutron_lib.db import api as db_api
 from neutron_lib.plugins import directory
 from oslo_db import exception as db_exc
 from oslo_log import log
@@ -28,9 +30,9 @@ from sqlalchemy import or_
 from sqlalchemy.orm import exc
 
 from neutron._i18n import _
-from neutron.db import api as db_api
 from neutron.db.models import securitygroup as sg_models
 from neutron.db import models_v2
+from neutron.objects import base as objects_base
 from neutron.objects import ports as port_obj
 from neutron.plugins.ml2 import models
 from neutron.services.segments import exceptions as seg_exc
@@ -41,7 +43,7 @@ LOG = log.getLogger(__name__)
 MAX_PORTS_PER_QUERY = 500
 
 
-@db_api.context_manager.writer
+@db_api.CONTEXT_WRITER
 def add_port_binding(context, port_id):
     #向protbinding表中存入数据，指明此port未bound
     record = models.PortBinding(
@@ -51,11 +53,11 @@ def add_port_binding(context, port_id):
     return record
 
 
-@db_api.context_manager.writer
+@db_api.CONTEXT_WRITER
 def set_binding_levels(context, levels):
     if levels:
         for level in levels:
-            level.persist_state_to_session(context.session)
+            level.create()
         LOG.debug("For port %(port_id)s, host %(host)s, "
                   "set binding levels %(levels)s",
                   {'port_id': levels[0].port_id,
@@ -65,7 +67,11 @@ def set_binding_levels(context, levels):
         LOG.debug("Attempted to set empty binding levels")
 
 
-@db_api.context_manager.reader
+@removals.remove(
+    version="Stein", removal_version="T",
+    message="Function get_binding_levels is deprecated. Please use "
+            "get_binding_level_objs instead as it makes use of OVOs.")
+@db_api.CONTEXT_READER
 def get_binding_levels(context, port_id, host):
     if host:
         result = (context.session.query(models.PortBindingLevel).
@@ -80,13 +86,26 @@ def get_binding_levels(context, port_id, host):
         return result
 
 
-@db_api.context_manager.writer
+@db_api.CONTEXT_READER
+def get_binding_level_objs(context, port_id, host):
+    if host:
+        pager = objects_base.Pager(sorts=[('level', True)])
+        port_bl_objs = port_obj.PortBindingLevel.get_objects(
+            context, _pager=pager, port_id=port_id, host=host)
+        LOG.debug("For port %(port_id)s, host %(host)s, "
+                  "got binding levels %(levels)s",
+                  {'port_id': port_id,
+                   'host': host,
+                   'levels': port_bl_objs})
+        return port_bl_objs
+
+
+@db_api.CONTEXT_WRITER
 def clear_binding_levels(context, port_id, host):
     if host:
         #删除port_id在host上的绑定
-        for l in (context.session.query(models.PortBindingLevel).
-                  filter_by(port_id=port_id, host=host)):
-            context.session.delete(l)
+        port_obj.PortBindingLevel.delete_objects(
+            context, port_id=port_id, host=host)
         LOG.debug("For port %(port_id)s, host %(host)s, "
                   "cleared binding levels",
                   {'port_id': port_id,
@@ -94,14 +113,14 @@ def clear_binding_levels(context, port_id, host):
 
 
 def ensure_distributed_port_binding(context, port_id, host, router_id=None):
-    with db_api.context_manager.reader.using(context):
+    with db_api.CONTEXT_READER.using(context):
         record = (context.session.query(models.DistributedPortBinding).
                   filter_by(port_id=port_id, host=host).first())
     if record:
         return record
 
     try:
-        with db_api.context_manager.writer.using(context):
+        with db_api.CONTEXT_WRITER.using(context):
             record = models.DistributedPortBinding(
                 port_id=port_id,
                 host=host,
@@ -113,14 +132,14 @@ def ensure_distributed_port_binding(context, port_id, host, router_id=None):
             return record
     except db_exc.DBDuplicateEntry:
         LOG.debug("Distributed Port %s already bound", port_id)
-        with db_api.context_manager.reader.using(context):
+        with db_api.CONTEXT_READER.using(context):
             return (context.session.query(models.DistributedPortBinding).
                     filter_by(port_id=port_id, host=host).one())
 
 
 def delete_distributed_port_binding_if_stale(context, binding):
     if not binding.router_id and binding.status == n_const.PORT_STATUS_DOWN:
-        with db_api.context_manager.writer.using(context):
+        with db_api.CONTEXT_WRITER.using(context):
             LOG.debug("Distributed port: Deleting binding %s", binding)
             context.session.delete(binding)
 
@@ -128,7 +147,7 @@ def delete_distributed_port_binding_if_stale(context, binding):
 def get_port(context, port_id):
     """Get port record for update within transaction."""
 
-    with db_api.context_manager.reader.using(context):
+    with db_api.CONTEXT_READER.using(context):
         try:
             # Set enable_eagerloads to True, so that lazy load can be
             # proceed later.
@@ -145,7 +164,7 @@ def get_port(context, port_id):
             return
 
 
-@db_api.context_manager.reader
+@db_api.CONTEXT_READER
 def get_port_from_device_mac(context, device_mac):
     #通过mac地址查找指定port
     LOG.debug("get_port_from_device_mac() called for mac %s", device_mac)
@@ -178,7 +197,7 @@ def get_sg_ids_grouped_by_port(context, port_ids):
     sg_ids_grouped_by_port = {}
     sg_binding_port = sg_models.SecurityGroupPortBinding.port_id
 
-    with db_api.context_manager.reader.using(context):
+    with db_api.CONTEXT_READER.using(context):
         # partial UUIDs must be individually matched with startswith.
         # full UUIDs may be matched directly in an IN statement
         partial_uuids = set(port_id for port_id in port_ids
@@ -217,12 +236,13 @@ def make_port_dict_with_security_groups(port, sec_groups):
 
 def get_port_binding_host(context, port_id):
     try:
-        with db_api.context_manager.reader.using(context):
-            query = (context.session.query(models.PortBinding).
-                     filter(models.PortBinding.port_id.startswith(port_id)).
-                     one())
+        with db_api.CONTEXT_READER.using(context):
+            query = (context.session.query(models.PortBinding.host).
+                     filter(models.PortBinding.port_id.startswith(port_id)))
+            query = query.filter(
+                models.PortBinding.status == n_const.ACTIVE).one()
     except exc.NoResultFound:
-        LOG.debug("No binding found for port %(port_id)s",
+        LOG.debug("No active binding found for port %(port_id)s",
                   {'port_id': port_id})
         return
     except exc.MultipleResultsFound:
@@ -232,11 +252,11 @@ def get_port_binding_host(context, port_id):
     return query.host
 
 
-@db_api.context_manager.reader
+@db_api.CONTEXT_READER
 def generate_distributed_port_status(context, port_id):
     # an OR'ed value of status assigned to parent port from the
     # distributedportbinding bucket
-    query = context.session.query(models.DistributedPortBinding)
+    query = context.session.query(models.DistributedPortBinding.status)
     final_status = n_const.PORT_STATUS_BUILD
     for bind in query.filter(models.DistributedPortBinding.port_id == port_id):
         if bind.status == n_const.PORT_STATUS_ACTIVE:
@@ -247,7 +267,7 @@ def generate_distributed_port_status(context, port_id):
 
 
 def get_distributed_port_binding_by_host(context, port_id, host):
-    with db_api.context_manager.reader.using(context):
+    with db_api.CONTEXT_READER.using(context):
         binding = (context.session.query(models.DistributedPortBinding).
             filter(models.DistributedPortBinding.port_id.startswith(port_id),
                    models.DistributedPortBinding.host == host).first())
@@ -258,7 +278,7 @@ def get_distributed_port_binding_by_host(context, port_id, host):
 
 
 def get_distributed_port_bindings(context, port_id):
-    with db_api.context_manager.reader.using(context):
+    with db_api.CONTEXT_READER.using(context):
         bindings = (context.session.query(models.DistributedPortBinding).
                     filter(models.DistributedPortBinding.port_id.startswith(
                            port_id)).all())
@@ -267,7 +287,7 @@ def get_distributed_port_bindings(context, port_id):
     return bindings
 
 
-@db_api.context_manager.reader
+@db_api.CONTEXT_READER
 def partial_port_ids_to_full_ids(context, partial_ids):
     """Takes a list of the start of port IDs and returns full IDs.
 
@@ -296,7 +316,7 @@ def partial_port_ids_to_full_ids(context, partial_ids):
 
 
 #给定多个port id,查询port的数据库记录
-@db_api.context_manager.reader
+@db_api.CONTEXT_READER
 def get_port_db_objects(context, port_ids):
     """Takes a list of port_ids and returns matching port db objects.
 
@@ -311,12 +331,12 @@ def get_port_db_objects(context, port_ids):
     return result
 
 
-@db_api.context_manager.reader
+@db_api.CONTEXT_READER
 def is_dhcp_active_on_any_subnet(context, subnet_ids):
     #检查所给subnet_ids中是否存在开启dhcp的subnet
     if not subnet_ids:
         return False
-    return bool(context.session.query(models_v2.Subnet).
+    return bool(context.session.query(models_v2.Subnet.id).
                 enable_eagerloads(False).filter_by(enable_dhcp=True).
                 filter(models_v2.Subnet.id.in_(subnet_ids)).count())
 
@@ -329,26 +349,22 @@ def _prevent_segment_delete_with_port_bound(resource, event, trigger,
         # don't check for network deletes
         return
 
-    with db_api.context_manager.reader.using(context):
-        segment_id = segment['id']
-        query = context.session.query(models_v2.Port)
-        query = query.join(
-            models.PortBindingLevel,
-            models.PortBindingLevel.port_id == models_v2.Port.id)
-        query = query.filter(models.PortBindingLevel.segment_id == segment_id)
-        port_ids = [p.id for p in query]
+    with db_api.CONTEXT_READER.using(context):
+        port_ids = port_obj.Port.get_port_ids_filter_by_segment_id(
+            context, segment_id=segment['id'])
 
     # There are still some ports in the segment, segment should not be deleted
     # TODO(xiaohhui): Should we delete the dhcp port automatically here?
     if port_ids:
         reason = _("The segment is still bound with port(s) "
                    "%s") % ", ".join(port_ids)
-        raise seg_exc.SegmentInUse(segment_id=segment_id, reason=reason)
+        raise seg_exc.SegmentInUse(segment_id=segment['id'], reason=reason)
 
 
 def subscribe():
     registry.subscribe(_prevent_segment_delete_with_port_bound,
                        resources.SEGMENT,
                        events.BEFORE_DELETE)
+
 
 subscribe()

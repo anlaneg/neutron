@@ -22,8 +22,10 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.api import extensions
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions
 from neutron_lib.plugins import directory
+from neutron_lib.plugins import utils as p_utils
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
@@ -34,10 +36,8 @@ from neutron._i18n import _
 from neutron.common import constants as n_const
 from neutron.common import exceptions as n_exc
 from neutron.common import utils
-from neutron.db import api as db_api
 from neutron.db import provisioning_blocks
 from neutron.extensions import segment as segment_ext
-from neutron.plugins.common import utils as p_utils
 from neutron.quota import resource_registry
 
 
@@ -145,7 +145,9 @@ class DhcpRpcCallback(object):
         plugin = directory.get_plugin()
         filters = {'network_id': [network['id'] for network in networks]}
         ports = plugin.get_ports(context, filters=filters)
-        filters['enable_dhcp'] = [True]
+        # default is to filter subnets based on 'enable_dhcp' flag
+        if kwargs.get('enable_dhcp_filter', True):
+            filters['enable_dhcp'] = [True]
         # NOTE(kevinbenton): we sort these because the agent builds tags
         # based on position in the list and has to restart the process if
         # the order changes.

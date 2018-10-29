@@ -20,6 +20,7 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
+from neutron_lib.exceptions import agent as agent_exc
 
 from neutron_lib import constants
 from neutron_lib import context
@@ -305,6 +306,10 @@ class L3DvrTestCase(L3DvrTestCaseBase):
             self.l3_plugin._get_agent_gw_ports_exist_for_network(
                 self.context, ext_net_id, "", self.l3_agent['id']))
 
+    def test_create_floating_ip_with_no_dvr_agents(self):
+        self._test_create_floating_ip_agent_notification(
+            test_agent_mode=None)
+
     def _test_create_floating_ip_agent_notification(
         self, dvr=True, test_agent_mode=constants.L3_AGENT_MODE_DVR):
         with self.subnet() as ext_subnet,\
@@ -315,8 +320,9 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                 self.context, int_port['port']['id'],
                 {'port': {portbindings.HOST_ID: 'host1'}})
             # and create l3 agents on corresponding hosts
-            helpers.register_l3_agent(host='host1',
-                agent_mode=test_agent_mode)
+            if test_agent_mode is not None:
+                helpers.register_l3_agent(host='host1',
+                    agent_mode=test_agent_mode)
 
             # make net external
             ext_net_id = ext_subnet['subnet']['network_id']
@@ -331,6 +337,14 @@ class L3DvrTestCase(L3DvrTestCaseBase):
             self.l3_plugin.add_router_interface(
                 self.context, router['id'],
                 {'subnet_id': int_subnet['subnet']['id']})
+            if test_agent_mode is None:
+                self.assertRaises(
+                    agent_exc.AgentNotFoundByTypeHost,
+                    self.l3_plugin.create_fip_agent_gw_port_if_not_exists,
+                    self.context,
+                    ext_net_id,
+                    'host1')
+                return
             floating_ip = {'floating_network_id': ext_net_id,
                            'router_id': router['id'],
                            'port_id': int_port['port']['id'],
@@ -498,6 +512,10 @@ class L3DvrTestCase(L3DvrTestCaseBase):
     def test_update_floating_ip_agent_notification_non_dvr(self):
         self._test_update_floating_ip_agent_notification(dvr=False)
 
+    def test_delete_floating_ip_with_no_agents(self):
+        self._test_delete_floating_ip_agent_notification(
+            test_agent_mode=None)
+
     def _test_delete_floating_ip_agent_notification(
         self, dvr=True, test_agent_mode=constants.L3_AGENT_MODE_DVR):
         with self.subnet() as ext_subnet,\
@@ -531,8 +549,19 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                            'dns_name': '', 'dns_domain': ''}
             floating_ip = self.l3_plugin.create_floatingip(
                 self.context, {'floatingip': floating_ip})
+            if test_agent_mode is None:
+                with mock.patch.object(
+                        self.l3_plugin, 'get_dvr_agent_on_host') as a_mock,\
+                        mock.patch.object(self.l3_plugin,
+                                          '_l3_rpc_notifier') as l3_notif:
+                    a_mock.return_value = None
+                    self.l3_plugin.delete_floatingip(
+                        self.context, floating_ip['id'])
+                    self.assertFalse(
+                        l3_notif.routers_updated_on_host.called)
+                    return
             with mock.patch.object(
-                    self.l3_plugin, '_l3_rpc_notifier') as l3_notif:
+                        self.l3_plugin, '_l3_rpc_notifier') as l3_notif:
                 self.l3_plugin.delete_floatingip(
                     self.context, floating_ip['id'])
                 if dvr:
@@ -552,7 +581,8 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                                 assert_called_once_with(
                                     self.context, [router['id']], 'host0')
                             self.assertFalse(l3_notif.routers_updated.called)
-                    else:
+                    if test_agent_mode == (
+                            constants.L3_AGENT_MODE_DVR):
                         l3_notif.routers_updated_on_host.\
                             assert_called_once_with(
                                 self.context, [router['id']], 'host1')
@@ -581,10 +611,10 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         ext_net = self._make_network(self.fmt, '', True, **kwargs)
         self._make_subnet(
             self.fmt, ext_net, '10.0.0.1', '10.0.0.0/24',
-            ip_version=4, enable_dhcp=True)
+            ip_version=constants.IP_VERSION_4, enable_dhcp=True)
         self._make_subnet(
             self.fmt, ext_net, '2001:db8::1', '2001:db8::/64',
-            ip_version=6, enable_dhcp=True)
+            ip_version=constants.IP_VERSION_6, enable_dhcp=True)
         router1 = self._create_router()
         self.l3_plugin._update_router_gw_info(
             self.context, router1['id'],
@@ -595,12 +625,12 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         private_net1 = self._make_network(self.fmt, 'net1', True)
         private_ipv6_subnet1 = self._make_subnet(self.fmt,
             private_net1, 'fd00::1',
-            cidr='fd00::1/64', ip_version=6,
+            cidr='fd00::1/64', ip_version=constants.IP_VERSION_6,
             ipv6_ra_mode='slaac',
             ipv6_address_mode='slaac')
         private_ipv6_subnet2 = self._make_subnet(self.fmt,
             private_net1, 'fd01::1',
-            cidr='fd01::1/64', ip_version=6,
+            cidr='fd01::1/64', ip_version=constants.IP_VERSION_6,
             ipv6_ra_mode='slaac',
             ipv6_address_mode='slaac')
         # Add the first IPv6 subnet to the router
@@ -652,7 +682,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         ext_net = self._make_network(self.fmt, '', True, **kwargs)
         self._make_subnet(
             self.fmt, ext_net, '10.20.0.1', '10.20.0.0/24',
-            ip_version=4, enable_dhcp=True)
+            ip_version=constants.IP_VERSION_4, enable_dhcp=True)
         self.l3_plugin.schedule_router(self.context,
                                        router['id'],
                                        candidates=[self.l3_agent])
@@ -666,7 +696,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
             private_net1,
             '10.1.0.1',
             cidr='10.1.0.0/24',
-            ip_version=4,
+            ip_version=constants.IP_VERSION_4,
             allocation_pools=test_allocation_pools,
             enable_dhcp=True)
         vrrp_port = self._make_port(
@@ -759,7 +789,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         ext_net = self._make_network(self.fmt, '', True, **kwargs)
         self._make_subnet(
             self.fmt, ext_net, '10.20.0.1', '10.20.0.0/24',
-            ip_version=4, enable_dhcp=True)
+            ip_version=constants.IP_VERSION_4, enable_dhcp=True)
         # Schedule the router to the dvr_snat node
         self.l3_plugin.schedule_router(self.context,
                                        router['id'],
@@ -774,7 +804,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
             private_net1,
             '10.1.0.1',
             cidr='10.1.0.0/24',
-            ip_version=4,
+            ip_version=constants.IP_VERSION_4,
             enable_dhcp=True)
         with self.port(
                 subnet=private_subnet1,
@@ -840,7 +870,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         ext_net = self._make_network(self.fmt, '', True, **kwargs)
         self._make_subnet(
             self.fmt, ext_net, '10.20.0.1', '10.20.0.0/24',
-            ip_version=4, enable_dhcp=True)
+            ip_version=constants.IP_VERSION_4, enable_dhcp=True)
         self.l3_plugin.schedule_router(self.context,
                                        router['id'],
                                        candidates=[self.l3_agent])
@@ -854,7 +884,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
             private_net1,
             '10.1.0.1',
             cidr='10.1.0.0/24',
-            ip_version=4,
+            ip_version=constants.IP_VERSION_4,
             enable_dhcp=True)
         with self.port(
                 subnet=private_subnet1,
@@ -915,7 +945,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         ext_net = self._make_network(self.fmt, '', True, **kwargs)
         self._make_subnet(
             self.fmt, ext_net, '10.20.0.1', '10.20.0.0/24',
-            ip_version=4, enable_dhcp=True)
+            ip_version=constants.IP_VERSION_4, enable_dhcp=True)
         self.l3_plugin.schedule_router(self.context,
                                        router['id'],
                                        candidates=[self.l3_agent])
@@ -929,7 +959,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
             private_net1,
             '10.1.0.1',
             cidr='10.1.0.0/24',
-            ip_version=4,
+            ip_version=constants.IP_VERSION_4,
             enable_dhcp=True)
         with self.port(
                 subnet=private_subnet1,
@@ -997,7 +1027,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         ext_net = self._make_network(self.fmt, '', True, **kwargs)
         self._make_subnet(
             self.fmt, ext_net, '10.20.0.1', '10.20.0.0/24',
-            ip_version=4, enable_dhcp=True)
+            ip_version=constants.IP_VERSION_4, enable_dhcp=True)
         self.l3_plugin.schedule_router(self.context,
                                        router['id'],
                                        candidates=[self.l3_agent])
@@ -1011,7 +1041,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
             private_net1,
             '10.1.0.1',
             cidr='10.1.0.0/24',
-            ip_version=4,
+            ip_version=constants.IP_VERSION_4,
             allocation_pools=test_allocation_pools,
             enable_dhcp=True)
         vrrp_port = self._make_port(
@@ -1045,8 +1075,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                 vm_arp_table = {
                     'ip_address': vm_port_fixed_ips[0]['ip_address'],
                     'mac_address': vm_port_mac,
-                    'subnet_id': vm_port_subnet_id,
-                    'nud_state': 'permanent'}
+                    'subnet_id': vm_port_subnet_id}
                 vm_port2 = self.core_plugin.update_port(
                     self.context, int_port2['port']['id'],
                     {'port': {portbindings.HOST_ID: HOST2}})
@@ -1098,8 +1127,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                 vrrp_arp_table1 = {
                     'ip_address': vrrp_port_fixed_ips[0]['ip_address'],
                     'mac_address': vm_port_mac,
-                    'subnet_id': vrrp_port_subnet_id,
-                    'nud_state': 'reachable'}
+                    'subnet_id': vrrp_port_subnet_id}
 
                 expected_calls = [
                         mock.call(self.context,
@@ -1129,7 +1157,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         ext_net = self._make_network(self.fmt, '', True, **kwargs)
         self._make_subnet(
             self.fmt, ext_net, '10.20.0.1', '10.20.0.0/24',
-            ip_version=4, enable_dhcp=True)
+            ip_version=constants.IP_VERSION_4, enable_dhcp=True)
         self.l3_plugin.schedule_router(self.context,
                                        router['id'],
                                        candidates=[self.l3_agent])
@@ -1142,7 +1170,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
             private_net1,
             '10.1.0.1',
             cidr='10.1.0.0/24',
-            ip_version=4,
+            ip_version=constants.IP_VERSION_4,
             enable_dhcp=True)
         self.l3_plugin.add_router_interface(
             self.context, router['id'],
@@ -1169,7 +1197,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         ext_net = self._make_network(self.fmt, '', True, **kwargs)
         self._make_subnet(
             self.fmt, ext_net, '10.20.0.1', '10.20.0.0/24',
-            ip_version=4, enable_dhcp=True)
+            ip_version=constants.IP_VERSION_4, enable_dhcp=True)
         self.l3_plugin.schedule_router(self.context,
                                        router['id'],
                                        candidates=[self.l3_agent])
@@ -1182,7 +1210,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
             private_net1,
             '10.1.0.1',
             cidr='10.1.0.0/24',
-            ip_version=4,
+            ip_version=constants.IP_VERSION_4,
             allocation_pools=test_allocation_pools,
             enable_dhcp=True)
         vrrp_port = self._make_port(
@@ -1214,8 +1242,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                 vm_arp_table = {
                     'ip_address': vm_port_fixed_ips[0]['ip_address'],
                     'mac_address': vm_port_mac,
-                    'subnet_id': vm_port_subnet_id,
-                    'nud_state': 'permanent'}
+                    'subnet_id': vm_port_subnet_id}
                 self.assertEqual(1, l3_notifier.add_arp_entry.call_count)
                 floating_ip = {'floating_network_id': ext_net['network']['id'],
                                'router_id': router['id'],
@@ -1244,8 +1271,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                 vrrp_arp_table1 = {
                     'ip_address': vrrp_port_fixed_ips[0]['ip_address'],
                     'mac_address': vm_port_mac,
-                    'subnet_id': vrrp_port_subnet_id,
-                    'nud_state': 'reachable'}
+                    'subnet_id': vrrp_port_subnet_id}
 
                 expected_calls = [
                         mock.call(self.context,

@@ -15,13 +15,14 @@
 
 import functools
 
+from neutron_lib.api import attributes
 from neutron_lib.db import model_base
 from neutron_lib import exceptions
 from oslo_config import cfg
 import oslo_i18n
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
-from six.moves.urllib import parse
+from six.moves import urllib
 from webob import exc
 
 from neutron._i18n import _
@@ -61,13 +62,21 @@ def check_request_for_revision_constraint(request):
     return revision_number
 
 
-def get_filters(request, attr_info, skips=None):
+def is_filter_validation_enabled():
+    return 'filter-validation' in (extensions.PluginAwareExtensionManager.
+                                   get_instance().extensions)
+
+
+def get_filters(request, attr_info, skips=None,
+                is_filter_validation_supported=False):
     return get_filters_from_dict(request.GET.dict_of_lists(),
                                  attr_info,
-                                 skips)
+                                 skips,
+                                 is_filter_validation_supported)
 
 
-def get_filters_from_dict(data, attr_info, skips=None):
+def get_filters_from_dict(data, attr_info, skips=None,
+                          is_filter_validation_supported=False):
     """Extracts the filters from a dict of query parameters.
 
     Returns a dict of lists for the filters:
@@ -75,15 +84,23 @@ def get_filters_from_dict(data, attr_info, skips=None):
     becomes:
     {'check': [u'a', u'b'], 'name': [u'Bob']}
     """
+    attributes.populate_project_info(attr_info)
     is_empty_string_supported = is_empty_string_filtering_supported()
     skips = skips or []
     res = {}
+    invalid_keys = []
+    check_is_filter = False
+    if is_filter_validation_supported and is_filter_validation_enabled():
+        check_is_filter = True
     for key, values in data.items():
         if key in skips or hasattr(model_base.BASEV2, key):
             continue
         values = [v for v in values
                   if v or (v == "" and is_empty_string_supported)]
         key_attr_info = attr_info.get(key, {})
+        if check_is_filter and not key_attr_info.get('is_filter'):
+            invalid_keys.append(key)
+            continue
         if 'convert_list_to' in key_attr_info:
             values = key_attr_info['convert_list_to'](values)
         elif 'convert_to' in key_attr_info:
@@ -91,6 +108,9 @@ def get_filters_from_dict(data, attr_info, skips=None):
             values = [convert_to(v) for v in values]
         if values:
             res[key] = values
+    if invalid_keys:
+        msg = _("%s is invalid attribute for filtering") % invalid_keys
+        raise exc.HTTPBadRequest(explanation=msg)
     return res
 
 
@@ -106,7 +126,8 @@ def get_previous_link(request, items, id_key):
         marker = items[0][id_key]
         params['marker'] = marker
     params['page_reverse'] = True
-    return "%s?%s" % (prepare_url(request.path_url), parse.urlencode(params))
+    return "%s?%s" % (prepare_url(get_path_url(request)),
+                      urllib.parse.urlencode(params))
 
 
 def get_next_link(request, items, id_key):
@@ -116,7 +137,8 @@ def get_next_link(request, items, id_key):
         marker = items[-1][id_key]
         params['marker'] = marker
     params.pop('page_reverse', None)
-    return "%s?%s" % (prepare_url(request.path_url), parse.urlencode(params))
+    return "%s?%s" % (prepare_url(get_path_url(request)),
+                      urllib.parse.urlencode(params))
 
 
 def prepare_url(orig_url):
@@ -125,11 +147,26 @@ def prepare_url(orig_url):
     # Copied directly from nova/api/openstack/common.py
     if not prefix:
         return orig_url
-    url_parts = list(parse.urlsplit(orig_url))
-    prefix_parts = list(parse.urlsplit(prefix))
+    url_parts = list(urllib.parse.urlsplit(orig_url))
+    prefix_parts = list(urllib.parse.urlsplit(prefix))
     url_parts[0:2] = prefix_parts[0:2]
     url_parts[2] = prefix_parts[2] + url_parts[2]
-    return parse.urlunsplit(url_parts).rstrip('/')
+    return urllib.parse.urlunsplit(url_parts).rstrip('/')
+
+
+def get_path_url(request):
+    """Return correct link if X-Forwarded-Proto exists in headers."""
+    protocol = request.headers.get('X-Forwarded-Proto')
+    parsed = urllib.parse.urlparse(request.path_url)
+
+    if protocol and parsed.scheme != protocol:
+        new_parsed = urllib.parse.ParseResult(
+            protocol, parsed.netloc,
+            parsed.path, parsed.params,
+            parsed.query, parsed.fragment)
+        return urllib.parse.urlunparse(new_parsed)
+    else:
+        return request.path_url
 
 
 def get_limit_and_marker(request):
@@ -189,6 +226,7 @@ def get_sorts(request, attr_info):
 
     Return as: [(key1, value1), (key2, value2)]
     """
+    attributes.populate_project_info(attr_info)
     sort_keys = list_args(request, "sort_key")
     sort_dirs = list_args(request, "sort_dir")
     if len(sort_keys) != len(sort_dirs):
@@ -243,6 +281,12 @@ def is_native_sorting_supported(plugin):
     native_sorting_attr_name = ("_%s__native_sorting_support"
                                 % plugin.__class__.__name__)
     return getattr(plugin, native_sorting_attr_name, False)
+
+
+def is_filter_validation_supported(plugin):
+    filter_validation_attr_name = ("_%s__filter_validation_support"
+                                   % plugin.__class__.__name__)
+    return getattr(plugin, filter_validation_attr_name, False)
 
 
 class PaginationHelper(object):

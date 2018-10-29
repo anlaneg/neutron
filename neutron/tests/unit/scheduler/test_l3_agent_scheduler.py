@@ -32,8 +32,10 @@ from sqlalchemy import orm
 import testscenarios
 import testtools
 
+from neutron.common import rpc as n_rpc
 from neutron.db import db_base_plugin_v2 as db_v2
 from neutron.db import l3_db
+from neutron.db import l3_dvr_db
 from neutron.db import l3_dvr_ha_scheduler_db
 from neutron.db import l3_dvrscheduler_db
 from neutron.db import l3_hamode_db
@@ -787,13 +789,28 @@ class L3DvrScheduler(l3_db.L3_NAT_db_mixin,
     pass
 
 
-class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
+class L3DvrSchedulerTestCase(L3SchedulerBaseMixin,
+                             test_db_base_plugin_v2.
+                             NeutronDbPluginV2TestCase):
+
+    l3_plugin = ('neutron.tests.unit.extensions.test_l3.'
+                 'TestL3NatAgentSchedulingServicePlugin')
 
     def setUp(self):
-        super(L3DvrSchedulerTestCase, self).setUp()
+        if self.l3_plugin:
+            service_plugins = {
+                'l3_plugin_name': self.l3_plugin,
+                'flavors_plugin_name': 'neutron.services.flavors.'
+                                       'flavors_plugin.FlavorsPlugin'
+            }
+        else:
+            service_plugins = None
+        super(L3DvrSchedulerTestCase, self).setUp('ml2',
+            service_plugins=service_plugins)
         self.setup_coreplugin('ml2')
         self.adminContext = n_context.get_admin_context()
         self.dut = L3DvrScheduler()
+        self.l3plugin = directory.get_plugin(plugin_constants.L3)
 
     def test__notify_l3_agent_update_port_with_allowed_address_pairs_revert(
             self):
@@ -983,10 +1000,12 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
             'context': self.adminContext,
             'original_port': {
                 portbindings.HOST_ID: 'vm-host',
+                'device_owner': DEVICE_OWNER_COMPUTE,
                 'mac_address': '02:04:05:17:18:19'
             },
             'port': {
                 portbindings.HOST_ID: 'vm-host',
+                'device_owner': DEVICE_OWNER_COMPUTE,
                 'mac_address': '02:04:05:17:18:29'
             },
             'mac_address_updated': True
@@ -999,6 +1018,55 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
         l3plugin.update_arp_entry_for_dvr_service_port.\
             assert_called_once_with(
                 self.adminContext, kwargs.get('port'))
+        self.assertFalse(l3plugin.dvr_handle_new_service_port.called)
+
+    def test__notify_l3_agent_update_port_with_ip_update(self):
+        kwargs = {
+            'context': self.adminContext,
+            'original_port': {
+                portbindings.HOST_ID: 'vm-host',
+                'device_owner': constants.DEVICE_OWNER_ROUTER_GW,
+                'fixed_ips': [{'ip_address': '1.1.1.1'}],
+                'mac_address': '02:04:05:17:18:19'
+            },
+            'port': {
+                portbindings.HOST_ID: 'vm-host',
+                'device_owner': constants.DEVICE_OWNER_ROUTER_GW,
+                'fixed_ips': [{'ip_address': '2.2.2.2'}],
+                'mac_address': '02:04:05:17:18:19'
+            },
+            'mac_address_updated': False
+        }
+        l3plugin = mock.Mock()
+        directory.add_plugin(plugin_constants.L3, l3plugin)
+        l3_dvrscheduler_db._notify_l3_agent_port_update(
+            'port', 'after_update', mock.ANY, **kwargs)
+
+        l3plugin.update_arp_entry_for_dvr_service_port.\
+            assert_called_once_with(
+                self.adminContext, kwargs.get('port'))
+        self.assertFalse(l3plugin.dvr_handle_new_service_port.called)
+
+    def test__notify_l3_agent_update_port_without_ip_change(self):
+        kwargs = {
+            'context': self.adminContext,
+            'original_port': {
+                portbindings.HOST_ID: 'vm-host',
+                'device_owner': constants.DEVICE_OWNER_ROUTER_GW,
+                'fixed_ips': [{'ip_address': '1.1.1.1'}],
+            },
+            'port': {
+                portbindings.HOST_ID: 'vm-host',
+                'device_owner': constants.DEVICE_OWNER_ROUTER_GW,
+                'fixed_ips': [{'ip_address': '1.1.1.1'}],
+            },
+        }
+        l3plugin = mock.Mock()
+        directory.add_plugin(plugin_constants.L3, l3plugin)
+        l3_dvrscheduler_db._notify_l3_agent_port_update(
+            'port', 'after_update', mock.ANY, **kwargs)
+
+        self.assertFalse(l3plugin.update_arp_entry_for_dvr_service_port.called)
         self.assertFalse(l3plugin.dvr_handle_new_service_port.called)
 
     def test__notify_l3_agent_port_binding_change(self):
@@ -1021,9 +1089,34 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
         fip = {'router_id': 'router_id'}
         self._test__notify_l3_agent_port_binding_change(None, fip)
 
+    def test__notify_l3_agent_port_binding_change_fip_dvr(self):
+        fip = {'router_id': 'router_id'}
+        is_distributed = True
+        self._test__notify_l3_agent_port_binding_change(None,
+                                                        fip, is_distributed)
+
+    def test__notify_l3_agent_port_binding_change_fip_dvr_rmrt(self):
+        fip = {'router_id': 'router_id'}
+        router_to_remove = [{'agent_id': 'foo_agent',
+                             'router_id': 'foo_id',
+                             'host': 'vm-host1'}]
+        is_distributed = True
+        self._test__notify_l3_agent_port_binding_change(router_to_remove,
+                                                        fip, is_distributed)
+
+    def test__notify_l3_agent_port_binding_change_fip_dvr_on_rmrt(self):
+        fip = {'router_id': 'foo_id'}
+        router_to_remove = [{'agent_id': 'foo_agent',
+                             'router_id': 'foo_id',
+                             'host': 'vm-host1'}]
+        is_distributed = True
+        self._test__notify_l3_agent_port_binding_change(router_to_remove,
+                                                        fip, is_distributed)
+
     def _test__notify_l3_agent_port_binding_change(self,
                                                    routers_to_remove=None,
-                                                   fip=None):
+                                                   fip=None,
+                                                   is_distributed=False):
         source_host = 'vm-host1'
         kwargs = {
             'context': self.adminContext,
@@ -1040,9 +1133,12 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
         l3plugin = mock.Mock()
         directory.add_plugin(plugin_constants.L3, l3plugin)
         with mock.patch.object(l3plugin, 'get_dvr_routers_to_remove',
-                               return_value=routers_to_remove),\
+                               return_value=routers_to_remove
+                               if routers_to_remove else []),\
                 mock.patch.object(l3plugin, '_get_floatingips_by_port_id',
-                                  return_value=[fip] if fip else []):
+                                  return_value=[fip] if fip else []),\
+                mock.patch.object(l3_dvr_db, 'is_distributed_router',
+                                  return_value=is_distributed):
             l3_dvrscheduler_db._notify_l3_agent_port_update(
                 'port', 'after_update', mock.ANY, **kwargs)
             if routers_to_remove:
@@ -1051,7 +1147,8 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
                 self.assertEqual(
                     1,
                     l3plugin.delete_arp_entry_for_dvr_service_port.call_count)
-            if fip and not routers_to_remove:
+            if fip and is_distributed and not (routers_to_remove and
+                fip['router_id'] is routers_to_remove[0]['router_id']):
                 (l3plugin.l3_rpc_notifier.routers_updated_on_host.
                  assert_called_once_with(mock.ANY, ['router_id'], source_host))
             self.assertEqual(
@@ -1267,6 +1364,38 @@ class L3DvrSchedulerTestCase(testlib_api.SqlTestCase):
                                                         r1['id'])
             self.assertEqual(0, len(sub_ids))
 
+    def test__check_dvr_serviceable_ports_on_host(self):
+        # HOST_DVR = 'my_l3_host_dvr'
+        # HOST_DVR_SNAT = 'my_l3_host_dvr_snat'
+        # HOST_DVR is a sub-string of HOST_DVR_SNAT
+        self._register_l3_dvr_agents()
+
+        host_args = {'admin_state_up': True,
+                     portbindings.PROFILE: {'migrating to': HOST_DVR_SNAT}}
+        with self.network() as network:
+            with self.subnet(network=network) as subnet:
+                subnet_ids = []
+                subnet_ids.append(subnet['subnet']['id'])
+                with self.port(subnet=subnet,
+                               device_owner=DEVICE_OWNER_COMPUTE,
+                               arg_list=('admin_state_up',
+                               portbindings.PROFILE,), **host_args):
+                    # Check DVR serviceable ports on HOST_DVR_SNAT.
+                    # Should find existence since it is an exact match to the
+                    # target host name of the port binding profile.
+                    result0 = self.l3plugin. \
+                        _check_dvr_serviceable_ports_on_host(self.adminContext,
+                        self.l3_dvr_snat_agent['host'], subnet_ids)
+                    # Check DVR serviceable ports on HOST_DVR.
+                    # Should not find existence since the sub-string won't get
+                    # matched with the target host.
+                    result1 = self.l3plugin. \
+                        _check_dvr_serviceable_ports_on_host(self.adminContext,
+                        self.l3_dvr_agent['host'], subnet_ids)
+
+        self.assertTrue(result0)
+        self.assertFalse(result1)
+
     def _prepare_schedule_snat_tests(self):
         agent = agent_obj.Agent(mock.ANY, id=uuidutils.generate_uuid())
         agent.admin_state_up = True
@@ -1302,7 +1431,7 @@ class L3HATestCaseMixin(testlib_api.SqlTestCase,
         super(L3HATestCaseMixin, self).setUp()
 
         self.adminContext = n_context.get_admin_context()
-        mock.patch('neutron.common.rpc.get_client').start()
+        mock.patch.object(n_rpc, 'get_client').start()
 
         self.setup_coreplugin('ml2', load_plugins=False)
         cfg.CONF.set_override('service_plugins',

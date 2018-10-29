@@ -13,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from neutron_lib.api.definitions import l3
 from neutron_lib import constants as lib_constants
-
+from neutron_lib.plugins import constants as plugin_consts
 
 ROUTER_PORT_OWNERS = lib_constants.ROUTER_INTERFACE_OWNERS_SNAT + \
     (lib_constants.DEVICE_OWNER_ROUTER_GW,)
@@ -133,6 +134,12 @@ IPTABLES_PROTOCOL_NAME_MAP = {lib_constants.PROTO_NAME_IPV6_ENCAP: 'ipv6',
                               '141': 'wesp',
                               '142': 'rohc'}
 
+# A length of a iptables chain name must be less than or equal to 11
+# characters.
+# <max length of iptables chain name> - (<binary_name> + '-') = 28-(16+1) = 11
+MAX_IPTABLES_CHAIN_LEN_WRAP = 11
+MAX_IPTABLES_CHAIN_LEN_NOWRAP = 28
+
 # Timeout in seconds for getting an IPv6 LLA
 LLA_TASK_TIMEOUT = 40
 
@@ -227,3 +234,22 @@ VALUES_TYPE_RANGE = "range"
 # Units base
 SI_BASE = 1000
 IEC_BASE = 1024
+
+# Port bindings handling
+NO_ACTIVE_BINDING = 'no_active_binding'
+
+# Registered extension parent resource check mapping
+# If we want to register some service plugin resources into policy and check
+# the owner when operating their subresources. We can write here to use
+# existing policy engine for parent resource owner check.
+# Each entry here should be PARENT_RESOURCE_NAME: SERVICE_PLUGIN_NAME,
+# PARENT_RESOURCE_NAME is usually from api definition.
+# SERVICE_PLUGIN_NAME is the service plugin which introduced the resource and
+# registered the service plugin name in neutron-lib.
+EXT_PARENT_RESOURCE_MAPPING = {
+    l3.FLOATINGIP: plugin_consts.L3
+}
+EXT_PARENT_PREFIX = 'ext_parent'
+
+RP_BANDWIDTHS = 'resource_provider_bandwidths'
+RP_INVENTORY_DEFAULTS = 'resource_provider_inventory_defaults'

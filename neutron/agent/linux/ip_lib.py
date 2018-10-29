@@ -43,7 +43,8 @@ LOG = logging.getLogger(__name__)
 IP_NONLOCAL_BIND = 'net.ipv4.ip_nonlocal_bind'
 
 LOOPBACK_DEVNAME = 'lo'
-GRE_TUNNEL_DEVICE_NAMES = ['gre0', 'gretap0']
+FB_TUNNEL_DEVICE_NAMES = ['gre0', 'gretap0', 'tunl0', 'erspan0', 'sit0',
+                          'ip6tnl0', 'ip6gre0']
 
 SYS_NET_PATH = '/sys/class/net'
 DEFAULT_GW_PATTERN = re.compile(r"via (\S+)")
@@ -124,7 +125,7 @@ class IPWrapper(SubProcessBase):
         return IPDevice(name, namespace=self.namespace)
 
     #返回namespace下所有接口
-    def get_devices(self, exclude_loopback=True, exclude_gre_devices=True):
+    def get_devices(self, exclude_loopback=True, exclude_fb_tun_devices=True):
         retval = []
         if self.namespace:
             # we call out manually because in order to avoid screen scraping
@@ -153,7 +154,7 @@ class IPWrapper(SubProcessBase):
 
         for name in output:
             if (exclude_loopback and name == LOOPBACK_DEVNAME or
-                    exclude_gre_devices and name in GRE_TUNNEL_DEVICE_NAMES):
+                    exclude_fb_tun_devices and name in FB_TUNNEL_DEVICE_NAMES):
                 continue
             retval.append(IPDevice(name, namespace=self.namespace))
 
@@ -180,18 +181,16 @@ class IPWrapper(SubProcessBase):
         return IPDevice(name, namespace=self.namespace)
 
     def add_veth(self, name1, name2, namespace2=None):
-        # TODO(slaweq): switch to pyroute2 when issue
-        # https://github.com/svinota/pyroute2/issues/463
-        # will be closed
-        args = ['add', name1, 'type', 'veth', 'peer', 'name', name2]
+        peer = {'ifname': name2}
 
         if namespace2 is None:
             namespace2 = self.namespace
         else:
             self.ensure_namespace(namespace2)
-            args += ['netns', namespace2]
+            peer['net_ns_fd'] = namespace2
 
-        self._as_root([], 'link', tuple(args))
+        privileged.create_interface(
+            name1, self.namespace, 'veth', peer=peer)
 
         return (IPDevice(name1, namespace=self.namespace),
                 IPDevice(name2, namespace=namespace2))
@@ -332,6 +331,20 @@ class IPDevice(SubProcessBase):
         except RuntimeError:
             LOG.exception("Failed deleting egress connection state of"
                           " floatingip %s", ip_str)
+
+    def delete_socket_conntrack_state(self, cidr, dport, protocol):
+        ip_str = str(netaddr.IPNetwork(cidr).ip)
+        ip_wrapper = IPWrapper(namespace=self.namespace)
+        cmd = ["conntrack", "-D", "-d", ip_str, '-p', protocol,
+               '--dport', dport]
+        try:
+            ip_wrapper.netns.execute(cmd, check_exit_code=True,
+                                     extra_ok_codes=[1])
+
+        except RuntimeError:
+            LOG.exception("Failed deleting ingress connection state of "
+                          "socket %(ip)s:%(port)s", {'ip': ip_str,
+                                                     'port': dport})
 
     def disable_ipv6(self):
         if not ipv6_utils.is_enabled_and_bind_by_default():
@@ -1310,3 +1323,10 @@ def set_ip_nonlocal_bind_for_namespace(namespace):
             "different network node, and the peer side getting a "
             "populated ARP cache for a given floating IP address.",
             IP_NONLOCAL_BIND)
+
+
+def get_ipv6_forwarding(device, namespace=None):
+    """Get kernel value of IPv6 forwarding for device in given namespace."""
+    cmd = ['sysctl', '-b', "net.ipv6.conf.%s.forwarding" % device]
+    ip_wrapper = IPWrapper(namespace)
+    return int(ip_wrapper.netns.execute(cmd, run_as_root=True))

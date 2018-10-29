@@ -23,6 +23,7 @@ from oslo_config import cfg
 from oslo_log import log
 
 from neutron.agent import securitygroups_rpc
+from neutron.conf.plugins.ml2.drivers.openvswitch import mech_ovs_conf
 from neutron.plugins.ml2.drivers import mech_agent
 from neutron.plugins.ml2.drivers.openvswitch.agent.common \
     import constants as a_const
@@ -33,6 +34,8 @@ LOG = log.getLogger(__name__)
 
 IPTABLES_FW_DRIVER_FULL = ("neutron.agent.linux.iptables_firewall."
                            "OVSHybridIptablesFirewallDriver")
+
+mech_ovs_conf.register_ovs_mech_driver_opts()
 
 
 class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
@@ -61,8 +64,18 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         super(OpenvswitchMechanismDriver, self).__init__(
             constants.AGENT_TYPE_OVS,#指明agent类型
             portbindings.VIF_TYPE_OVS,#指明port绑定类型
-            vif_details, supported_vnic_types=[portbindings.VNIC_NORMAL,
-                                               portbindings.VNIC_DIRECT])
+            vif_details)
+
+        # TODO(lajoskatona): move this blacklisting to
+        # SimpleAgentMechanismDriverBase. By that e blacklisting and validation
+        # of the vnic_types would be available for all mechanism drivers.
+        self.supported_vnic_types = self.blacklist_supported_vnic_types(
+            vnic_types=[portbindings.VNIC_NORMAL, portbindings.VNIC_DIRECT],
+            blacklist=cfg.CONF.OVS_DRIVER.vnic_type_blacklist
+        )
+        LOG.info("%s's supported_vnic_types: %s",
+                 self.agent_type, self.supported_vnic_types)
+
         ovs_qos_driver.register()
         log_driver.register()
 
@@ -118,16 +131,20 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     def get_vif_details(self, context, agent, segment):
         #构造vif的详细情况
         vif_details = self._pre_get_vif_details(agent, context)
-        self._set_bridge_name(context.current, vif_details)
+        self._set_bridge_name(context.current, vif_details, agent)
         return vif_details
 
     @staticmethod
-    def _set_bridge_name(port, vif_details):
+    def _set_bridge_name(port, vif_details, agent):
         # REVISIT(rawlin): add BridgeName as a nullable column to the Port
         # model and simply check here if it's set and insert it into the
         # vif_details.
 
         def set_bridge_name_inner(bridge_name):
+            vif_details[portbindings.VIF_DETAILS_BRIDGE_NAME] = bridge_name
+
+        bridge_name = agent['configurations'].get('integration_bridge')
+        if bridge_name:
             vif_details[portbindings.VIF_DETAILS_BRIDGE_NAME] = bridge_name
 
         registry.publish(a_const.OVS_BRIDGE_NAME, events.BEFORE_READ,

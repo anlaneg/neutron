@@ -44,7 +44,6 @@ from neutron.db import agents_db
 from neutron.db import common_db_mixin
 from neutron.db import l3_agentschedulers_db
 from neutron.db import l3_hamode_db
-from neutron.db.models import l3ha as l3ha_model
 from neutron.objects import l3_hamode
 from neutron.scheduler import l3_agent_scheduler
 from neutron.services.revisions import revision_plugin
@@ -605,7 +604,7 @@ class L3HATestCase(L3HATestFramework):
         network = self.plugin.get_ha_network(self.admin_ctx,
                                              router['tenant_id'])
 
-        with mock.patch.object(l3ha_model, 'L3HARouterAgentPortBinding',
+        with mock.patch.object(l3_hamode, 'L3HARouterAgentPortBinding',
                                side_effect=ValueError):
             self.assertRaises(ValueError, self.plugin.add_ha_port,
                               self.admin_ctx, router['id'], network.network_id,
@@ -997,7 +996,7 @@ class L3HAModeDbTestCase(L3HATestFramework):
     def _create_subnet(self, plugin, ctx, network_id, cidr='10.0.0.0/8',
                        name='subnet', tenant_id='tenant1'):
         subnet = {'subnet': {'name': name,
-                  'ip_version': 4,
+                  'ip_version': constants.IP_VERSION_4,
                   'network_id': network_id,
                   'cidr': cidr,
                   'gateway_ip': constants.ATTR_NOT_SPECIFIED,
@@ -1325,6 +1324,42 @@ class L3HAModeDbTestCase(L3HATestFramework):
             self.assertEqual(constants.DEVICE_OWNER_ROUTER_INTF,
                              routerport.port.device_owner)
 
+    def test__get_sync_routers_with_state_change_and_check_gw_port_host(self):
+        ext_net = self._create_network(self.core_plugin, self.admin_ctx,
+                                       external=True)
+        network_id = self._create_network(self.core_plugin, self.admin_ctx)
+        subnet = self._create_subnet(self.core_plugin, self.admin_ctx,
+                                     network_id)
+        interface_info = {'subnet_id': subnet['id']}
+
+        router = self._create_router()
+        self.plugin._update_router_gw_info(self.admin_ctx, router['id'],
+                                           {'network_id': ext_net})
+        self.plugin.add_router_interface(self.admin_ctx,
+                                         router['id'],
+                                         interface_info)
+
+        self.plugin.update_routers_states(
+            self.admin_ctx, {router['id']: n_const.HA_ROUTER_STATE_ACTIVE},
+            self.agent1['host'])
+        self.plugin.update_routers_states(
+            self.admin_ctx, {router['id']: n_const.HA_ROUTER_STATE_STANDBY},
+            self.agent2['host'])
+
+        routers = self.plugin._get_sync_routers(self.admin_ctx,
+                                                router_ids=[router['id']])
+        self.assertEqual(self.agent1['host'], routers[0]['gw_port_host'])
+
+        self.plugin.update_routers_states(
+            self.admin_ctx, {router['id']: n_const.HA_ROUTER_STATE_STANDBY},
+            self.agent1['host'])
+        self.plugin.update_routers_states(
+            self.admin_ctx, {router['id']: n_const.HA_ROUTER_STATE_ACTIVE},
+            self.agent2['host'])
+        routers = self.plugin._get_sync_routers(self.admin_ctx,
+                                                router_ids=[router['id']])
+        self.assertEqual(self.agent2['host'], routers[0]['gw_port_host'])
+
 
 class L3HAUserTestCase(L3HATestFramework):
 
@@ -1337,7 +1372,10 @@ class L3HAUserTestCase(L3HATestFramework):
 
     def test_update_router(self):
         router = self._create_router(ctx=self.user_ctx)
-        self._update_router(router['id'], ctx=self.user_ctx)
+        with mock.patch.object(registry, 'publish') as mock_cb:
+            self._update_router(router['id'], ctx=self.user_ctx)
+            mock_cb.assert_called_with('router', events.PRECOMMIT_UPDATE,
+                                       self.plugin, payload=mock.ANY)
 
     def test_delete_router(self):
         router = self._create_router(ctx=self.user_ctx)

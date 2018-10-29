@@ -56,7 +56,8 @@ fake_subnet1 = dhcp.DictModel(dict(id='bbbbbbbb-bbbb-bbbb-bbbbbbbbbbbb',
                               cidr='172.9.9.0/24', enable_dhcp=True, name='',
                               tenant_id=FAKE_TENANT_ID,
                               gateway_ip='172.9.9.1', host_routes=[],
-                              dns_nameservers=[], ip_version=4,
+                              dns_nameservers=[],
+                              ip_version=const.IP_VERSION_4,
                               ipv6_ra_mode=None, ipv6_address_mode=None,
                               allocation_pools=fake_subnet1_allocation_pools))
 
@@ -66,26 +67,29 @@ fake_subnet2 = dhcp.DictModel(dict(id='dddddddd-dddd-dddd-dddddddddddd',
                               network_id=FAKE_NETWORK_UUID,
                               cidr='172.9.8.0/24', enable_dhcp=False, name='',
                               tenant_id=FAKE_TENANT_ID, gateway_ip='172.9.8.1',
-                              host_routes=[], dns_nameservers=[], ip_version=4,
+                              host_routes=[], dns_nameservers=[],
+                              ip_version=const.IP_VERSION_4,
                               allocation_pools=fake_subnet2_allocation_pools))
 
 fake_subnet3 = dhcp.DictModel(dict(id='bbbbbbbb-1111-2222-bbbbbbbbbbbb',
                               network_id=FAKE_NETWORK_UUID,
                               cidr='192.168.1.1/24', enable_dhcp=True,
-                              ip_version=4))
+                              ip_version=const.IP_VERSION_4))
 
 fake_ipv6_subnet = dhcp.DictModel(dict(id='bbbbbbbb-1111-2222-bbbbbbbbbbbb',
                               network_id=FAKE_NETWORK_UUID,
                               cidr='2001:0db8::0/64', enable_dhcp=True,
                               tenant_id=FAKE_TENANT_ID,
-                              gateway_ip='2001:0db8::1', ip_version=6,
+                              gateway_ip='2001:0db8::1',
+                              ip_version=const.IP_VERSION_6,
                               ipv6_ra_mode='slaac', ipv6_address_mode=None))
 
 fake_meta_subnet = dhcp.DictModel(dict(id='bbbbbbbb-1111-2222-bbbbbbbbbbbb',
                                   network_id=FAKE_NETWORK_UUID,
                                   cidr='169.254.169.252/30',
                                   gateway_ip='169.254.169.253',
-                                  enable_dhcp=True, ip_version=4))
+                                  enable_dhcp=True,
+                                  ip_version=const.IP_VERSION_4))
 
 fake_fixed_ip1 = dhcp.DictModel(dict(id='', subnet_id=fake_subnet1.id,
                                 ip_address='172.9.9.9'))
@@ -238,6 +242,26 @@ class TestDhcpAgent(base.BaseTestCase):
                                             "IPWrapper")
         self.mock_ip_wrapper = self.mock_ip_wrapper_p.start()
 
+    def test_init_resync_throttle_conf(self):
+        try:
+            dhcp_agent.DhcpAgent(HOSTNAME)
+        except exceptions.InvalidConfigurationOption:
+            self.fail("DHCP agent initialization unexpectedly raised an "
+                      "InvalidConfigurationOption exception. No exception is "
+                      "expected with the default configurations.")
+
+        # default resync_interval = 5; default resync_throttle = 1
+        cfg.CONF.set_override('resync_throttle', 10)
+        # resync_throttle must be <= resync_interval, otherwise an
+        # InvalidConfigurationOption exception would be raised with log
+        # message.
+        with mock.patch.object(dhcp_agent.LOG, 'exception') as log:
+            with testtools.ExpectedException(
+                exceptions.InvalidConfigurationOption):
+                dhcp_agent.DhcpAgent(HOSTNAME)
+            log.assert_any_call("DHCP agent must have resync_throttle <= "
+                                "resync_interval")
+
     def test_init_host(self):
         dhcp = dhcp_agent.DhcpAgent(HOSTNAME)
         with mock.patch.object(dhcp, 'sync_state') as sync_state:
@@ -255,10 +279,11 @@ class TestDhcpAgent(base.BaseTestCase):
                                'periodic_resync',
                                autospec=True) as mock_periodic_resync:
             with mock.patch(state_rpc_str) as state_rpc:
-                with mock.patch.object(sys, 'argv') as sys_argv:
-                    sys_argv.return_value = [
-                        'dhcp', '--config-file',
-                        base.etcdir('neutron.conf')]
+                test_args = [
+                    'dhcp', '--config-file',
+                    base.etcdir('neutron.conf')
+                ]
+                with mock.patch.object(sys, 'argv', test_args):
                     cfg.CONF.register_opts(dhcp_config.DHCP_AGENT_OPTS)
                     config.register_interface_driver_opts_helper(cfg.CONF)
                     config.register_agent_state_opts_helper(cfg.CONF)
@@ -484,18 +509,30 @@ class TestDhcpAgent(base.BaseTestCase):
                              ['Agent has just been revived'])
 
     def test_periodic_resync_helper(self):
-        with mock.patch.object(dhcp_agent.eventlet, 'sleep') as sleep:
+        dhcp = dhcp_agent.DhcpAgent(HOSTNAME)
+        resync_reasons = collections.OrderedDict(
+            (('a', 'reason1'), ('b', 'reason2')))
+        dhcp.needs_resync_reasons = resync_reasons
+        with mock.patch.object(dhcp, 'sync_state') as sync_state:
+            sync_state.side_effect = RuntimeError
+            with testtools.ExpectedException(RuntimeError):
+                dhcp._periodic_resync_helper()
+            sync_state.assert_called_once_with(resync_reasons.keys())
+            self.assertEqual(0, len(dhcp.needs_resync_reasons))
+
+    def test_periodic_resync_helper_with_event(self):
+        with mock.patch.object(dhcp_agent.LOG, 'debug') as log:
             dhcp = dhcp_agent.DhcpAgent(HOSTNAME)
-            resync_reasons = collections.OrderedDict(
-                (('a', 'reason1'), ('b', 'reason2')))
-            dhcp.needs_resync_reasons = resync_reasons
+            dhcp.schedule_resync('reason1', 'a')
+            dhcp.schedule_resync('reason1', 'b')
+            reasons = dhcp.needs_resync_reasons.keys()
             with mock.patch.object(dhcp, 'sync_state') as sync_state:
                 sync_state.side_effect = RuntimeError
                 with testtools.ExpectedException(RuntimeError):
                     dhcp._periodic_resync_helper()
-                sync_state.assert_called_once_with(resync_reasons.keys())
-                sleep.assert_called_once_with(dhcp.conf.resync_interval)
-                self.assertEqual(0, len(dhcp.needs_resync_reasons))
+            log.assert_any_call("Resync event has been scheduled")
+            sync_state.assert_called_once_with(reasons)
+            self.assertEqual(0, len(dhcp.needs_resync_reasons))
 
     def test_populate_cache_on_start_without_active_networks_support(self):
         # emul dhcp driver that doesn't support retrieving of active networks
@@ -945,7 +982,7 @@ class TestDhcpAgentEventHandler(base.BaseTestCase):
     def test_subnet_create_restarts_with_dhcp_disabled(self):
         payload = dict(subnet=dhcp.DictModel(
               dict(network_id=fake_network.id, enable_dhcp=False,
-                   cidr='99.99.99.0/24', ip_version=4)))
+                   cidr='99.99.99.0/24', ip_version=const.IP_VERSION_4)))
         self.cache.get_network_by_id.return_value = fake_network
         new_net = copy.deepcopy(fake_network)
         new_net.subnets.append(payload['subnet'])
@@ -1388,7 +1425,7 @@ class FakePort2(object):
 class FakeV4Subnet(object):
     def __init__(self):
         self.id = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
-        self.ip_version = 4
+        self.ip_version = const.IP_VERSION_4
         self.cidr = '192.168.0.0/24'
         self.gateway_ip = '192.168.0.1'
         self.enable_dhcp = True
@@ -1397,7 +1434,7 @@ class FakeV4Subnet(object):
 class FakeV6Subnet(object):
     def __init__(self):
         self.id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
-        self.ip_version = 6
+        self.ip_version = const.IP_VERSION_6
         self.cidr = '2001:db8:0:1::/64'
         self.gateway_ip = '2001:db8:0:1::1'
         self.enable_dhcp = True
@@ -1418,7 +1455,7 @@ class FakeV6SubnetOutsideGateway(FakeV6Subnet):
 class FakeV4SubnetNoGateway(object):
     def __init__(self):
         self.id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
-        self.ip_version = 4
+        self.ip_version = const.IP_VERSION_4
         self.cidr = '192.168.1.0/24'
         self.gateway_ip = None
         self.enable_dhcp = True
@@ -1427,7 +1464,7 @@ class FakeV4SubnetNoGateway(object):
 class FakeV6SubnetNoGateway(object):
     def __init__(self):
         self.id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
-        self.ip_version = 6
+        self.ip_version = const.IP_VERSION_6
         self.cidr = '2001:db8:1:0::/64'
         self.gateway_ip = None
         self.enable_dhcp = True

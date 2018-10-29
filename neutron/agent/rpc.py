@@ -18,9 +18,13 @@ import itertools
 
 import netaddr
 from neutron_lib.agent import topics
+from neutron_lib.api.definitions import portbindings_extended as pb_ext
 from neutron_lib.callbacks import events as callback_events
 from neutron_lib.callbacks import registry
+from neutron_lib.callbacks import resources as callback_resources
 from neutron_lib import constants
+from neutron_lib.plugins import utils
+from neutron_lib import rpc as lib_rpc
 from oslo_log import log as logging
 import oslo_messaging
 from oslo_utils import uuidutils
@@ -32,6 +36,7 @@ from neutron.common import rpc as n_rpc
 from neutron import objects
 
 LOG = logging.getLogger(__name__)
+BINDING_DEACTIVATE = 'binding_deactivate'
 
 
 def create_consumers(endpoints, prefix, topic_details, start_listening=True):
@@ -80,7 +85,7 @@ class PluginReportStateAPI(object):
     # agent向server发送report入口
     def report_state(self, context, agent_state, use_call=False):
         cctxt = self.client.prepare(
-            timeout=n_rpc.TRANSPORT.conf.rpc_response_timeout)
+            timeout=lib_rpc.TRANSPORT.conf.rpc_response_timeout)
         # add unique identifier to a report
         # that can be logged on server side.
         # This create visible correspondence between events on
@@ -202,15 +207,64 @@ class CacheBackedPluginApi(PluginApi):
         the payloads the handlers are expecting (an ID).
         """
         rtype = rtype.lower()  # all legacy handlers don't camelcase
-        is_delete = event == callback_events.AFTER_DELETE
-        suffix = 'delete' if is_delete else 'update'
-        method = "%s_%s" % (rtype, suffix)
+        method, host_with_activation, host_with_deactivation = (
+            self._get_method_host(rtype, event, **kwargs))
         if not hasattr(self._legacy_interface, method):
             # TODO(kevinbenton): once these notifications are stable, emit
             # a deprecation warning for legacy handlers
             return
-        payload = {rtype: {'id': resource_id}, '%s_id' % rtype: resource_id}
-        getattr(self._legacy_interface, method)(context, **payload)
+        # If there is a binding deactivation, we must also notify the
+        # corresponding activation
+        if method == BINDING_DEACTIVATE:
+            self._legacy_interface.binding_deactivate(
+                context, port_id=resource_id, host=host_with_deactivation)
+            self._legacy_interface.binding_activate(
+                context, port_id=resource_id, host=host_with_activation)
+        else:
+            payload = {rtype: {'id': resource_id},
+                       '%s_id' % rtype: resource_id}
+            getattr(self._legacy_interface, method)(context, **payload)
+
+    def _get_method_host(self, rtype, event, **kwargs):
+        """Constructs the name of method to be called in the legacy interface.
+
+        If the event received is a port update that contains a binding
+        activation where a previous binding is deactivated, the method name
+        is 'binding_deactivate' and the host where the binding has to be
+        deactivated is returned. Otherwise, the method name is constructed from
+        rtype and the event received and the host is None.
+        """
+        is_delete = event == callback_events.AFTER_DELETE
+        suffix = 'delete' if is_delete else 'update'
+        method = "%s_%s" % (rtype, suffix)
+        host_with_activation = None
+        host_with_deactivation = None
+        if is_delete or rtype != callback_resources.PORT:
+            return method, host_with_activation, host_with_deactivation
+
+        # A port update was received. Find out if it is a binding activation
+        # where a previous binding was deactivated
+        BINDINGS = pb_ext.COLLECTION_NAME
+        if BINDINGS in kwargs.get('changed_fields', set()):
+            existing_active_binding = (
+                utils.get_port_binding_by_status_and_host(
+                    getattr(kwargs['existing'], 'bindings', []),
+                    constants.ACTIVE))
+            updated_active_binding = (
+                utils.get_port_binding_by_status_and_host(
+                    getattr(kwargs['updated'], 'bindings', []),
+                    constants.ACTIVE))
+            if (existing_active_binding and updated_active_binding and
+                    existing_active_binding.host !=
+                    updated_active_binding.host):
+                if (utils.get_port_binding_by_status_and_host(
+                        getattr(kwargs['updated'], 'bindings', []),
+                        constants.INACTIVE,
+                        host=existing_active_binding.host)):
+                    method = BINDING_DEACTIVATE
+                    host_with_activation = updated_active_binding.host
+                    host_with_deactivation = existing_active_binding.host
+        return method, host_with_activation, host_with_deactivation
 
     def get_devices_details_list_and_failed_devices(self, context, devices,
                                                     agent_id, host=None):
@@ -241,6 +295,16 @@ class CacheBackedPluginApi(PluginApi):
         if not segment:
             LOG.debug("Device %s is not bound to any segment.", port_obj)
             return {'device': device}
+        binding = utils.get_port_binding_by_status_and_host(
+            port_obj.bindings, constants.ACTIVE, raise_if_not_found=True,
+            port_id=port_obj.id)
+        if (port_obj.device_owner.startswith(
+                constants.DEVICE_OWNER_COMPUTE_PREFIX) and
+                binding[pb_ext.HOST] != host):
+            LOG.debug("Device %s has no active binding in this host",
+                      port_obj)
+            return {'device': device,
+                    n_const.NO_ACTIVE_BINDING: True}
         #缓存中命中
         net = self.remote_resource_cache.get_resource_by_id(
             resources.NETWORK, port_obj.network_id)
@@ -268,7 +332,7 @@ class CacheBackedPluginApi(PluginApi):
                                              'port_security_enabled', True),
             'qos_policy_id': port_obj.qos_policy_id,
             'network_qos_policy_id': net_qos_policy_id,
-            'profile': port_obj.binding.profile,
+            'profile': binding.profile,
             'security_groups': list(port_obj.security_group_ids)
         }
         LOG.debug("Returning: %s", entry)

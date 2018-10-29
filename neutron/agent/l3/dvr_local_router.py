@@ -69,6 +69,12 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         if fip.get(lib_constants.DVR_SNAT_BOUND):
             return []
 
+        # For dvr_no_external node should not process any floating IP
+        # iptables rules.
+        if (self.agent_conf.agent_mode ==
+                lib_constants.L3_AGENT_MODE_DVR_NO_EXTERNAL):
+            return []
+
         fixed_ip = fip['fixed_ip_address']
         floating_ip = fip['floating_ip_address']
         rtr_2_fip_name = self.fip_ns.get_rtr_ext_device_name(self.router_id)
@@ -124,6 +130,12 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
             # the floating IP is intended for this host should
             # be done.
             return
+
+        # dvr_no_external host should not process any floating IP route rules.
+        if (self.agent_conf.agent_mode ==
+                lib_constants.L3_AGENT_MODE_DVR_NO_EXTERNAL):
+            return
+
         floating_ip = fip['floating_ip_address']
         fixed_ip = fip['fixed_ip_address']
         self._add_floating_ip_rule(floating_ip, fixed_ip)
@@ -252,8 +264,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                 arp_delete.add(arp_entry)
         self._pending_arp_set -= arp_delete
 
-    def _update_arp_entry(
-        self, ip, mac, subnet_id, operation, nud_state='permanent'):
+    def _update_arp_entry(self, ip, mac, subnet_id, operation):
         """Add or delete arp entry into router namespace for the subnet."""
         port = self._get_internal_port(subnet_id)
         # update arp entry only if the subnet is attached to the router
@@ -268,7 +279,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
             if device.exists():
                 #接口是存在的，按要求做arp的添加，删除。
                 if operation == 'add':
-                    device.neigh.add(ip, mac, nud_state=nud_state)
+                    device.neigh.add(ip, mac)
                 elif operation == 'delete':
                     device.neigh.delete(ip, mac)
                 return True
@@ -297,15 +308,13 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
 
         #下发这个subnet_id上所有port的arp信息（防arp flood)
         for p in subnet_ports:
-            nud_state = 'permanent' if p.get('device_owner') else 'reachable'
             if p['device_owner'] not in ignored_device_owners:
                 for fixed_ip in p['fixed_ips']:
                     self._update_arp_entry(fixed_ip['ip_address'],
                                            p['mac_address'],
                                            subnet_id,
         #下发原来暂时缓存的subnet_id的arp
-                                           'add',
-                                           nud_state=nud_state)
+                                           'add')
         self._process_arp_cache_for_internal_port(subnet_id)
 
     @staticmethod
@@ -568,6 +577,29 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
     def external_gateway_updated(self, ex_gw_port, interface_name):
         pass
 
+    def process_floating_ip_nat_rules(self):
+        """Configure NAT rules for the router's floating IPs.
+
+        Configures iptables rules for the floating ips of the given router
+        """
+        # Clear out all iptables rules for floating ips
+        self.iptables_manager.ipv4['nat'].clear_rules_by_tag('floating_ip')
+
+        floating_ips = self.get_floating_ips()
+        # Loop once to ensure that floating ips are configured.
+        for fip in floating_ips:
+            # If floating IP is snat_bound, then the iptables rule should
+            # not be installed to qrouter namespace, since the mixed snat
+            # namespace may already install it.
+            if fip.get(lib_constants.DVR_SNAT_BOUND):
+                continue
+            # Rebuild iptables rules for the floating ip.
+            for chain, rule in self.floating_forward_rules(fip):
+                self.iptables_manager.ipv4['nat'].add_rule(
+                    chain, rule, tag='floating_ip')
+
+        self.iptables_manager.apply()
+
     #对于dvr来讲，外部口gateway移除时，自身需要移除策略路由
     def external_gateway_removed(self, ex_gw_port, interface_name):
         # TODO(Carl) Should this be calling process_snat_dnat_for_fip?
@@ -645,7 +677,16 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                 self.connect_rtr_2_fip()
         super(DvrLocalRouter, self).process_external()
 
+    def _check_rtr_2_fip_connect(self):
+        """Checks if the rtr to fip connect exists, if not sets to false."""
+        fip_ns_name = self.fip_ns.get_name()
+        if ip_lib.network_namespace_exists(fip_ns_name):
+            fip_2_rtr_name = self.fip_ns.get_int_device_name(self.router_id)
+            if not ip_lib.device_exists(fip_2_rtr_name, namespace=fip_ns_name):
+                self.rtr_fip_connect = False
+
     def connect_rtr_2_fip(self):
+        self._check_rtr_2_fip_connect()
         if self.fip_ns.agent_gateway_port and not self.rtr_fip_connect:
             ex_gw_port = self.get_ex_gw_port()
             self.fip_ns.create_rtr_2_fip_link(self)

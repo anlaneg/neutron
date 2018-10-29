@@ -239,30 +239,9 @@ class MetadataDriver(object):
         pm = cls._get_metadata_proxy_process_manager(uuid, conf,
                                                      ns_name=ns_name,
                                                      callback=callback)
-        # TODO(dalvarez): Remove in Q cycle. This will kill running instances
-        # of old ns-metadata-proxy Python version in order to be replaced by
-        # haproxy. This will help with upgrading and shall be removed in next
-        # cycle.
-        cls._migrate_python_ns_metadata_proxy_if_needed(pm)
-
         pm.enable()
         monitor.register(uuid, METADATA_SERVICE_NAME, pm)
         cls.monitors[router_id] = pm
-
-    @staticmethod
-    def _migrate_python_ns_metadata_proxy_if_needed(pm):
-        """Kill running Python version of ns-metadata-proxy.
-
-        This function will detect if the current metadata proxy process is
-        running the old Python version and kill it so that the new haproxy
-        version is spawned instead.
-        """
-        # Read cmdline to a local var to avoid reading twice from /proc file
-        cmdline = pm.cmdline
-        if cmdline and 'haproxy' not in cmdline:
-            LOG.debug("Migrating old instance of python ns-metadata proxy to "
-                      "new one based on haproxy (%s)", cmdline)
-            pm.disable()
 
     @classmethod
     def destroy_monitored_metadata_proxy(cls, monitor, uuid, conf, ns_name):
@@ -320,11 +299,11 @@ def after_router_updated(resource, event, l3_agent, **kwargs):
             router_id=router.router_id)
 
 
-def before_router_removed(resource, event, l3_agent, **kwargs):
-    router = kwargs['router']
+def before_router_removed(resource, event, l3_agent, payload=None):
+    router = payload.latest_state
     proxy = l3_agent.metadata_driver
 
     proxy.destroy_monitored_metadata_proxy(l3_agent.process_monitor,
-                                          router.router['id'],
-                                          l3_agent.conf,
-                                          router.ns_name)
+                                           router.router['id'],
+                                           l3_agent.conf,
+                                           router.ns_name)

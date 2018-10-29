@@ -20,11 +20,14 @@ from eventlet import greenthread
 from neutron_lib.agent import constants as agent_consts
 from neutron_lib.api import converters
 from neutron_lib.api.definitions import agent as agent_apidef
+from neutron_lib.api import extensions
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import context
+from neutron_lib.db import api as db_api
+from neutron_lib.db import utils as db_utils
 from neutron_lib.exceptions import agent as agent_exc
 from neutron_lib.exceptions import availability_zone as az_exc
 from neutron_lib.plugins import directory
@@ -34,15 +37,15 @@ import oslo_messaging
 from oslo_serialization import jsonutils
 from oslo_utils import importutils
 from oslo_utils import timeutils
+import six
 
 from neutron.agent.common import utils
 from neutron.api.rpc.callbacks import version_manager
 from neutron.common import constants as n_const
 from neutron.conf.agent.database import agents_db
 from neutron.db import _model_query as model_query
-from neutron.db import _utils as db_utils
-from neutron.db import api as db_api
 from neutron.db.models import agent as agent_model
+from neutron.extensions import _availability_zone_filter_lib as azfil_ext
 from neutron.extensions import agent as ext_agent
 from neutron.extensions import availability_zone as az_ext
 from neutron.objects import agent as agent_obj
@@ -57,6 +60,22 @@ agents_db.register_db_agents_opts()
 # version_manager callback
 DOWNTIME_VERSIONS_RATIO = 2
 
+RESOURCE_AGENT_TYPE_MAP = {
+    'network': constants.AGENT_TYPE_DHCP,
+    'router': constants.AGENT_TYPE_L3,
+}
+
+AZ_ATTRIBUTE_MAP = {
+    'name': {
+        'agent_key': 'availability_zone',
+        'convert_to': lambda x: x,
+    },
+    'resource': {
+        'agent_key': 'agent_type',
+        'convert_to': lambda x: RESOURCE_AGENT_TYPE_MAP.get(x, x),
+    }
+}
+
 
 def get_availability_zones_by_agent_type(context, agent_type,
                                          availability_zones):
@@ -70,10 +89,27 @@ def get_availability_zones_by_agent_type(context, agent_type,
 class AgentAvailabilityZoneMixin(az_ext.AvailabilityZonePluginBase):
     """Mixin class to add availability_zone extension to AgentDbMixin."""
 
+    _is_az_filter_supported = None
+
+    @property
+    def is_az_filter_supported(self):
+        supported = self._is_az_filter_supported
+        if supported is None:
+            supported = False
+            for plugin in directory.get_plugins().values():
+                if extensions.is_extension_supported(plugin, azfil_ext.ALIAS):
+                    supported = True
+                    break
+        self._is_az_filter_supported = supported
+
+        return self._is_az_filter_supported
+
     def _list_availability_zones(self, context, filters=None):
         result = {}
         filters = filters or {}
-        agents = agent_obj.Agent.get_objects(context, filters)
+        if self._is_az_filter_supported or self.is_az_filter_supported:
+            filters = self._adjust_az_filters(filters)
+        agents = agent_obj.Agent.get_objects(context, **filters)
         for agent in agents:
             if not agent.availability_zone:
                 continue
@@ -84,21 +120,46 @@ class AgentAvailabilityZoneMixin(az_ext.AvailabilityZonePluginBase):
             else:
                 continue
             key = (agent.availability_zone, resource)
-            result[key] = agent.admin_state_up or result.get(key, False)
+            value = agent.admin_state_up or result.get(key, False)
+            result[key] = 'available' if value else 'unavailable'
         return result
+
+    def _adjust_az_filters(self, filters):
+        # The intersect of sets gets us applicable filter keys (others ignored)
+        common_keys = six.viewkeys(filters) & six.viewkeys(AZ_ATTRIBUTE_MAP)
+        for key in common_keys:
+            filter_key = AZ_ATTRIBUTE_MAP[key]['agent_key']
+            filter_vals = filters.pop(key)
+            if filter_vals:
+                filter_vals = [AZ_ATTRIBUTE_MAP[key]['convert_to'](v)
+                               for v in filter_vals]
+            filters.setdefault(filter_key, [])
+            filters[filter_key] += filter_vals
+        return filters
 
     @db_api.retry_if_session_inactive()
     def get_availability_zones(self, context, filters=None, fields=None,
                                sorts=None, limit=None, marker=None,
                                page_reverse=False):
         """Return a list of availability zones."""
-        # NOTE(hichihara): 'tenant_id' is dummy for policy check.
-        # it is not visible via API.
-        return [{'state': 'available' if v else 'unavailable',
-                 'name': k[0], 'resource': k[1],
-                 'tenant_id': context.tenant_id}
-                for k, v in self._list_availability_zones(
-                                           context, filters).items()]
+        if self._is_az_filter_supported or self.is_az_filter_supported:
+            filter_states = filters.pop('state', [])
+            # NOTE(hichihara): 'tenant_id' is dummy for policy check.
+            # it is not visible via API.
+            return [{'state': v,
+                     'name': k[0], 'resource': k[1],
+                     'tenant_id': context.tenant_id}
+                    for k, v in self._list_availability_zones(
+                                               context, filters).items()
+                    if not filter_states or v in filter_states]
+        else:
+            # NOTE(hichihara): 'tenant_id' is dummy for policy check.
+            # it is not visible via API.
+            return [{'state': v,
+                     'name': k[0], 'resource': k[1],
+                     'tenant_id': context.tenant_id}
+                    for k, v in self._list_availability_zones(
+                                               context, filters).items()]
 
     @db_api.retry_if_session_inactive()
     def validate_availability_zones(self, context, resource_type,
@@ -205,8 +266,9 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
     @db_api.retry_if_session_inactive()
     def delete_agent(self, context, id):
         agent = self._get_agent(context, id)
-        registry.notify(resources.AGENT, events.BEFORE_DELETE, self,
-                        context=context, agent=agent)
+        registry.publish(resources.AGENT, events.BEFORE_DELETE, self,
+                         payload=events.DBEventPayload(
+                             context, states=(agent,), resource_id=id))
         agent.delete()
 
     @db_api.retry_if_session_inactive()
@@ -365,6 +427,8 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
                 status = agent_consts.AGENT_NEW
             greenthread.sleep(0)
 
+        agent_state['agent_status'] = status
+        agent_state['admin_state_up'] = agent.admin_state_up
         #触发agent after update 或者 after create事件
         registry.notify(resources.AGENT, event_type, self, context=context,
                         host=agent_state['host'], plugin=self,

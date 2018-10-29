@@ -19,7 +19,9 @@ import time
 
 from neutron_lib import constants
 from neutron_lib import context as ncontext
+from neutron_lib import exceptions as n_exc
 from neutron_lib.exceptions import agent as agent_exc
+from neutron_lib.exceptions import dhcpagentscheduler as das_exc
 from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging
@@ -324,7 +326,7 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
                                                         binding.dhcp_agent_id,
                                                         binding.network_id,
                                                         notify=False)
-                except dhcpagentscheduler.NetworkNotHostedByDhcpAgent:
+                except das_exc.NetworkNotHostedByDhcpAgent:
                     # measures against concurrent operation
                     LOG.debug("Network %(net)s already removed from DHCP "
                               "agent %(agent)s",
@@ -374,12 +376,12 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
             agent_db = self._get_agent(context, id)
             if (agent_db['agent_type'] != constants.AGENT_TYPE_DHCP or
                     not services_available(agent_db['admin_state_up'])):
-                raise dhcpagentscheduler.InvalidDHCPAgent(id=id)
+                raise das_exc.InvalidDHCPAgent(id=id)
             dhcp_agents = self.get_dhcp_agents_hosting_networks(
                 context, [network_id])
             for dhcp_agent in dhcp_agents:
                 if id == dhcp_agent.id:
-                    raise dhcpagentscheduler.NetworkHostedByDHCPAgent(
+                    raise das_exc.NetworkHostedByDHCPAgent(
                         network_id=network_id, agent_id=id)
             network.NetworkDhcpAgentBinding(context, dhcp_agent_id=id,
                  network_id=network_id).create()
@@ -394,7 +396,7 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
         binding_obj = network.NetworkDhcpAgentBinding.get_object(
             context, network_id=network_id, dhcp_agent_id=id)
         if not binding_obj:
-            raise dhcpagentscheduler.NetworkNotHostedByDhcpAgent(
+            raise das_exc.NetworkNotHostedByDhcpAgent(
                 network_id=network_id, agent_id=id)
 
         # reserve the port, so the ip is reused on a subsequent add
@@ -407,7 +409,11 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
         # update_port passing and another failing
         for port in ports:
             port['device_id'] = constants.DEVICE_ID_RESERVED_DHCP_PORT
-            self.update_port(context, port['id'], dict(port=port))
+            try:
+                self.update_port(context, port['id'], dict(port=port))
+            except n_exc.PortNotFound:
+                LOG.debug("DHCP port %s has been deleted concurrently",
+                          port['id'])
         binding_obj.delete()
 
         if not notify:

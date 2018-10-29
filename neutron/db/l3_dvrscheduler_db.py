@@ -19,6 +19,7 @@ from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as n_const
+from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from oslo_log import log as logging
@@ -28,6 +29,7 @@ from neutron.common import utils as n_utils
 
 from neutron.db import agentschedulers_db
 from neutron.db import l3_agentschedulers_db as l3agent_sch_db
+from neutron.db import l3_dvr_db
 from neutron.db import models_v2
 from neutron.objects import l3agent as rb_obj
 from neutron.plugins.ml2 import db as ml2_db
@@ -284,7 +286,7 @@ class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
         query = context.session.query(
             models_v2.IPAllocation.subnet_id).distinct()
         query = query.join(models_v2.IPAllocation.port)
-        query = query.join(models_v2.Port.port_binding)
+        query = query.join(models_v2.Port.port_bindings)
         query = query.filter(ml2_models.PortBinding.host == host)
         owner_filter = or_(
             models_v2.Port.device_owner.startswith(
@@ -352,6 +354,13 @@ class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
         if not subnet_ids:
             return False
 
+        # The port binding profile filter for host performs a "contains"
+        # operation. This produces a LIKE expression targeting a sub-string
+        # match: column LIKE '%' || <host> || '%'.
+        # Add quotes to force an exact match of the host name in the port
+        # binding profile dictionary.
+        profile_host = "\"%s\"" % host
+
         Binding = ml2_models.PortBinding
         IPAllocation = models_v2.IPAllocation
         Port = models_v2.Port
@@ -369,7 +378,7 @@ class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
         query = query.filter(device_filter)
         host_filter = or_(
             ml2_models.PortBinding.host == host,
-            ml2_models.PortBinding.profile.contains(host))
+            ml2_models.PortBinding.profile.contains(profile_host))
         query = query.filter(host_filter)
         return query.first() is not None
 
@@ -424,6 +433,15 @@ def _notify_l3_agent_port_update(resource, event, trigger, **kwargs):
     new_port = kwargs.get('port')
     original_port = kwargs.get('original_port')
 
+    is_fixed_ips_changed = n_utils.port_ip_changed(new_port, original_port)
+
+    if (original_port['device_owner'] in
+            [n_const.DEVICE_OWNER_HA_REPLICATED_INT,
+             n_const.DEVICE_OWNER_ROUTER_SNAT,
+             n_const.DEVICE_OWNER_ROUTER_GW] and
+            not is_fixed_ips_changed):
+        return
+
     if new_port and original_port:
         l3plugin = directory.get_plugin(plugin_constants.L3)
         context = kwargs['context']
@@ -446,8 +464,20 @@ def _notify_l3_agent_port_update(resource, event, trigger, **kwargs):
             fips = l3plugin._get_floatingips_by_port_id(
                 context, port_id=original_port['id'])
             fip = fips[0] if fips else None
-            if fip and not (removed_routers and
-                            fip['router_id'] in removed_routers):
+
+            def _should_notify_on_fip_update():
+                if not fip:
+                    return False
+                for info in removed_routers:
+                    if info['router_id'] == fip['router_id']:
+                        return False
+                try:
+                    router = l3plugin._get_router(context, fip['router_id'])
+                except l3_exc.RouterNotFound:
+                    return False
+                return l3_dvr_db.is_distributed_router(router)
+
+            if _should_notify_on_fip_update():
                 l3plugin.l3_rpc_notifier.routers_updated_on_host(
                     context, [fip['router_id']],
                     original_port[portbindings.HOST_ID])
@@ -500,10 +530,6 @@ def _notify_l3_agent_port_update(resource, event, trigger, **kwargs):
                         l3plugin, context, original_port, address_pair)
                 return
 
-        is_fixed_ips_changed = (
-            'fixed_ips' in new_port and
-            'fixed_ips' in original_port and
-            new_port['fixed_ips'] != original_port['fixed_ips'])
         if kwargs.get('mac_address_updated') or is_fixed_ips_changed:
             l3plugin.update_arp_entry_for_dvr_service_port(
                 context, new_port)

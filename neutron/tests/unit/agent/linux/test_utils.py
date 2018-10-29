@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import signal
 import socket
 
@@ -23,6 +24,7 @@ from oslo_config import cfg
 import oslo_i18n
 
 from neutron.agent.linux import utils
+from neutron.common import exceptions as n_exc
 from neutron.tests import base
 from neutron.tests.common import helpers
 
@@ -145,7 +147,7 @@ class AgentUtilsExecuteTest(base.BaseTestCase):
         self.mock_popen.return_value = ('', '')
         self.process.return_value.returncode = 1
         with mock.patch.object(utils, 'LOG') as log:
-            self.assertRaises(utils.ProcessExecutionError, utils.execute,
+            self.assertRaises(n_exc.ProcessExecutionError, utils.execute,
                               ['ls'], log_fail_as_error=False)
             self.assertFalse(log.error.called)
 
@@ -199,7 +201,7 @@ class TestFindParentPid(base.BaseTestCase):
         self.m_execute = mock.patch.object(utils, 'execute').start()
 
     def test_returns_none_for_no_valid_pid(self):
-        self.m_execute.side_effect = utils.ProcessExecutionError('',
+        self.m_execute.side_effect = n_exc.ProcessExecutionError('',
                                                                  returncode=1)
         self.assertIsNone(utils.find_parent_pid(-1))
 
@@ -208,9 +210,9 @@ class TestFindParentPid(base.BaseTestCase):
         self.assertEqual(utils.find_parent_pid(-1), '123')
 
     def test_raises_exception_returncode_0(self):
-        with testtools.ExpectedException(utils.ProcessExecutionError):
+        with testtools.ExpectedException(n_exc.ProcessExecutionError):
             self.m_execute.side_effect = \
-                utils.ProcessExecutionError('', returncode=0)
+                n_exc.ProcessExecutionError('', returncode=0)
             utils.find_parent_pid(-1)
 
     def test_raises_unknown_exception(self):
@@ -263,7 +265,7 @@ class TestKillProcess(base.BaseTestCase):
     def _test_kill_process(self, pid, raise_exception=False,
                            kill_signal=signal.SIGKILL, pid_killed=True):
         if raise_exception:
-            exc = utils.ProcessExecutionError('', returncode=0)
+            exc = n_exc.ProcessExecutionError('', returncode=0)
         else:
             exc = None
         with mock.patch.object(utils, 'execute',
@@ -282,7 +284,7 @@ class TestKillProcess(base.BaseTestCase):
         self._test_kill_process('1', raise_exception=True)
 
     def test_kill_process_raises_exception_for_execute_exception(self):
-        with testtools.ExpectedException(utils.ProcessExecutionError):
+        with testtools.ExpectedException(n_exc.ProcessExecutionError):
             # Simulate that the process is running after trying to kill due to
             # any reason such as, for example, Permission denied
             self._test_kill_process('1', raise_exception=True,
@@ -296,7 +298,7 @@ class TestFindChildPids(base.BaseTestCase):
 
     def test_returns_empty_list_for_exit_code_1(self):
         with mock.patch.object(utils, 'execute',
-                               side_effect=utils.ProcessExecutionError(
+                               side_effect=n_exc.ProcessExecutionError(
                                    '', returncode=1)):
             self.assertEqual([], utils.find_child_pids(-1))
 
@@ -483,14 +485,37 @@ class TestUnixDomainHttpConnection(base.BaseTestCase):
 
 
 class TestUnixDomainHttpProtocol(base.BaseTestCase):
+    def setUp(self):
+        super(TestUnixDomainHttpProtocol, self).setUp()
+        self.ewhi = mock.patch('eventlet.wsgi.HttpProtocol.__init__').start()
+
     def test_init_empty_client(self):
         for addr in ('', b''):
-            u = utils.UnixDomainHttpProtocol(mock.Mock(), addr, mock.Mock())
-            self.assertEqual(u.client_address, ('<local>', 0))
+            utils.UnixDomainHttpProtocol(mock.Mock(), addr, mock.Mock())
+            self.ewhi.assert_called_once_with(mock.ANY, mock.ANY,
+                                              ('<local>', 0), mock.ANY)
+            self.ewhi.reset_mock()
 
     def test_init_with_client(self):
-        u = utils.UnixDomainHttpProtocol(mock.Mock(), 'foo', mock.Mock())
-        self.assertEqual(u.client_address, 'foo')
+        utils.UnixDomainHttpProtocol(mock.Mock(), 'foo', mock.Mock())
+        self.ewhi.assert_called_once_with(mock.ANY, mock.ANY, 'foo', mock.ANY)
+
+    def test_init_new_style_empty_client(self):
+        conn_state = ['', mock.Mock(), mock.Mock()]
+        # have to make a copy since the init will modify what we pass
+        csc = copy.copy(conn_state)
+        csc[0] = ('<local>', 0)
+        utils.UnixDomainHttpProtocol(conn_state, mock.Mock())
+        self.ewhi.assert_called_once_with(mock.ANY, csc, mock.ANY)
+
+    def test_init_new_style_client(self):
+        conn_state = ['foo', mock.Mock(), mock.Mock()]
+        utils.UnixDomainHttpProtocol(conn_state, mock.Mock())
+        self.ewhi.assert_called_once_with(mock.ANY, conn_state, mock.ANY)
+
+    def test_init_unknown_client(self):
+        utils.UnixDomainHttpProtocol('foo')
+        self.ewhi.assert_called_once_with(mock.ANY, 'foo')
 
 
 class TestUnixDomainWSGIServer(base.BaseTestCase):

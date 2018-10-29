@@ -67,7 +67,7 @@ class TestIsAutoAddressSubnet(base.BaseTestCase):
         self.subnet = {
             'cidr': '2001:200::/64',
             'gateway_ip': '2001:200::1',
-            'ip_version': 6,
+            'ip_version': constants.IP_VERSION_6,
             'ipv6_address_mode': None,
             'ipv6_ra_mode': None
         }
@@ -113,3 +113,28 @@ class TestIsEui64Address(base.BaseTestCase):
                'fffe::0cad:12fe:fe44:5566',
                'ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff')
         self._test_eui_64(ips, False)
+
+
+class TestValidIpv6URL(base.BaseTestCase):
+
+    def test_valid_ipv6_url(self):
+        host = "::1"
+        port = 443
+        self.assertEqual("[::1]:443", ipv6_utils.valid_ipv6_url(host, port))
+
+    def test_invalid_ipv6_url(self):
+        host = "::1"
+        port = 443
+        self.assertNotEqual("::1:443", ipv6_utils.valid_ipv6_url(host, port))
+
+    def test_valid_ipv4_url(self):
+        host = "192.168.1.2"
+        port = 443
+        self.assertEqual("192.168.1.2:443",
+                         ipv6_utils.valid_ipv6_url(host, port))
+
+    def test_valid_hostname_url(self):
+        host = "controller"
+        port = 443
+        self.assertEqual("controller:443",
+                         ipv6_utils.valid_ipv6_url(host, port))

@@ -30,10 +30,45 @@ Class ``SGPortMap`` was created to keep state consistent, and maps from ports
 to security groups and vice-versa. Every port and security group is represented
 by its own object encapsulating the necessary information.
 
-Note: Open vSwitch firewall driver uses register 5 for marking flow
-related to port and register 6 which defines network and is used for conntrack
-zones.
+.. note::
 
+  Open vSwitch firewall driver uses ``register 5`` for identifying the port
+  related to the flow and ``register 6`` which identifies the network, used
+  in particular for conntrack zones.
+
+Ingress/Egress Terminology
+--------------------------
+
+In this document, the terms ``ingress`` and ``egress`` are relative to
+a VM instance connected to OVS (or a netns connected to OVS):
+
+* ``ingress`` applies to traffic that will ultimately go into a VM (or into
+  a netns), assuming it is not dropped
+
+* ``egress`` applies to traffic coming from a VM (or from a netns)
+
+::
+
+                    .                                     .
+             _______|\                             _______|\
+            \ ingress \                           \ ingress \
+            /_______  /                           /_______  /
+                    |/        .-----------------.         |/
+                    '         |                 |         '
+                              |                 |-----------( netns interface )
+  ( non-VM, non-netns     )---|       OVS       |
+  ( interface: phy, patch )   |                 |------------( VM interface )
+              .               |                 |   .
+             /|________       '-----------------'  /|________
+            /   egress /                          /   egress /
+            \  ________\                          \  ________\
+             \|                                    \|
+              '                                     '
+
+Note that these terms are used differently in OVS code and documentation, where
+they are relative to the OVS bridge, with ``ingress`` applying to traffic as
+it comes into the OVS bridge, and ``egress`` applying to traffic as it leaves
+the OVS bridge.
 
 Firewall API calls
 ------------------
@@ -139,39 +174,39 @@ Rules example with explanation:
 -------------------------------
 
 The following example presents two ports on the same host. They have different
-security groups and there is icmp traffic allowed from first security group to
+security groups and there is ICMP traffic allowed from first security group to
 the second security group. Ports have following attributes:
 
 ::
 
  Port 1
    - plugged to the port 1 in OVS bridge
-   - ip address: 192.168.0.1
-   - mac address: fa:16:3e:a4:22:10
-   - security group 1: can send icmp packets out
+   - IP address: 192.168.0.1
+   - MAC address: fa:16:3e:a4:22:10
+   - security group 1: can send ICMP packets out
    - allowed address pair: 10.0.0.1/32, fa:16:3e:8c:84:13
 
  Port 2
    - plugged to the port 2 in OVS bridge
-   - ip address: 192.168.0.2
-   - mac address: fa:16:3e:24:57:c7
+   - IP address: 192.168.0.2
+   - MAC address: fa:16:3e:24:57:c7
    - security group 2:
-      - can receive icmp packets from security group 1
-      - can receive tcp packets from security group 1
-      - can receive tcp packets to port 80 from security group 2
-      - can receive ip packets from security group 3
+      - can receive ICMP packets from security group 1
+      - can receive TCP packets from security group 1
+      - can receive TCP packets to port 80 from security group 2
+      - can receive IP packets from security group 3
    - allowed address pair: 10.1.0.0/24, fa:16:3e:8c:84:14
 
-``table 0`` contains a low priority rule to continue packets processing in
-``table 60`` aka TRANSIENT table. ``table 0`` is left for use to other
+|table_0| contains a low priority rule to continue packets processing in
+|table_60| aka TRANSIENT table. |table_0| is left for use to other
 features that take precedence over firewall, e.g. DVR. The only requirement is
-that after feature is done with its processing, it needs to pass packets for
-processing to the TRANSIENT table. This TRANSIENT table distinguishes the
-traffic to ingress or egress and loads to ``register 5`` value identifying port
-traffic.
-Egress flow is determined by switch port number and ingress flow is determined
-by destination mac address. ``register 6`` contains port tag to isolate
-connections into separate conntrack zones.
+that after such a feature is done with its processing, it needs to pass packets
+for processing to the TRANSIENT table. This TRANSIENT table distinguishes the
+ingress traffic from the egress traffic and loads into ``register 5`` a value
+identifying the port (for egress traffic based on the switch port number, and
+for ingress traffic based on the network id and destination MAC address);
+``register 6`` contains a value identifying the network (which is also the
+OVSDB port tag) to isolate connections into separate conntrack zones.
 
 ::
 
@@ -183,22 +218,24 @@ connections into separate conntrack zones.
  table=60,  priority=90,dl_vlan=0x284,dl_dst=fa:16:3e:8c:84:14 actions=load:0x2->NXM_NX_REG5[],load:0x284->NXM_NX_REG6[],resubmit(,81)
  table=60,  priority=0 actions=NORMAL
 
-Following ``table 71`` implements arp spoofing protection, ip spoofing
-protection, allows traffic for obtaining ip addresses (dhcp, dhcpv6, slaac,
-ndp) for egress traffic and allows arp replies. Also identifies not tracked
-connections which are processed later with information obtained from
+The following table, |table_71| implements ARP spoofing protection, IP spoofing
+protection, allows traffic related to IP address allocations (dhcp, dhcpv6,
+slaac, ndp) for egress traffic, and allows ARP replies. Also identifies not
+tracked connections which are processed later with information obtained from
 conntrack. Notice the ``zone=NXM_NX_REG6[0..15]`` in ``actions`` when obtaining
 information from conntrack. It says every port has its own conntrack zone
-defined by value in ``register 6``. It's there to avoid accepting established
-traffic that belongs to different port with same conntrack parameters.
+defined by the value in ``register 6`` (OVSDB port tag identifying the network).
+It's there to avoid accepting established traffic that belongs to different
+port with same conntrack parameters.
 
-The very first rule in ``table 71`` is a rule removing conntrack information
+The very first rule in |table_71| is a rule removing conntrack information
 for a use-case where Neutron logical port is placed directly to the hypervisor.
 In such case kernel does conntrack lookup before packet reaches Open vSwitch
 bridge. Tracked packets are sent back for processing by the same table after
 conntrack information is cleared.
 
 ::
+
  table=71, priority=110,ct_state=+trk actions=ct_clear,resubmit(,71)
 
 Rules below allow ICMPv6 traffic for multicast listeners, neighbour
@@ -206,25 +243,25 @@ solicitation and neighbour advertisement.
 
 ::
 
- table=71, priority=95,icmp6,reg5=0x1,in_port=1,icmp_type=130 actions=resubmit(,91)
- table=71, priority=95,icmp6,reg5=0x1,in_port=1,icmp_type=131 actions=resubmit(,91)
- table=71, priority=95,icmp6,reg5=0x1,in_port=1,icmp_type=132 actions=resubmit(,91)
- table=71, priority=95,icmp6,reg5=0x1,in_port=1,icmp_type=135 actions=resubmit(,91)
- table=71, priority=95,icmp6,reg5=0x1,in_port=1,icmp_type=136 actions=resubmit(,91)
- table=71, priority=95,icmp6,reg5=0x2,in_port=2,icmp_type=130 actions=resubmit(,91)
- table=71, priority=95,icmp6,reg5=0x2,in_port=2,icmp_type=131 actions=resubmit(,91)
- table=71, priority=95,icmp6,reg5=0x2,in_port=2,icmp_type=132 actions=resubmit(,91)
- table=71, priority=95,icmp6,reg5=0x2,in_port=2,icmp_type=135 actions=resubmit(,91)
- table=71, priority=95,icmp6,reg5=0x2,in_port=2,icmp_type=136 actions=resubmit(,91)
+ table=71, priority=95,icmp6,reg5=0x1,in_port=1,icmp_type=130 actions=resubmit(,94)
+ table=71, priority=95,icmp6,reg5=0x1,in_port=1,icmp_type=131 actions=resubmit(,94)
+ table=71, priority=95,icmp6,reg5=0x1,in_port=1,icmp_type=132 actions=resubmit(,94)
+ table=71, priority=95,icmp6,reg5=0x1,in_port=1,icmp_type=135 actions=resubmit(,94)
+ table=71, priority=95,icmp6,reg5=0x1,in_port=1,icmp_type=136 actions=resubmit(,94)
+ table=71, priority=95,icmp6,reg5=0x2,in_port=2,icmp_type=130 actions=resubmit(,94)
+ table=71, priority=95,icmp6,reg5=0x2,in_port=2,icmp_type=131 actions=resubmit(,94)
+ table=71, priority=95,icmp6,reg5=0x2,in_port=2,icmp_type=132 actions=resubmit(,94)
+ table=71, priority=95,icmp6,reg5=0x2,in_port=2,icmp_type=135 actions=resubmit(,94)
+ table=71, priority=95,icmp6,reg5=0x2,in_port=2,icmp_type=136 actions=resubmit(,94)
 
-Following rules implement arp spoofing protection
+Following rules implement ARP spoofing protection
 
 ::
 
- table=71, priority=95,arp,reg5=0x1,in_port=1,dl_src=fa:16:3e:a4:22:10,arp_spa=192.168.0.1 actions=resubmit(,91)
- table=71, priority=95,arp,reg5=0x1,in_port=1,dl_src=fa:16:3e:8c:84:13,arp_spa=10.0.0.1 actions=resubmit(,91)
- table=71, priority=95,arp,reg5=0x2,in_port=2,dl_src=fa:16:3e:24:57:c7,arp_spa=192.168.0.2 actions=resubmit(,91)
- table=71, priority=95,arp,reg5=0x2,in_port=2,dl_src=fa:16:3e:8c:84:14,arp_spa=10.1.0.0/24 actions=resubmit(,91)
+ table=71, priority=95,arp,reg5=0x1,in_port=1,dl_src=fa:16:3e:a4:22:10,arp_spa=192.168.0.1 actions=resubmit(,94)
+ table=71, priority=95,arp,reg5=0x1,in_port=1,dl_src=fa:16:3e:8c:84:13,arp_spa=10.0.0.1 actions=resubmit(,94)
+ table=71, priority=95,arp,reg5=0x2,in_port=2,dl_src=fa:16:3e:24:57:c7,arp_spa=192.168.0.2 actions=resubmit(,94)
+ table=71, priority=95,arp,reg5=0x2,in_port=2,dl_src=fa:16:3e:8c:84:14,arp_spa=10.1.0.0/24 actions=resubmit(,94)
 
 DHCP and DHCPv6 traffic is allowed to instance but DHCP servers are blocked on
 instances.
@@ -240,7 +277,7 @@ instances.
  table=71, priority=70,udp,reg5=0x2,in_port=2,tp_src=67,tp_dst=68 actions=resubmit(,93)
  table=71, priority=70,udp6,reg5=0x2,in_port=2,tp_src=547,tp_dst=546 actions=resubmit(,93)
 
-Flowing rules obtain conntrack information for valid ip and mac address
+Flowing rules obtain conntrack information for valid IP and MAC address
 combinations. All other packets are dropped.
 
 ::
@@ -256,14 +293,14 @@ combinations. All other packets are dropped.
  table=71, priority=0 actions=drop
 
 
-``table 72`` accepts only established or related connections, and implements
-rules defined by the security group. As this egress connection might also be an
+|table_72| accepts only established or related connections, and implements
+rules defined by security groups. As this egress connection might also be an
 ingress connection for some other port, it's not switched yet but eventually
-processed by ingress pipeline.
+processed by the ingress pipeline.
 
-All established or new connections defined by security group rule are
+All established or new connections defined by security group rules are
 ``accepted``, which will be explained later. All invalid packets are dropped.
-In case below we allow all icmp egress traffic.
+In the case below we allow all ICMP egress traffic.
 
 ::
 
@@ -272,10 +309,10 @@ In case below we allow all icmp egress traffic.
  table=72, priority=50,ct_state=+inv+trk actions=resubmit(,93)
 
 
-Important on the flows below is the ``ct_mark=0x1``. Such value have flows that
-were marked as not existing anymore by rule introduced later. Those are
-typically connections that were allowed by some security group rule and the
-rule was removed.
+Important on the flows below is the ``ct_mark=0x1``. Flows that
+were marked as not existing anymore by rule introduced later will value this
+value. Those are typically connections that were allowed by some security group
+rule and the rule was removed.
 
 ::
 
@@ -287,12 +324,12 @@ allowed.
 
 ::
 
- table=72, priority=50,ct_state=+est-rel+rpl,ct_zone=644,ct_mark=0,reg5=0x1 actions=resubmit(,91)
- table=72, priority=50,ct_state=+est-rel+rpl,ct_zone=644,ct_mark=0,reg5=0x2 actions=resubmit(,91)
- table=72, priority=50,ct_state=-new-est+rel-inv,ct_zone=644,ct_mark=0,reg5=0x1 actions=resubmit(,91)
- table=72, priority=50,ct_state=-new-est+rel-inv,ct_zone=644,ct_mark=0,reg5=0x2 actions=resubmit(,91)
+ table=72, priority=50,ct_state=+est-rel+rpl,ct_zone=644,ct_mark=0,reg5=0x1 actions=resubmit(,94)
+ table=72, priority=50,ct_state=+est-rel+rpl,ct_zone=644,ct_mark=0,reg5=0x2 actions=resubmit(,94)
+ table=72, priority=50,ct_state=-new-est+rel-inv,ct_zone=644,ct_mark=0,reg5=0x1 actions=resubmit(,94)
+ table=72, priority=50,ct_state=-new-est+rel-inv,ct_zone=644,ct_mark=0,reg5=0x2 actions=resubmit(,94)
 
-In the following flows are marked established connections that weren't matched
+In the following, flows are marked established connections that weren't matched
 in the previous flows, which means they don't have accepting security group
 rule anymore.
 
@@ -304,9 +341,10 @@ rule anymore.
  table=72, priority=40,ct_state=+est,reg5=0x2 actions=ct(commit,zone=NXM_NX_REG6[0..15],exec(load:0x1->NXM_NX_CT_MARK[]))
  table=72, priority=0 actions=drop
 
-In following ``table 73`` are all detected ingress connections sent to ingress
+In following |table_73| are all detected ingress connections sent to ingress
 pipeline. Since the connection was already accepted by egress pipeline, all
-remaining egress connections are sent to normal switching.
+remaining egress connections are sent to normal flood'n'learn switching
+in |table_94|.
 
 ::
 
@@ -316,33 +354,33 @@ remaining egress connections are sent to normal switching.
  table=73, priority=100,reg6=0x284,dl_dst=fa:16:3e:8c:84:14 actions=load:0x2->NXM_NX_REG5[],resubmit(,81)
  table=73, priority=90,ct_state=+new-est,reg5=0x1 actions=ct(commit,zone=NXM_NX_REG6[0..15]),resubmit(,91)
  table=73, priority=90,ct_state=+new-est,reg5=0x2 actions=ct(commit,zone=NXM_NX_REG6[0..15]),resubmit(,91)
- table=73, priority=80,reg5=0x1 actions=resubmit(,91)
- table=73, priority=80,reg5=0x2 actions=resubmit(,91)
+ table=73, priority=80,reg5=0x1 actions=resubmit(,94)
+ table=73, priority=80,reg5=0x2 actions=resubmit(,94)
  table=73, priority=0 actions=drop
 
-``table 81`` is similar to ``table 71``, allows basic ingress traffic for
-obtaining ip address and arp queries. Note that vlan tag must be removed by
+|table_81| is similar to |table_71|, allows basic ingress traffic for
+obtaining IP address and ARP queries. Note that vlan tag must be removed by
 adding ``strip_vlan`` to actions list, prior to injecting packet directly to
 port. Not tracked packets are sent to obtain conntrack information.
 
 ::
 
- table=81, priority=100,arp,reg5=0x1 actions=strip_vlan,output:1,resubmit(,92)
- table=81, priority=100,arp,reg5=0x2 actions=strip_vlan,output:2,resubmit(,92)
- table=81, priority=100,icmp6,reg5=0x1,icmp_type=130 actions=strip_vlan,output:1,resubmit(,92)
- table=81, priority=100,icmp6,reg5=0x1,icmp_type=131 actions=strip_vlan,output:1,resubmit(,92)
- table=81, priority=100,icmp6,reg5=0x1,icmp_type=132 actions=strip_vlan,output:1,resubmit(,92)
- table=81, priority=100,icmp6,reg5=0x1,icmp_type=135 actions=strip_vlan,output:1,resubmit(,92)
- table=81, priority=100,icmp6,reg5=0x1,icmp_type=136 actions=strip_vlan,output:1,resubmit(,92)
- table=81, priority=100,icmp6,reg5=0x2,icmp_type=130 actions=strip_vlan,output:2,resubmit(,92)
- table=81, priority=100,icmp6,reg5=0x2,icmp_type=131 actions=strip_vlan,output:2,resubmit(,92)
- table=81, priority=100,icmp6,reg5=0x2,icmp_type=132 actions=strip_vlan,output:2,resubmit(,92)
- table=81, priority=100,icmp6,reg5=0x2,icmp_type=135 actions=strip_vlan,output:2,resubmit(,92)
- table=81, priority=100,icmp6,reg5=0x2,icmp_type=136 actions=strip_vlan,output:2,resubmit(,92)
- table=81, priority=95,udp,reg5=0x1,tp_src=67,tp_dst=68 actions=strip_vlan,output:1,resubmit(,92)
- table=81, priority=95,udp6,reg5=0x1,tp_src=547,tp_dst=546 actions=strip_vlan,output:1,resubmit(,92)
- table=81, priority=95,udp,reg5=0x2,tp_src=67,tp_dst=68 actions=strip_vlan,output:2,resubmit(,92)
- table=81, priority=95,udp6,reg5=0x2,tp_src=547,tp_dst=546 actions=strip_vlan,output:2,resubmit(,92)
+ table=81, priority=100,arp,reg5=0x1 actions=strip_vlan,output:1
+ table=81, priority=100,arp,reg5=0x2 actions=strip_vlan,output:2
+ table=81, priority=100,icmp6,reg5=0x1,icmp_type=130 actions=strip_vlan,output:1
+ table=81, priority=100,icmp6,reg5=0x1,icmp_type=131 actions=strip_vlan,output:1
+ table=81, priority=100,icmp6,reg5=0x1,icmp_type=132 actions=strip_vlan,output:1
+ table=81, priority=100,icmp6,reg5=0x1,icmp_type=135 actions=strip_vlan,output:1
+ table=81, priority=100,icmp6,reg5=0x1,icmp_type=136 actions=strip_vlan,output:1
+ table=81, priority=100,icmp6,reg5=0x2,icmp_type=130 actions=strip_vlan,output:2
+ table=81, priority=100,icmp6,reg5=0x2,icmp_type=131 actions=strip_vlan,output:2
+ table=81, priority=100,icmp6,reg5=0x2,icmp_type=132 actions=strip_vlan,output:2
+ table=81, priority=100,icmp6,reg5=0x2,icmp_type=135 actions=strip_vlan,output:2
+ table=81, priority=100,icmp6,reg5=0x2,icmp_type=136 actions=strip_vlan,output:2
+ table=81, priority=95,udp,reg5=0x1,tp_src=67,tp_dst=68 actions=strip_vlan,output:1
+ table=81, priority=95,udp6,reg5=0x1,tp_src=547,tp_dst=546 actions=strip_vlan,output:1
+ table=81, priority=95,udp,reg5=0x2,tp_src=67,tp_dst=68 actions=strip_vlan,output:2
+ table=81, priority=95,udp6,reg5=0x2,tp_src=547,tp_dst=546 actions=strip_vlan,output:2
  table=81, priority=90,ct_state=-trk,ip,reg5=0x1 actions=ct(table=82,zone=NXM_NX_REG6[0..15])
  table=81, priority=90,ct_state=-trk,ipv6,reg5=0x1 actions=ct(table=82,zone=NXM_NX_REG6[0..15])
  table=81, priority=90,ct_state=-trk,ip,reg5=0x2 actions=ct(table=82,zone=NXM_NX_REG6[0..15])
@@ -351,11 +389,11 @@ port. Not tracked packets are sent to obtain conntrack information.
  table=81, priority=80,ct_state=+trk,reg5=0x2 actions=resubmit(,82)
  table=81, priority=0 actions=drop
 
-Similarly to ``table 72``, ``table 82`` accepts established and related
-connections. In this case we allow all icmp traffic coming from
+Similarly to |table_72|, |table_82| accepts established and related
+connections. In this case we allow all ICMP traffic coming from
 ``security group 1`` which is in this case only ``port 1``.
-The first four flows match on the ip addresses, and the
-next two flows match on the icmp protocol.
+The first four flows match on the IP addresses, and the
+next two flows match on the ICMP protocol.
 These six flows define conjunction flows, and the next two define actions for
 them.
 
@@ -367,7 +405,7 @@ them.
  table=82, priority=71,ct_state=+new-est,ip,reg6=0x284,nw_src=10.0.0.1 actions=conjunction(19,1/2)
  table=82, priority=71,ct_state=+est-rel-rpl,icmp,reg5=0x2 actions=conjunction(18,2/2)
  table=82, priority=71,ct_state=+new-est,icmp,reg5=0x2 actions=conjunction(19,2/2)
- table=82, priority=71,conj_id=18,ct_state=+est-rel-rpl,ip,reg5=0x2 actions=strip_vlan,output:2,resubmit(,92)
+ table=82, priority=71,conj_id=18,ct_state=+est-rel-rpl,ip,reg5=0x2 actions=strip_vlan,output:2
  table=82, priority=71,conj_id=19,ct_state=+new-est,ip,reg5=0x2 actions=ct(commit,zone=NXM_NX_REG6[0..15]),strip_vlan,output:2,resubmit(,92)
  table=82, priority=50,ct_state=+inv+trk actions=resubmit(,93)
 
@@ -402,15 +440,15 @@ the security group 2. These flows are from the following security group rules,
 
 ::
 
-      - can receive tcp packets from security group 1
-      - can receive tcp packets to port 80 from security group 2
+      - can receive TCP packets from security group 1
+      - can receive TCP packets to port 80 from security group 2
 
 and these rules have been processed by ``merge_port_ranges`` into:
 
 ::
 
-      - can receive tcp packets to port != 80 from security group 1
-      - can receive tcp packets to port 80 from security group 1 or 2
+      - can receive TCP packets to port != 80 from security group 1
+      - can receive TCP packets to port 80 from security group 1 or 2
 
 before translating to flows so that there is only one matching flow
 even when the TCP destination port is 80.
@@ -427,19 +465,19 @@ flows, but the corresponding security group rules have different
 remote group IDs.  Unlike the above TCP example, there's no convenient
 way of expressing ``protocol != TCP`` or ``icmp_code != 1``.  So the
 OVS firewall uses a different priority than the previous TCP flows so
-as not to mix up them.
+as not to mix them up.
 
 The mechanism for dropping connections that are not allowed anymore is the
-same as in ``table 72``.
+same as in |table_72|.
 
 ::
 
  table=82, priority=50,ct_mark=0x1,reg5=0x1 actions=resubmit(,93)
  table=82, priority=50,ct_mark=0x1,reg5=0x2 actions=resubmit(,93)
- table=82, priority=50,ct_state=+est-rel+rpl,ct_zone=644,ct_mark=0,reg5=0x1 actions=strip_vlan,output:1,resubmit(,92)
- table=82, priority=50,ct_state=+est-rel+rpl,ct_zone=644,ct_mark=0,reg5=0x2 actions=strip_vlan,output:2,resubmit(,92)
- table=82, priority=50,ct_state=-new-est+rel-inv,ct_zone=644,ct_mark=0,reg5=0x1 actions=strip_vlan,output:1,resubmit(,92)
- table=82, priority=50,ct_state=-new-est+rel-inv,ct_zone=644,ct_mark=0,reg5=0x2 actions=strip_vlan,output:2,resubmit(,92)
+ table=82, priority=50,ct_state=+est-rel+rpl,ct_zone=644,ct_mark=0,reg5=0x1 actions=strip_vlan,output:1
+ table=82, priority=50,ct_state=+est-rel+rpl,ct_zone=644,ct_mark=0,reg5=0x2 actions=strip_vlan,output:2
+ table=82, priority=50,ct_state=-new-est+rel-inv,ct_zone=644,ct_mark=0,reg5=0x1 actions=strip_vlan,output:1
+ table=82, priority=50,ct_state=-new-est+rel-inv,ct_zone=644,ct_mark=0,reg5=0x2 actions=strip_vlan,output:2
  table=82, priority=40,ct_state=-est,reg5=0x1 actions=resubmit(,93)
  table=82, priority=40,ct_state=+est,reg5=0x1 actions=ct(commit,zone=NXM_NX_REG6[0..15],exec(load:0x1->NXM_NX_CT_MARK[]))
  table=82, priority=40,ct_state=-est,reg5=0x2 actions=resubmit(,93)
@@ -447,37 +485,53 @@ same as in ``table 72``.
  table=82, priority=0 actions=drop
 
 
-Note: Conntrack zones on a single node are now based on network to which port is
-plugged in. That makes a difference between traffic on hypervisor only and
-east-west traffic. For example, if port has a VIP that was migrated to a port on
-different node, then new port won't contain conntrack information about previous
-traffic that happened with VIP.
+.. note::
 
-Using OpenFlow in conjunction with OVS firewall
------------------------------------------------
+  Conntrack zones on a single node are now based on the network to which
+  a port is plugged in. That makes a difference between traffic on hypervisor
+  only and east-west traffic. For example, if a port has a VIP that was
+  migrated to a port on a different node, then the new port won't contain
+  conntrack information about previous traffic that happened with VIP.
 
-There are three tables where packets are sent once they get through the OVS
-firewall pipeline. The tables can be used by other mechanisms using OpenFlow
-that are supposed to work with the OVS firewall. Packets sent to ``table 91``
-are considered accepted by the egress pipeline and won't be processed further.
-``NORMAL`` action is used by default in this table. Packets sent to
-``table 92`` were processed by the ingress filtering pipeline. As packets from
-the ingress filtering pipeline were injected to its destination, ``table 92``
-receives copies of those packets and therefore default action is ``drop``.
-Finally, packets sent to ``table 93`` were filtered by the firewall and should
-be dropped. Default action is ``drop`` in this table.
+OVS firewall integration points
+-------------------------------
 
+There are three tables where packets are sent once after going through the OVS
+firewall pipeline. The tables can be used by other mechanisms that are supposed
+to work with the OVS firewall, typically L2 agent extensions.
 
-Future work
------------
+Egress pipeline
+~~~~~~~~~~~~~~~
 
- - Create fullstack tests with tunneling enabled
- - During the update of firewall rules, we can use bundles to make the changes
-   atomic
+Packets are sent to |table_91| and |table_94| when they are considered accepted
+by the egress pipeline, and they will be processed so that they are forwarded
+to their destination by being submitted to a NORMAL action, that results in
+Ethernet flood/learn processing.
 
+Two tables are used to differentiate between the first packets of a connection
+and the following packets. This was introduced for performance reasons to
+allow the logging extension to only log the first packets of a connection.
+Only the first accepted packet of each connection session will go to |table_91|
+and the following ones will go to |table_94|.
+
+Note that |table_91| merely resubmits to |table_94| that contains the actual
+NORMAL action; this allows to have a single place where the NORMAL action can
+be overridden by other components (currently used by ``networking-bagpipe``
+driver for ``networking-bgpvpn``).
+
+Ingress pipeline
+~~~~~~~~~~~~~~~~
+
+The first packet of each connection accepted by the ingress pipeline is sent
+to |table_92|. The default action in this table is DROP because at this point
+the packets have already been delivered to their destination port. This
+integration point is essentially provided for the logging extension.
+
+Packets are sent to |table_93| if processing by the ingress filtering
+concluded that they should be dropped.
 
 Upgrade path from iptables hybrid driver
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+----------------------------------------
 
 During an upgrade, the agent will need to re-plug each instance's tap device
 into the integration bridge while trying to not break existing connections. One
@@ -500,3 +554,15 @@ firewall rules and finally remove the drop rules for the instance.
 use the OVS firewall, and instances from other nodes can be live-migrated to
 it. Once the first node is evacuated, its firewall driver can be then be
 switched to the OVS driver.
+
+.. |table_0| replace:: ``table 0`` (LOCAL_SWITCHING)
+.. |table_60| replace:: ``table 60`` (TRANSIENT)
+.. |table_71| replace:: ``table 71`` (BASE_EGRESS)
+.. |table_72| replace:: ``table 72`` (RULES_EGRESS)
+.. |table_73| replace:: ``table 73`` (ACCEPT_OR_INGRESS)
+.. |table_81| replace:: ``table 81`` (BASE_INGRESS)
+.. |table_82| replace:: ``table 82`` (RULES_INGRESS)
+.. |table_91| replace:: ``table 91`` (ACCEPTED_EGRESS_TRAFFIC)
+.. |table_92| replace:: ``table 92`` (ACCEPTED_INGRESS_TRAFFIC)
+.. |table_93| replace:: ``table 93`` (DROPPED_TRAFFIC)
+.. |table_94| replace:: ``table 94`` (ACCEPTED_EGRESS_TRAFFIC_NORMAL)

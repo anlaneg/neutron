@@ -18,6 +18,7 @@ import functools
 import fixtures
 import mock
 import netaddr
+from neutron_lib.agent import constants as agent_consts
 from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib.api.definitions import external_net as extnet_apidef
 from neutron_lib.api.definitions import multiprovidernet as mpnet_apidef
@@ -29,10 +30,13 @@ from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import context
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as exc
+from neutron_lib import fixture
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api as driver_api
+from neutron_lib.plugins import utils as p_utils
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_utils import uuidutils
@@ -42,12 +46,11 @@ import webob
 from neutron._i18n import _
 from neutron.common import utils
 from neutron.db import agents_db
-from neutron.db import api as db_api
-from neutron.db import models_v2
 from neutron.db import provisioning_blocks
 from neutron.db import securitygroups_db as sg_db
 from neutron.db import segments_db
 from neutron.objects import base as base_obj
+from neutron.objects import ports as port_obj
 from neutron.objects import router as l3_obj
 from neutron.plugins.ml2.common import exceptions as ml2_exc
 from neutron.plugins.ml2 import db as ml2_db
@@ -361,8 +364,8 @@ class TestMl2NetworksV2(test_plugin.TestNetworksV2,
 
     def test_create_network_segment_allocation_fails(self):
         plugin = directory.get_plugin()
-        mock.patch.object(db_api._retry_db_errors, 'max_retries',
-                          new=2).start()
+        retry_fixture = fixture.DBRetryErrorsFixture(max_retries=2)
+        retry_fixture.setUp()
         with mock.patch.object(
             plugin.type_manager, 'create_network_segments',
             side_effect=db_exc.RetryRequest(ValueError())
@@ -374,6 +377,7 @@ class TestMl2NetworksV2(test_plugin.TestNetworksV2,
             self.assertEqual(500, res.status_int)
             # 1 + retry count
             self.assertEqual(3, f.call_count)
+        retry_fixture.cleanUp()
 
 
 class TestExternalNetwork(Ml2PluginV2TestCase):
@@ -497,6 +501,19 @@ class TestMl2NetworksWithAvailabilityZone(TestMl2NetworksV2):
 
 class TestMl2SubnetsV2(test_plugin.TestSubnetsV2,
                        Ml2PluginV2TestCase):
+
+    def test_subnet_before_create_callback(self):
+        before_create = mock.Mock()
+        registry.subscribe(before_create, resources.SUBNET,
+                           events.BEFORE_CREATE)
+        with self.subnet() as s:
+            before_create.assert_called_once_with(
+                resources.SUBNET, events.BEFORE_CREATE, mock.ANY,
+                context=mock.ANY, subnet=mock.ANY)
+            kwargs = before_create.mock_calls[0][2]
+            self.assertEqual(s['subnet']['cidr'], kwargs['subnet']['cidr'])
+            self.assertEqual(s['subnet']['network_id'],
+                             kwargs['subnet']['network_id'])
 
     def test_subnet_after_create_callback(self):
         after_create = mock.Mock()
@@ -693,6 +710,105 @@ class TestMl2DbOperationBoundsTenantRbac(TestMl2DbOperationBoundsTenant):
             self.make_port_in_shared_network, 'ports')
 
 
+class TestMl2RevivedAgentsBindPorts(Ml2PluginV2TestCase):
+
+    _mechanism_drivers = ['openvswitch', 'logger']
+
+    def _test__retry_binding_revived_agents(self, event, agent_status,
+                                            admin_state_up, agent_type,
+                                            ports, should_bind_ports):
+        plugin = directory.get_plugin()
+        context = mock.Mock()
+        agent = {
+            'agent_status': agent_status,
+            'admin_state_up': admin_state_up,
+            'agent_type': agent_type}
+        host = "test_host"
+
+        binding = mock.MagicMock(
+            vif_type=portbindings.VIF_TYPE_BINDING_FAILED, host=host)
+        for port in ports:
+            port.bindings = [binding]
+
+        with mock.patch(
+            'neutron.objects.ports.Port.get_ports_by_binding_type_and_host',
+            return_value=ports
+        ) as get_ports_by_binding_type_and_host, mock.patch.object(
+            plugin, 'get_network', return_value=mock.Mock()
+        ) as get_network, mock.patch(
+            'neutron.plugins.ml2.db.get_binding_level_objs',
+            return_value=None
+        ) as get_binding_level_objs, mock.patch(
+            'neutron.plugins.ml2.driver_context.PortContext'
+        ) as port_context, mock.patch.object(
+            plugin, '_bind_port_if_needed'
+        ) as bind_port_if_needed:
+
+            plugin._retry_binding_revived_agents(
+                resources.AGENT, event, plugin,
+                **{'context': context, 'host': host, 'agent': agent})
+
+            if (agent_status == agent_consts.AGENT_ALIVE or
+                    not admin_state_up or
+                    agent_type not in plugin._rebind_on_revive_agent_types):
+                get_ports_by_binding_type_and_host.assert_not_called()
+            else:
+                get_ports_by_binding_type_and_host.assert_called_once_with(
+                    context, portbindings.VIF_TYPE_BINDING_FAILED, host)
+
+            if should_bind_ports:
+                get_network_expected_calls = [
+                    mock.call(context, port.network_id) for port in ports]
+                get_network.assert_has_calls(get_network_expected_calls)
+                get_binding_level_expected_calls = [
+                    mock.call(context, port.id, host) for port in ports]
+                get_binding_level_objs.assert_has_calls(
+                    get_binding_level_expected_calls)
+                bind_port_if_needed.assert_called_once_with(port_context())
+            else:
+                get_network.assert_not_called()
+                get_binding_level_objs.assert_not_called()
+                bind_port_if_needed.assert_not_called()
+
+    def test__retry_binding_revived_agents(self):
+        port = mock.MagicMock(
+            id=uuidutils.generate_uuid())
+        self._test__retry_binding_revived_agents(
+            events.AFTER_UPDATE, agent_consts.AGENT_REVIVED, True,
+            constants.AGENT_TYPE_OVS, [port],
+            should_bind_ports=True)
+
+    def test__retry_binding_revived_agents_no_binding_failed_ports(self):
+        self._test__retry_binding_revived_agents(
+            events.AFTER_UPDATE, agent_consts.AGENT_REVIVED, True,
+            constants.AGENT_TYPE_OVS, [],
+            should_bind_ports=False)
+
+    def test__retry_binding_revived_agents_alive_agent(self):
+        port = mock.MagicMock(
+            id=uuidutils.generate_uuid())
+        self._test__retry_binding_revived_agents(
+            events.AFTER_UPDATE, agent_consts.AGENT_ALIVE, True,
+            constants.AGENT_TYPE_OVS, [port],
+            should_bind_ports=False)
+
+    def test__retry_binding_revived_agents_not_binding_agent(self):
+        port = mock.MagicMock(
+            id=uuidutils.generate_uuid())
+        self._test__retry_binding_revived_agents(
+            events.AFTER_UPDATE, agent_consts.AGENT_REVIVED, True,
+            "Other agent which don't support binding", [port],
+            should_bind_ports=False)
+
+    def test__retry_binding_revived_agents_agent_admin_state_down(self):
+        port = mock.MagicMock(
+            id=uuidutils.generate_uuid())
+        self._test__retry_binding_revived_agents(
+            events.AFTER_UPDATE, agent_consts.AGENT_REVIVED, False,
+            constants.AGENT_TYPE_OVS, [port],
+            should_bind_ports=False)
+
+
 class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
 
     def test__port_provisioned_with_blocks(self):
@@ -707,18 +823,17 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
         self.assertFalse(ups.called)
 
     def test__port_provisioned_no_binding(self):
+        device_id = uuidutils.generate_uuid()
         plugin = directory.get_plugin()
         with self.network() as net:
             net_id = net['network']['id']
-        port_id = 'fake_id'
-        port_db = models_v2.Port(
-            id=port_id, tenant_id='tenant', network_id=net_id,
-            mac_address='08:00:01:02:03:04', admin_state_up=True,
-            status='ACTIVE', device_id='vm_id',
-            device_owner=DEVICE_OWNER_COMPUTE
-        )
-        with db_api.context_manager.writer.using(self.context):
-            self.context.session.add(port_db)
+        port_id = uuidutils.generate_uuid()
+        port_obj.Port(self.context,
+                id=port_id, project_id='tenant', network_id=net_id,
+                mac_address=netaddr.EUI('08-00-01-02-03-04'),
+                admin_state_up=True, status='ACTIVE',
+                device_id=device_id,
+                device_owner=DEVICE_OWNER_COMPUTE).create()
         self.assertIsNone(plugin._port_provisioned('port', 'evt', 'trigger',
                                                    self.context, port_id))
 
@@ -726,9 +841,14 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
         plugin = directory.get_plugin()
         ups = mock.patch.object(plugin, 'update_port_status').start()
         port_id = 'fake_port_id'
-        binding = mock.Mock(vif_type=portbindings.VIF_TYPE_OVS)
-        port = mock.Mock(
-            id=port_id, admin_state_up=False, port_binding=binding)
+
+        def getitem(key):
+            return constants.ACTIVE
+
+        binding = mock.MagicMock(vif_type=portbindings.VIF_TYPE_OVS)
+        binding.__getitem__.side_effect = getitem
+        port = mock.MagicMock(
+            id=port_id, admin_state_up=False, port_binding=[binding])
         with mock.patch('neutron.plugins.ml2.plugin.db.get_port',
                         return_value=port):
             plugin._port_provisioned('port', 'evt', 'trigger',
@@ -837,7 +957,7 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
         ctx = context.get_admin_context()
         plugin = directory.get_plugin()
         with self.port() as port:
-            with mock.patch.object(ml2_db, 'get_binding_levels',
+            with mock.patch.object(ml2_db, 'get_binding_level_objs',
                                    return_value=[]) as mock_gbl:
                 port_id = port['port']['id']
                 short_id = port_id[:11]
@@ -949,6 +1069,29 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
             host_arg={portbindings.HOST_ID: HOST},
             arg_list=(portbindings.HOST_ID,))
 
+    def test_update_port_regenerate_mac(self):
+        ctx = context.get_admin_context()
+        plugin = directory.get_plugin()
+        data = {'port': {'mac_address': None}}
+        with self.port() as port:
+            current_mac = port['port']['mac_address']
+            req = self.new_update_request('ports', data, port['port']['id'])
+            self.assertEqual(200, req.get_response(self.api).status_int)
+            new_mac = plugin.get_port(ctx, port['port']['id'])['mac_address']
+            self.assertNotEqual(current_mac, new_mac)
+            self.assertTrue(netaddr.valid_mac(new_mac))
+
+    def test_update_port_mac_does_not_change(self):
+        ctx = context.get_admin_context()
+        plugin = directory.get_plugin()
+        data = {'port': {'description': 'Port Description'}}
+        with self.port() as port:
+            current_mac = port['port']['mac_address']
+            req = self.new_update_request('ports', data, port['port']['id'])
+            self.assertEqual(200, req.get_response(self.api).status_int)
+            new_mac = plugin.get_port(ctx, port['port']['id'])['mac_address']
+            self.assertEqual(current_mac, new_mac)
+
     def test_update_non_existent_port(self):
         ctx = context.get_admin_context()
         plugin = directory.get_plugin()
@@ -1052,7 +1195,7 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
             with self.subnet(net,
                              gateway_ip=fake_gateway,
                              cidr=fake_prefix,
-                             ip_version=6) as snet_v6,\
+                             ip_version=constants.IP_VERSION_6) as snet_v6,\
                     mock.patch.object(
                         plugin.notifier,
                         'security_groups_member_updated') as m_upd:
@@ -1239,8 +1382,9 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
                     raise db_exc.DBDuplicateEntry()
 
         listener = IPAllocationsGrenade()
-        engine = db_api.context_manager.writer.get_engine()
-        db_api.sqla_listen(engine, 'before_cursor_execute', listener.execute)
+        engine = db_api.CONTEXT_WRITER.get_engine()
+        db_api.sqla_listen(engine, 'before_cursor_execute',
+                           listener.execute)
         db_api.sqla_listen(engine, 'commit', listener.commit)
         func()
         # make sure that the grenade went off during the commit
@@ -1280,7 +1424,7 @@ fixed_ips=ip_address_substr%%3D%s&fixed_ips=subnet_id%%3D%s
                 tenant_id=tenant_id,
                 net_id=net_id,
                 cidr='2607:f0d0:1002:51::/124',
-                ip_version=6,
+                ip_version=constants.IP_VERSION_6,
                 gateway_ip=constants.ATTR_NOT_SPECIFIED)
             subnet2 = self.deserialize(self.fmt, res)
             kwargs = {"fixed_ips":
@@ -1674,6 +1818,23 @@ class TestMl2DvrPortsV2(TestMl2PortsV2):
     def test_delete_port_with_floatingip_notifies_l3_plugin(self):
         self.test_delete_port_notifies_l3_plugin(floating_ip=True)
 
+    def test_delete_port_with_floatingip_create_precommit_event(self):
+        fake_method = mock.Mock()
+        with self.port(device_owner='network:floatingip') as port:
+            try:
+                registry.subscribe(fake_method, resources.FLOATING_IP,
+                               events.PRECOMMIT_DELETE)
+                port_id = port['port']['id']
+                self.plugin.delete_port(self.context, port_id)
+                fake_method.assert_called_once_with(
+                    resources.FLOATING_IP, events.PRECOMMIT_DELETE, mock.ANY,
+                    bind=mock.ANY, bindings=mock.ANY, context=mock.ANY,
+                    id=mock.ANY, levels=mock.ANY, network=mock.ANY,
+                    port=mock.ANY, port_db=mock.ANY)
+            finally:
+                registry.unsubscribe(fake_method, resources.FLOATING_IP,
+                                     events.PRECOMMIT_DELETE)
+
     def test_concurrent_csnat_port_delete(self):
         plugin = directory.get_plugin(plugin_constants.L3)
         r = plugin.create_router(
@@ -1685,7 +1846,7 @@ class TestMl2DvrPortsV2(TestMl2PortsV2):
                                             {'subnet_id': s['subnet']['id']})
 
         # lie to turn the port into an SNAT interface
-        with db_api.context_manager.writer.using(self.context):
+        with db_api.CONTEXT_WRITER.using(self.context):
             pager = base_obj.Pager(limit=1)
             rp = l3_obj.RouterPort.get_objects(
                 self.context, _pager=pager, port_id=p['port_id'])
@@ -1766,8 +1927,10 @@ class TestMl2PortBinding(Ml2PluginV2TestCase,
         # create a port and delete it so we have an expired mechanism context
         with self.port() as port:
             plugin = directory.get_plugin()
-            binding = plugin._get_port(self.context,
-                                       port['port']['id']).port_binding
+            binding = p_utils.get_port_binding_by_status_and_host(
+                plugin._get_port(self.context,
+                                 port['port']['id']).port_bindings,
+                constants.ACTIVE)
             binding['host'] = 'test'
             mech_context = driver_context.PortContext(
                 plugin, self.context, port['port'],
@@ -1787,8 +1950,10 @@ class TestMl2PortBinding(Ml2PluginV2TestCase,
     def _create_port_and_bound_context(self, port_vif_type, bound_vif_type):
         with self.port() as port:
             plugin = directory.get_plugin()
-            binding = plugin._get_port(
-                self.context, port['port']['id']).port_binding
+            binding = p_utils.get_port_binding_by_status_and_host(
+                plugin._get_port(self.context,
+                                 port['port']['id']).port_bindings,
+                constants.ACTIVE)
             binding['host'] = 'fake_host'
             binding['vif_type'] = port_vif_type
             # Generates port context to be used before the bind.
@@ -1902,8 +2067,10 @@ class TestMl2PortBinding(Ml2PluginV2TestCase,
     def test_update_port_binding_host_id_none(self):
         with self.port() as port:
             plugin = directory.get_plugin()
-            binding = plugin._get_port(
-                self.context, port['port']['id']).port_binding
+            binding = p_utils.get_port_binding_by_status_and_host(
+                plugin._get_port(self.context,
+                                 port['port']['id']).port_bindings,
+                constants.ACTIVE)
             with self.context.session.begin(subtransactions=True):
                 binding.host = 'test'
             mech_context = driver_context.PortContext(
@@ -1922,8 +2089,10 @@ class TestMl2PortBinding(Ml2PluginV2TestCase,
     def test_update_port_binding_host_id_not_changed(self):
         with self.port() as port:
             plugin = directory.get_plugin()
-            binding = plugin._get_port(
-                self.context, port['port']['id']).port_binding
+            binding = p_utils.get_port_binding_by_status_and_host(
+                plugin._get_port(self.context,
+                                 port['port']['id']).port_bindings,
+                constants.ACTIVE)
             binding['host'] = 'test'
             mech_context = driver_context.PortContext(
                 plugin, self.context, port['port'],
@@ -2000,7 +2169,7 @@ class TestMl2PortBinding(Ml2PluginV2TestCase,
                               return_value=[]):
             new_context = plugin._bind_port(context)
             self.assertEqual(mock_port, new_context.original)
-            self.assertFalse(new_context == context)
+            self.assertNotEqual(new_context, context)
 
 
 class TestMl2PortBindingNoSG(TestMl2PortBinding):
@@ -2516,7 +2685,7 @@ class TestFaultyMechansimDriver(Ml2PluginV2FaultyDriverTestCase):
                 net_id = network['network']['id']
                 data = {'subnet': {'network_id': net_id,
                                    'cidr': '10.0.20.0/24',
-                                   'ip_version': '4',
+                                   'ip_version': constants.IP_VERSION_4,
                                    'name': 'subnet1',
                                    'tenant_id':
                                    network['network']['tenant_id'],
@@ -2545,7 +2714,7 @@ class TestFaultyMechansimDriver(Ml2PluginV2FaultyDriverTestCase):
                     data = {'subnet': {'network_id':
                                        network['network']['id'],
                                        'cidr': '10.0.20.0/24',
-                                       'ip_version': '4',
+                                       'ip_version': constants.IP_VERSION_4,
                                        'name': 'subnet1',
                                        'tenant_id':
                                        network['network']['tenant_id'],
@@ -2578,7 +2747,7 @@ class TestFaultyMechansimDriver(Ml2PluginV2FaultyDriverTestCase):
                     data = {'subnet': {'network_id':
                                        network['network']['id'],
                                        'cidr': '10.0.20.0/24',
-                                       'ip_version': '4',
+                                       'ip_version': constants.IP_VERSION_4,
                                        'name': 'subnet1',
                                        'tenant_id':
                                        network['network']['tenant_id'],
@@ -2744,7 +2913,7 @@ class TestML2PluggableIPAM(test_ipam.UseIpamMixin, TestMl2SubnetsV2):
         with self.network() as network:
             with self.subnet(network=network,
                              cidr='2001:100::0/64',
-                             ip_version=6,
+                             ip_version=constants.IP_VERSION_6,
                              ipv6_ra_mode=constants.IPV6_SLAAC) as subnet:
                 with self.port(subnet=subnet) as port:
                     with mock.patch(driver) as driver_mock:
@@ -2763,14 +2932,14 @@ class TestTransactionGuard(Ml2PluginV2TestCase):
     def test_delete_network_guard(self):
         plugin = directory.get_plugin()
         ctx = context.get_admin_context()
-        with db_api.context_manager.writer.using(ctx):
+        with db_api.CONTEXT_WRITER.using(ctx):
             with testtools.ExpectedException(RuntimeError):
                 plugin.delete_network(ctx, 'id')
 
     def test_delete_subnet_guard(self):
         plugin = directory.get_plugin()
         ctx = context.get_admin_context()
-        with db_api.context_manager.writer.using(ctx):
+        with db_api.CONTEXT_WRITER.using(ctx):
             with testtools.ExpectedException(RuntimeError):
                 plugin.delete_subnet(ctx, 'id')
 
@@ -2794,7 +2963,7 @@ class TestML2Segments(Ml2PluginV2TestCase):
             # Assert it is not changed
             self.assertEqual(seg_id, segment[driver_api.SEGMENTATION_ID])
         else:
-            self.assertTrue(segment[driver_api.SEGMENTATION_ID] > 0)
+            self.assertGreater(segment[driver_api.SEGMENTATION_ID], 0)
 
         return segment
 
@@ -2908,9 +3077,11 @@ class TestML2Segments(Ml2PluginV2TestCase):
         with self.port(device_owner=fake_owner_compute) as port:
             # add writer here to make sure that the following operations are
             # performed in the same session
-            with db_api.context_manager.writer.using(self.context):
-                binding = plugin._get_port(
-                    self.context, port['port']['id']).port_binding
+            with db_api.CONTEXT_WRITER.using(self.context):
+                binding = p_utils.get_port_binding_by_status_and_host(
+                    plugin._get_port(self.context,
+                                     port['port']['id']).port_bindings,
+                    constants.ACTIVE)
                 binding['host'] = 'host-ovs-no_filter'
                 mech_context = driver_context.PortContext(
                     plugin, self.context, port['port'],

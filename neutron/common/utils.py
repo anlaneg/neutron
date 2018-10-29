@@ -30,7 +30,6 @@ import sys
 import threading
 import time
 import uuid
-import weakref
 
 import eventlet
 from eventlet.green import subprocess
@@ -45,6 +44,7 @@ import six
 
 import neutron
 from neutron._i18n import _
+from neutron.api import api_common
 from neutron.db import api as db_api
 
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -298,7 +298,8 @@ def _hex_format(port, mask=0):
 
 
 def _gen_rules_port_min(port_min, top_bit):
-    """
+    """Generate rules for port_min
+
     Encode a port range range(port_min, (port_min | (top_bit - 1)) + 1) into
     a set of bit value/masks.
     """
@@ -379,7 +380,8 @@ def _gen_rules_port_min(port_min, top_bit):
 
 
 def _gen_rules_port_max(port_max, top_bit):
-    """
+    """Generate rules for port_max
+
     Encode a port range range(port_max & ~(top_bit - 1), port_max + 1) into
     a set of bit value/masks.
     """
@@ -627,8 +629,7 @@ def transaction_guard(f):
 
 
 def wait_until_true(predicate, timeout=60, sleep=1, exception=None):
-    """
-    Wait until callable predicate is evaluated as True
+    """Wait until callable predicate is evaluated as True
 
     :param predicate: Callable deciding whether waiting should continue.
     Best practice is to instantiate predicate with functools.partial()
@@ -645,7 +646,7 @@ def wait_until_true(predicate, timeout=60, sleep=1, exception=None):
         if exception is not None:
             # pylint: disable=raising-bad-type
             raise exception
-        raise WaitTimeout("Timed out after %d seconds" % timeout)
+        raise WaitTimeout(_("Timed out after %d seconds") % timeout)
 
 
 class _AuthenticBase(object):
@@ -665,7 +666,8 @@ class _AuthenticBase(object):
 
 
 class AuthenticEUI(_AuthenticBase, netaddr.EUI):
-    '''
+    '''AuthenticEUI class
+
     This class retains the format of the MAC address string passed during
     initialization.
 
@@ -675,7 +677,8 @@ class AuthenticEUI(_AuthenticBase, netaddr.EUI):
 
 
 class AuthenticIPNetwork(_AuthenticBase, netaddr.IPNetwork):
-    '''
+    '''AuthenticIPNetwork class
+
     This class retains the format of the IP network string passed during
     initialization.
 
@@ -780,27 +783,6 @@ def get_related_rand_device_names(prefixes):
                                   max_length=n_const.DEVICE_NAME_MAX_LEN)
 
 
-try:
-    # PY3
-    weak_method = weakref.WeakMethod
-except AttributeError:
-    # PY2
-    import weakrefmethod
-    weak_method = weakrefmethod.WeakMethod
-
-
-def make_weak_ref(f):
-    """Make a weak reference to a function accounting for bound methods."""
-    return weak_method(f) if hasattr(f, '__self__') else weakref.ref(f)
-
-
-def resolve_ref(ref):
-    """Handles dereference of weakref."""
-    if isinstance(ref, weakref.ref):
-        ref = ref()
-    return ref
-
-
 def bytes_to_bits(value):
     return value * 8
 
@@ -808,3 +790,54 @@ def bytes_to_bits(value):
 def bits_to_kilobits(value, base):
     # NOTE(slaweq): round up that even 1 bit will give 1 kbit as a result
     return int((value + (base - 1)) / base)
+
+
+def disable_extension_by_service_plugin(core_plugin, service_plugin):
+    if ('filter-validation' in core_plugin.supported_extension_aliases and
+            not api_common.is_filter_validation_supported(service_plugin)):
+        core_plugin.supported_extension_aliases.remove('filter-validation')
+        LOG.info('Disable filter validation extension by service plugin '
+                 '%s.', service_plugin.__class__.__name__)
+
+
+def get_port_fixed_ips_set(port):
+    return set([ip["ip_address"] for ip in port.get("fixed_ips", [])])
+
+
+def port_ip_changed(new_port, original_port):
+    if not new_port or not original_port:
+        return False
+
+    # Quantity is not same, so it is changed.
+    if (len(new_port.get("fixed_ips", [])) !=
+            len(original_port.get("fixed_ips", []))):
+        return True
+
+    # IPs can be placed in any order, so use python set to verify the
+    # fixed IP addresses.
+    if (get_port_fixed_ips_set(new_port) !=
+            get_port_fixed_ips_set(original_port)):
+        return True
+
+    return False
+
+
+def validate_rp_bandwidth(rp_bandwidths, device_names):
+    """Validate resource provider bandwidths against device names.
+
+    :param rp_bandwidths: Dict containing resource provider bandwidths,
+                          in the form:
+                          {'phy1': {'ingress': 100, 'egress': 100}}
+    :param device_names: A set of the device names given in bridge_mappings
+                         in case of ovs-agent or in physical_device_mappings
+                         in case of sriov-agent
+    :raises ValueError: In case of the devices (keys) in the rp_bandwidths dict
+                        are not in the device_names set.
+    """
+
+    for dev_name in rp_bandwidths:
+        if dev_name not in device_names:
+            raise ValueError(_(
+                "Invalid resource_provider_bandwidths: "
+                "Device name %(dev_name)s is missing from "
+                "device mappings") % {'dev_name': dev_name})

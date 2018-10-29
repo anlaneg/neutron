@@ -270,11 +270,11 @@ class TestCidrIsHost(base.BaseTestCase):
 class TestIpVersionFromInt(base.BaseTestCase):
     def test_ip_version_from_int_ipv4(self):
         self.assertEqual(constants.IPv4,
-                         utils.ip_version_from_int(4))
+                         utils.ip_version_from_int(constants.IP_VERSION_4))
 
     def test_ip_version_from_int_ipv6(self):
         self.assertEqual(constants.IPv6,
-                         utils.ip_version_from_int(6))
+                         utils.ip_version_from_int(constants.IP_VERSION_6))
 
     def test_ip_version_from_int_illegal_int(self):
         self.assertRaises(ValueError,
@@ -439,7 +439,7 @@ class TestThrottler(base.BaseTestCase):
 
         def sleep_mock(amount_to_sleep):
             sleep(amount_to_sleep)
-            self.assertTrue(threshold > amount_to_sleep)
+            self.assertGreater(threshold, amount_to_sleep)
 
         with mock.patch.object(utils.eventlet, "sleep",
                                side_effect=sleep_mock):
@@ -455,7 +455,7 @@ class TestThrottler(base.BaseTestCase):
         throttled_func()
 
         self.assertEqual(3, orig_function.call_count)
-        self.assertTrue(timestamp < lock_with_timer.timestamp)
+        self.assertLess(timestamp, lock_with_timer.timestamp)
 
     def test_method_docstring_is_preserved(self):
         class Klass(object):
@@ -524,3 +524,27 @@ class TestIECUnitConversions(BaseUnitConversionTest, base.BaseTestCase):
                 expected_kilobits,
                 utils.bits_to_kilobits(input_bits, self.base_unit)
             )
+
+
+class TestRpBandwidthValidator(base.BaseTestCase):
+
+    def setUp(self):
+        super(TestRpBandwidthValidator, self).setUp()
+        self.device_name_set = {'ens4', 'ens7'}
+        self.valid_rp_bandwidths = {
+            'ens7': {'egress': 10000, 'ingress': 10000}
+        }
+        self.not_valid_rp_bandwidth = {
+            'ens8': {'egress': 10000, 'ingress': 10000}
+        }
+
+    def test_validate_rp_bandwidth_with_device_names(self):
+        try:
+            utils.validate_rp_bandwidth(self.valid_rp_bandwidths,
+                                        self.device_name_set)
+        except ValueError:
+            self.fail("validate_rp_bandwidth failed to validate %s" %
+                      self.valid_rp_bandwidths)
+
+        self.assertRaises(ValueError, utils.validate_rp_bandwidth,
+                          self.not_valid_rp_bandwidth, self.device_name_set)

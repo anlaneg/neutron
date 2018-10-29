@@ -31,6 +31,7 @@ from neutron.api import extensions
 from neutron.api.v2 import base
 from neutron.common import exceptions
 from neutron.conf import quota
+from neutron.extensions import standardattrdescription as stdattr_ext
 from neutron.quota import resource_registry
 
 
@@ -206,6 +207,7 @@ def _validate_name_not_default(data, max_len=db_const.NAME_FIELD_SIZE):
     if data.lower() == "default":
         raise SecurityGroupDefaultAlreadyExists()
 
+
 validators.add_validator('name_not_default', _validate_name_not_default)
 
 sg_supported_protocols = ([None] + list(const.IP_PROTOCOL_MAP.keys()))
@@ -219,20 +221,17 @@ RESOURCE_ATTRIBUTE_MAP = {
         'id': {'allow_post': False, 'allow_put': False,
                'validate': {'type:uuid': None},
                'is_visible': True,
+               'is_filter': True,
                'primary_key': True},
         'name': {'allow_post': True, 'allow_put': True,
-                 'is_visible': True, 'default': '',
+                 'is_visible': True, 'default': '', 'is_filter': True,
                  'validate': {
                      'type:name_not_default': db_const.NAME_FIELD_SIZE}},
-        'description': {'allow_post': True, 'allow_put': True,
-                        'validate': {
-                            'type:string': db_const.DESCRIPTION_FIELD_SIZE},
-                        'is_visible': True, 'default': ''},
         'tenant_id': {'allow_post': True, 'allow_put': False,
                       'required_by_policy': True,
                       'validate': {
                           'type:string': db_const.PROJECT_ID_FIELD_SIZE},
-                      'is_visible': True},
+                      'is_visible': True, 'is_filter': True},
         SECURITYGROUPRULES: {'allow_post': False, 'allow_put': False,
                              'is_visible': True},
     },
@@ -240,35 +239,43 @@ RESOURCE_ATTRIBUTE_MAP = {
         'id': {'allow_post': False, 'allow_put': False,
                'validate': {'type:uuid': None},
                'is_visible': True,
+               'is_filter': True,
                'primary_key': True},
         'security_group_id': {'allow_post': True, 'allow_put': False,
-                              'is_visible': True, 'required_by_policy': True},
+                              'is_visible': True, 'required_by_policy': True,
+                              'is_filter': True},
         'remote_group_id': {'allow_post': True, 'allow_put': False,
-                            'default': None, 'is_visible': True},
+                            'default': None, 'is_visible': True,
+                            'is_filter': True},
         'direction': {'allow_post': True, 'allow_put': False,
-                      'is_visible': True,
+                      'is_visible': True, 'is_filter': True,
                       'validate': {'type:values': ['ingress', 'egress']}},
         'protocol': {'allow_post': True, 'allow_put': False,
                      'is_visible': True, 'default': None,
+                     'is_filter': True,
                      'convert_to': convert_protocol},
         'port_range_min': {'allow_post': True, 'allow_put': False,
                            'convert_to': convert_validate_port_value,
-                           'default': None, 'is_visible': True},
+                           'default': None, 'is_visible': True,
+                           'is_filter': True},
         'port_range_max': {'allow_post': True, 'allow_put': False,
                            'convert_to': convert_validate_port_value,
-                           'default': None, 'is_visible': True},
+                           'default': None, 'is_visible': True,
+                           'is_filter': True},
         'ethertype': {'allow_post': True, 'allow_put': False,
                       'is_visible': True, 'default': 'IPv4',
+                      'is_filter': True,
                       'convert_to': convert_ethertype_to_case_insensitive,
                       'validate': {'type:values': sg_supported_ethertypes}},
         'remote_ip_prefix': {'allow_post': True, 'allow_put': False,
                              'default': None, 'is_visible': True,
+                             'is_filter': True,
                              'convert_to': convert_ip_prefix_to_cidr},
         'tenant_id': {'allow_post': True, 'allow_put': False,
                       'required_by_policy': True,
                       'validate': {
                           'type:string': db_const.PROJECT_ID_FIELD_SIZE},
-                      'is_visible': True},
+                      'is_visible': True, 'is_filter': True},
     }
 }
 
@@ -277,6 +284,7 @@ EXTENDED_ATTRIBUTES_2_0 = {
     'ports': {SECURITYGROUPS: {'allow_post': True,
                                'allow_put': True,
                                'is_visible': True,
+                               'is_filter': True,
                                'convert_to':
                                    converters.convert_none_to_empty_list,
                                'validate': {'type:uuid_list': None},
@@ -337,6 +345,9 @@ class Securitygroup(api_extensions.ExtensionDescriptor):
                         list(RESOURCE_ATTRIBUTE_MAP.items()))
         else:
             return {}
+
+    def get_required_extensions(self):
+        return [stdattr_ext.Standardattrdescription.get_alias()]
 
 
 @six.add_metaclass(abc.ABCMeta)

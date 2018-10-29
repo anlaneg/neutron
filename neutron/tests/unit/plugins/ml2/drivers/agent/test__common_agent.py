@@ -24,6 +24,7 @@ from oslo_config import cfg
 import testtools
 
 from neutron.agent.linux import bridge_lib
+from neutron.common import constants as n_const
 from neutron.plugins.ml2.drivers.agent import _agent_manager_base as amb
 from neutron.plugins.ml2.drivers.agent import _common_agent as ca
 from neutron.tests import base
@@ -232,6 +233,23 @@ class TestCommonAgentLoop(base.BaseTestCase):
 
         self._test_scan_devices(previous, updated, fake_current, expected,
                                 sync=False)
+
+    def test_scan_devices_timestamp_triggers_updated_None_to_something(self):
+        previous = {'current': set([1, 2]),
+                    'updated': set(),
+                    'added': set(),
+                    'removed': set(),
+                    'timestamps': {2: None}}
+        fake_current = set([1, 2])
+        updated = set()
+        expected = {'current': set([1, 2]),
+                    'updated': set([2]),
+                    'added': set(),
+                    'removed': set(),
+                    'timestamps': {2: 1000}}
+
+        self._test_scan_devices(previous, updated, fake_current, expected,
+                                sync=False, fake_ts_current={2: 1000})
 
     def test_scan_devices_timestamp_triggers_updated(self):
         previous = {'current': set([1, 2]),
@@ -519,6 +537,13 @@ class TestCommonAgentLoop(base.BaseTestCase):
         with testtools.ExpectedException(RuntimeError):
             # device exists so it should raise
             self.agent._process_device_if_exists(mock_details)
+
+    def test__process_device_if_exists_no_active_binding_in_host(self):
+        mock_details = {'device': 'dev123',
+                        n_const.NO_ACTIVE_BINDING: True}
+        self.agent.mgr = mock.Mock()
+        self.agent._process_device_if_exists(mock_details)
+        self.agent.mgr.setup_arp_spoofing_protection.assert_not_called()
 
     def test_set_rpc_timeout(self):
         self.agent.stop()

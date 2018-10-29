@@ -20,6 +20,7 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as provider
 from neutron_lib.api import validators
 from neutron_lib import constants
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as exc
 from neutron_lib.exceptions import multiprovidernet as mpnet_exc
 from neutron_lib.exceptions import vlantransparent as vlan_exc
@@ -31,10 +32,9 @@ import stevedore
 
 from neutron._i18n import _
 from neutron.conf.plugins.ml2 import config
-from neutron.db import api as db_api
 from neutron.db import segments_db
+from neutron.objects import ports
 from neutron.plugins.ml2.common import exceptions as ml2_exc
-from neutron.plugins.ml2 import models
 
 LOG = log.getLogger(__name__)
 
@@ -207,7 +207,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
         """Call type drivers to create network segments."""
         #分配一个网络段
         segments = self._process_provider_create(network)
-        with db_api.context_manager.writer.using(context):
+        with db_api.CONTEXT_WRITER.using(context):
             network_id = network['id']
             if segments:
                 #segments用户已要求
@@ -244,7 +244,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
         self.validate_provider_segment(segment)
 
         # Reserve segment in type driver
-        with db_api.context_manager.writer.using(context):
+        with db_api.CONTEXT_WRITER.using(context):
             return self.reserve_provider_segment(context, segment)
 
     def is_partial_segment(self, segment):
@@ -439,7 +439,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         that upper layer can handle it or error in ML2 player
         :raises: neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver call fails. or DB retriable error when
-        raise_db_retriable=False. See neutron.db.api.is_retriable for
+        raise_db_retriable=False. See neutron_lib.db.api.is_retriable for
         what db exception is retriable
         """
         errors = []
@@ -471,7 +471,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         """Notify all mechanism drivers during network creation.
 
         :raises: DB retriable error if create_network_precommit raises them
-        See neutron.db.api.is_retriable for what db exception is retriable
+        See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver create_network_precommit call fails.
 
@@ -502,7 +502,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         """Notify all mechanism drivers during network update.
 
         :raises: DB retriable error if create_network_precommit raises them
-        See neutron.db.api.is_retriable for what db exception is retriable
+        See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver update_network_precommit call fails.
 
@@ -532,7 +532,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         """Notify all mechanism drivers during network deletion.
 
         :raises: DB retriable error if create_network_precommit raises them
-        See neutron.db.api.is_retriable for what db exception is retriable
+        See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver delete_network_precommit call fails.
 
@@ -566,7 +566,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         """Notify all mechanism drivers during subnet creation.
 
         :raises: DB retriable error if create_network_precommit raises them
-        See neutron.db.api.is_retriable for what db exception is retriable
+        See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver create_subnet_precommit call fails.
 
@@ -596,7 +596,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         """Notify all mechanism drivers during subnet update.
 
         :raises: DB retriable error if create_network_precommit raises them
-        See neutron.db.api.is_retriable for what db exception is retriable
+        See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver update_subnet_precommit call fails.
 
@@ -626,7 +626,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         """Notify all mechanism drivers during subnet deletion.
 
         :raises: DB retriable error if create_network_precommit raises them
-        See neutron.db.api.is_retriable for what db exception is retriable
+        See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver delete_subnet_precommit call fails.
 
@@ -660,7 +660,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         """Notify all mechanism drivers during port creation.
 
         :raises: DB retriable error if create_network_precommit raises them
-        See neutron.db.api.is_retriable for what db exception is retriable
+        See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver create_port_precommit call fails.
 
@@ -690,7 +690,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         """Notify all mechanism drivers during port update.
 
         :raises: DB retriable error if create_network_precommit raises them
-        See neutron.db.api.is_retriable for what db exception is retriable
+        See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver update_port_precommit call fails.
 
@@ -720,7 +720,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         """Notify all mechanism drivers during port deletion.
 
         :raises:DB retriable error if create_network_precommit raises them
-        See neutron.db.api.is_retriable for what db exception is retriable
+        See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver delete_port_precommit call fails.
 
@@ -807,13 +807,16 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                 segment = context._new_bound_segment
                 if segment:
                     #_new_bound_segment有值，说明成功的实现了绑定（driver.obj.bind_port设置）
-                    context._push_binding_level(
+                    pbl_obj = ports.PortBindingLevel(
                         #添加portbindinglevel
-                        models.PortBindingLevel(port_id=port_id,
-                                                host=context.host,
-                                                level=level,
-                                                driver=driver.name,
-                                                segment_id=segment))
+                        context._plugin_context,
+                        port_id=port_id,
+                        host=context.host,
+                        level=level,
+                        driver=driver.name,
+                        segment_id=segment
+                    )
+                    context._push_binding_level(pbl_obj)
                     next_segments = context._next_segments_to_bind
                     if next_segments:
                         #如果驱动要求继续绑定，则将level＋1并继续绑定
@@ -882,7 +885,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         # level to one of the segments we are currently trying to
         # bind. Note that it is OK for the same driver to bind at
         # multiple levels using different segments.
-        segment_ids_to_bind = {s[api.SEGMENTATION_ID]
+        segment_ids_to_bind = {s[api.ID]
                                for s in segments_to_bind}
         for level in binding_levels:
             if (level.driver == driver.name and

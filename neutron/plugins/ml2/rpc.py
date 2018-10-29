@@ -25,8 +25,10 @@ from oslo_log import log
 import oslo_messaging
 from sqlalchemy.orm import exc
 
+from neutron.agent import _topics as n_topics
 from neutron.api.rpc.handlers import dvr_rpc
 from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
+from neutron.common import constants as c_const
 from neutron.common import rpc as n_rpc
 from neutron.db import l3_hamode_db
 from neutron.db import provisioning_blocks
@@ -122,6 +124,15 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
                          'network_id': port['network_id'],
                          'vif_type': port_context.vif_type})
             return {'device': device}
+
+        if (port['device_owner'].startswith(
+                n_const.DEVICE_OWNER_COMPUTE_PREFIX) and
+                port[portbindings.HOST_ID] != host):
+            LOG.debug("Device %(device)s has no active binding in host "
+                      "%(host)s", {'device': device,
+                                   'host': host})
+            return {'device': device,
+                    c_const.NO_ACTIVE_BINDING: True}
 
         network_qos_policy_id = port_context.network._network.get(
             qos_consts.QOS_POLICY_ID)
@@ -315,24 +326,28 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
         port = ml2_db.get_port(rpc_context, port_id)
         if not port:
             return
-        # NOTE: DVR ports are already handled and updated through l2pop
-        # and so we don't need to update it again here
-        if port['device_owner'] == n_const.DEVICE_OWNER_DVR_INTERFACE:
-            return
         port_context = plugin.get_bound_port_context(
-                rpc_context, port_id)
+                rpc_context, port_id, host)
         if not port_context:
             # port deleted
             return
+        # NOTE: DVR ports are already handled and updated through l2pop
+        # and so we don't need to update it again here. But, l2pop did not
+        # handle DVR ports while restart neutron-*-agent, we need to handle
+        # it here.
+        if (port['device_owner'] == n_const.DEVICE_OWNER_DVR_INTERFACE and
+                not l2pop_driver.obj.agent_restarted(port_context)):
+            return
         port = port_context.current
-        if (status == n_const.PORT_STATUS_ACTIVE and
+        if (port['device_owner'] != n_const.DEVICE_OWNER_DVR_INTERFACE and
+            status == n_const.PORT_STATUS_ACTIVE and
             port[portbindings.HOST_ID] != host and
             not l3_hamode_db.is_ha_router_port(rpc_context,
                                                port['device_owner'],
                                                port['device_id'])):
                 # don't setup ACTIVE forwarding entries unless bound to this
-                # host or if it's an HA port (which is special-cased in the
-                # mech driver)
+                # host or if it's an HA or DVR port (which is special-cased in
+                # the mech driver)
                 return
         port_context.current['status'] = status
         port_context.current[portbindings.HOST_ID] = host
@@ -392,6 +407,7 @@ class AgentNotifierApi(dvr_rpc.DVRAgentRpcApiMixin,
         1.1 - Added get_active_networks_info, create_dhcp_port,
               update_dhcp_port, and removed get_dhcp_port methods.
         1.4 - Added network_update
+        1.5 - Added binding_activate and binding_deactivate
     """
 
     def __init__(self, topic):
@@ -408,6 +424,10 @@ class AgentNotifierApi(dvr_rpc.DVRAgentRpcApiMixin,
         self.topic_network_update = topics.get_topic_name(topic,
                                                           topics.NETWORK,
                                                           topics.UPDATE)
+        self.topic_port_binding_deactivate = topics.get_topic_name(
+            topic, n_topics.PORT_BINDING, n_topics.DEACTIVATE)
+        self.topic_port_binding_activate = topics.get_topic_name(
+            topic, n_topics.PORT_BINDING, n_topics.ACTIVATE)
 
         target = oslo_messaging.Target(topic=topic, version='1.0')
         self.client = n_rpc.get_client(target)
@@ -434,3 +454,14 @@ class AgentNotifierApi(dvr_rpc.DVRAgentRpcApiMixin,
         cctxt = self.client.prepare(topic=self.topic_network_update,
                                     fanout=True, version='1.4')
         cctxt.cast(context, 'network_update', network=network)
+
+    def binding_deactivate(self, context, port_id, host, network_id):
+        cctxt = self.client.prepare(topic=self.topic_port_binding_deactivate,
+                                    fanout=True, version='1.5')
+        cctxt.cast(context, 'binding_deactivate', port_id=port_id, host=host,
+                   network_id=network_id)
+
+    def binding_activate(self, context, port_id, host):
+        cctxt = self.client.prepare(topic=self.topic_port_binding_activate,
+                                    fanout=True, version='1.5')
+        cctxt.cast(context, 'binding_activate', port_id=port_id, host=host)

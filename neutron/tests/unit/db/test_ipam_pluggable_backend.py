@@ -28,7 +28,6 @@ import webob.exc
 
 from neutron.db import ipam_backend_mixin
 from neutron.db import ipam_pluggable_backend
-from neutron.db import models_v2
 from neutron.ipam import requests as ipam_req
 from neutron.objects import ports as port_obj
 from neutron.objects import subnet as obj_subnet
@@ -256,6 +255,34 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
         self.assertIsInstance(request, ipam_req.AutomaticAddressRequest)
         self.assertEqual(eui64_ip, request.address)
 
+    def test_allocate_multiple_eui64_ips(self):
+        mocks = self._prepare_ipam()
+        ips = [{'subnet_id': self._gen_subnet_id(),
+                'subnet_cidr': '2001:470:abcd::/64',
+                'mac': '6c:62:6d:de:cf:49',
+                'eui64_address': True},
+               {'subnet_id': self._gen_subnet_id(),
+                'subnet_cidr': '2001:360:abcd::/64',
+                'mac': '6c:62:6d:de:cf:49',
+                'eui64_address': True}]
+        mocks['ipam']._ipam_allocate_ips(mock.ANY, mocks['driver'],
+                                         mock.ANY, ips)
+
+        eui64_ips = []
+        request_ips = []
+        i = 0
+        requests = mocks['subnets'].allocate.call_args_list
+        for ip in ips:
+            eui64_ip = netutils.get_ipv6_addr_by_EUI64(ip['subnet_cidr'],
+                                                       ip['mac'])
+            self.assertIsInstance(requests[i][0][0],
+                                  ipam_req.AutomaticAddressRequest)
+            self.assertEqual(eui64_ip, requests[i][0][0].address)
+            request_ips.append(requests[i][0][0].address)
+            eui64_ips.append(eui64_ip)
+            i += 1
+        self.assertEqual(request_ips, eui64_ips)
+
     def test_allocate_multiple_ips(self):
         mocks = self._prepare_ipam()
         subnet_id = self._gen_subnet_id()
@@ -343,7 +370,7 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
         context = mock.Mock()
         pluggable_backend = ipam_pluggable_backend.IpamPluggableBackend()
         with self.subnet(cidr=constants.PROVISIONAL_IPV6_PD_PREFIX,
-                         ip_version=6) as subnet:
+                         ip_version=constants.IP_VERSION_6) as subnet:
             subnet = subnet['subnet']
             fixed_ips = [{'subnet_id': subnet['id'],
                          'ip_address': '::1'}]
@@ -379,7 +406,7 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
         cfg.CONF.set_override('ipv6_pd_enabled', True)
         cidr = constants.PROVISIONAL_IPV6_PD_PREFIX
         allocation_pools = [netaddr.IPRange('::2', '::ffff:ffff:ffff:ffff')]
-        with self.subnet(cidr=None, ip_version=6,
+        with self.subnet(cidr=None, ip_version=constants.IP_VERSION_6,
                          subnetpool_id=constants.IPV6_PD_POOL_ID,
                          ipv6_ra_mode=constants.IPV6_SLAAC,
                          ipv6_address_mode=constants.IPV6_SLAAC):
@@ -477,7 +504,7 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
                                    admin_state_up=True)
         network = self.deserialize(self.fmt, res)
         subnet = self._make_subnet(self.fmt, network, gateway_ip,
-                                   cidr, ip_version=4)
+                                   cidr, ip_version=constants.IP_VERSION_4)
         req = self.new_delete_request('subnets', subnet['subnet']['id'])
         res = req.get_response(self.api)
         self.assertEqual(webob.exc.HTTPNoContent.code, res.status_int)
@@ -497,7 +524,7 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
                                    admin_state_up=True)
         network = self.deserialize(self.fmt, res)
         subnet = self._make_subnet(self.fmt, network, gateway_ip,
-                                   cidr, ip_version=4)
+                                   cidr, ip_version=constants.IP_VERSION_4)
         req = self.new_delete_request('subnets', subnet['subnet']['id'])
         res = req.get_response(self.api)
         self.assertEqual(webob.exc.HTTPServerError.code, res.status_int)
@@ -684,7 +711,7 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
         subnets = [{'id': ip_dict['subnet_id'],
                     'network_id': network_id,
                     'cidr': '192.1.1.0/24',
-                    'ip_version': 4,
+                    'ip_version': constants.IP_VERSION_4,
                     'ipv6_address_mode': None,
                     'ipv6_ra_mode': None}]
         get_subnets_mock = mock.Mock(return_value=subnets)
@@ -738,13 +765,12 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
         context = self.admin_context
         subnet = {'id': uuidutils.generate_uuid(),
                   'ip_version': constants.IP_VERSION_4,
-                  'cidr': '192.1.1.0/24',
+                  'cidr': netaddr.IPNetwork('192.1.1.0/24'),
                   'ipv6_address_mode': None,
                   'ipv6_ra_mode': None}
         subnet_with_pools = subnet.copy()
-        subnet_db = models_v2.Subnet(**subnet_with_pools)
-        context.session.add(subnet_db)
-        context.session.flush()
+        subnet_obj = obj_subnet.Subnet(context, **subnet_with_pools)
+        subnet_obj.create()
         subnet_with_pools['allocation_pools'] = old_pools
         # if subnet has no allocation pools set, then old pools has to
         # be added to subnet dict passed to request factory
@@ -757,15 +783,14 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
         context = self.admin_context
         subnet = {'id': uuidutils.generate_uuid(),
                   'ip_version': constants.IP_VERSION_4,
-                  'cidr': '192.1.1.0/24',
+                  'cidr': netaddr.IPNetwork('192.1.1.0/24'),
                   'ipv6_address_mode': None,
                   'ipv6_ra_mode': None}
         # make a copy of subnet for validation, since update_subnet changes
         # incoming subnet dict
         expected_subnet = subnet.copy()
-        subnet_db = models_v2.Subnet(**subnet)
-        context.session.add(subnet_db)
-        context.session.flush()
+        subnet_obj = obj_subnet.Subnet(context, **subnet)
+        subnet_obj.create()
         subnet['allocation_pools'] = [
             netaddr.IPRange('192.1.1.10', '192.1.1.254')]
         expected_subnet = subnet.copy()
@@ -773,7 +798,6 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
                                     subnet_id=subnet['id'],
                                     start='192.1.1.10',
                                     end='192.1.1.254').create()
-        context.session.refresh(subnet_db)
         # validate that subnet passed to request factory is the same as
         # incoming one, i.e. new pools in it are not overwritten by old pools
         self._test_update_db_subnet(pool_mock, subnet, expected_subnet,
@@ -789,8 +813,9 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
                                    'subnet_id': uuidutils.generate_uuid()},
                                   {'ip_address': '192.168.1.50',
                                    'subnet_id': uuidutils.generate_uuid()}]}
-        db_port = models_v2.Port(id=uuidutils.generate_uuid(),
-                                 network_id=uuidutils.generate_uuid())
+        db_port = port_obj.Port(context,
+                                id=uuidutils.generate_uuid(),
+                                network_id=uuidutils.generate_uuid())
         old_port = {'fixed_ips': [{'ip_address': '192.168.1.10',
                                    'subnet_id': uuidutils.generate_uuid()},
                                   {'ip_address': '192.168.1.50',

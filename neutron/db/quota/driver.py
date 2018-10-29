@@ -14,13 +14,13 @@
 #    under the License.
 
 from neutron_lib.api import attributes
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions
 from neutron_lib.plugins import constants
 from neutron_lib.plugins import directory
 from oslo_log import log
 
 from neutron.common import exceptions as n_exc
-from neutron.db import api as db_api
 from neutron.db.quota import api as quota_api
 from neutron.objects import quota as quota_obj
 from neutron.quota import resource as res
@@ -208,7 +208,7 @@ class DbQuotaDriver(object):
         # locks should be ok to use when support for sending "hotspot" writes
         # to a single node will be available.
         requested_resources = deltas.keys()
-        with db_api.context_manager.writer.using(context):
+        with db_api.CONTEXT_WRITER.using(context):
             # get_tenant_quotes needs in input a dictionary mapping resource
             # name to BaseResosurce instances so that the default quota can be
             # retrieved

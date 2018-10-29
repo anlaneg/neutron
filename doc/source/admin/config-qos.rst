@@ -79,6 +79,15 @@ updated:
   port or network.
 
 
+Valid DSCP Marks
+----------------
+
+Valid DSCP mark values are even numbers between 0 and 56, except 2-6, 42, 44,
+and 50-54.  The full list of valid DSCP marks is:
+
+0, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 46, 48, 56
+
+
 Configuration
 ~~~~~~~~~~~~~
 
@@ -287,8 +296,19 @@ First, create a QoS policy and its bandwidth limit rule:
 .. note::
 
    The QoS implementation requires a burst value to ensure proper behavior of
-   bandwidth limit rules in the Open vSwitch and Linux bridge agents. If you
-   do not provide a value, it defaults to 80% of the bandwidth limit which
+   bandwidth limit rules in the Open vSwitch and Linux bridge agents.
+   Configuring the proper burst value is very important. If the burst value is
+   set too low, bandwidth usage will be throttled even with a proper bandwidth
+   limit setting. This issue is discussed in various documentation sources, for
+   example in `Juniper's documentation
+   <http://www.juniper.net/documentation/en_US/junos12.3/topics/concept/policer-mx-m120-m320-burstsize-determining.html>`_.
+   For TCP traffic it is recommended to set burst value as 80% of desired bandwidth
+   limit value. For example, if the bandwidth limit is set to 1000kbps then enough
+   burst value will be 800kbit. If the configured burst value is too low,
+   achieved bandwidth limit will be lower than expected. If the configured burst
+   value is too high, too few packets could be limited and achieved bandwidth
+   limit would be higher than expected.
+   If you do not provide a value, it defaults to 80% of the bandwidth limit which
    works for typical TCP traffic.
 
 Second, associate the created policy with an existing neutron port.
@@ -375,20 +395,6 @@ network, or initially create the network attached to the policy.
 
     $ openstack network set --qos-policy bw-limiter private
 
-.. note::
-
-   Configuring the proper burst value is very important. If the burst value is
-   set too low, bandwidth usage will be throttled even with a proper bandwidth
-   limit setting. This issue is discussed in various documentation sources, for
-   example in `Juniper's documentation
-   <http://www.juniper.net/documentation/en_US/junos12.3/topics/concept/policer-mx-m120-m320-burstsize-determining.html>`_.
-   Burst value for TCP traffic can be set as 80% of desired bandwidth limit
-   value. For example, if the bandwidth limit is set to 1000kbps then enough
-   burst value will be 800kbit. If the configured burst value is too low,
-   achieved bandwidth limit will be lower than expected. If the configured burst
-   value is too high, too few packets could be limited and achieved bandwidth
-   limit would be higher than expected.
-
 The created policy can be associated with an existing floating IP.
 In order to do this, user extracts the floating IP id to be associated to
 the already created policy. In the next example, we will assign the
@@ -449,40 +455,7 @@ Floating IPs can be created with a policy attached to them too.
 The QoS bandwidth limit rules attached to a floating IP will become
 active when you associate the latter with a port. For example, to associate
 the previously created floating IP ``172.16.100.12`` to the instance port with
-fixed IP ``192.168.222.5``:
-
-.. code-block:: console
-
-   $ openstack port show a7f25e73-4288-4a16-93b9-b71e6fd00862
-   +-----------------------+--------------------------------------------------+
-   | Field                 | Value                                            |
-   +-----------------------+--------------------------------------------------+
-   | admin_state_up        | UP                                               |
-   |            ...        |                      ...                         |
-   | device_id             | 69c03d70-53e8-4030-9c02-675c47f0b06b             |
-   | device_owner          | compute:nova                                     |
-   | dns_assignment        | None                                             |
-   | dns_name              | None                                             |
-   | extra_dhcp_opts       |                                                  |
-   | fixed_ips             | ip_address='192.168.222.5', subnet_id='...'      |
-   | id                    | a7f25e73-4288-4a16-93b9-b71e6fd00862             |
-   | ip_address            | None                                             |
-   | mac_address           | fa:16:3e:b5:1a:cc                                |
-   | name                  |                                                  |
-   | network_id            | ea602456-3ea8-4989-8981-add6182b4ceb             |
-   | option_name           | None                                             |
-   | option_value          | None                                             |
-   | port_security_enabled | False                                            |
-   | project_id            | 916e39e8be52433ba040da3a3a6d0847                 |
-   | qos_policy_id         | None                                             |
-   | revision_number       | 6                                                |
-   | security_group_ids    | 77436c73-3a29-42a7-b544-d47f4ea96d54             |
-   | status                | ACTIVE                                           |
-   | subnet_id             | None                                             |
-   | tags                  |                                                  |
-   | trunk_details         | None                                             |
-   | updated_at            | 2017-12-05T15:48:54Z                             |
-   +-----------------------+--------------------------------------------------+
+uuid ``a7f25e73-4288-4a16-93b9-b71e6fd00862`` and fixed IP ``192.168.222.5``:
 
 .. code-block:: console
 
@@ -491,7 +464,15 @@ fixed IP ``192.168.222.5``:
 
 .. note::
 
-   For now, the L3 agent floating IP QoS extension only uses
+   The QoS policy attached to a floating IP is not applied to a port,
+   it is applied to an associated floating IP only.
+   Thus the ID of QoS policy attached to a floating IP will not be visible
+   in a port's ``qos_policy_id`` field after asscoating a floating IP to
+   the port. It is only visible in the floating IP attributes.
+
+.. note::
+
+   For now, the L3 agent floating IP QoS extension only supports
    ``bandwidth_limit`` rules. Other rule types (like DSCP marking) will be
    silently ignored for floating IPs. A QoS policy that does not contain any
    ``bandwidth_limit`` rules will have no effect when attached to a
@@ -499,8 +480,8 @@ fixed IP ``192.168.222.5``:
 
    If floating IP is bound to a port, and both have binding QoS bandwidth
    rules, the L3 agent floating IP QoS extension ignores the behavior of
-   the port QoS, and installs the rules on the appropriate device in the
-   router namespace.
+   the port QoS, and installs the rules from the QoS policy associated to the
+   floating IP on the appropriate device in the router namespace.
 
 Each project can have at most one default QoS policy, although it is not
 mandatory. If a default QoS policy is defined, all new networks created within
@@ -669,21 +650,50 @@ no less than the specified bandwidth to each port on which the rule is
 applied. However, as this feature is not yet integrated with the Compute
 scheduler, minimum bandwidth cannot be guaranteed.
 
-It is also possible to combine several rules in one policy:
+It is also possible to combine several rules in one policy, as long as the type
+or direction of each rule is different. For example, You can specify two
+``bandwidth-limit`` rules, one with ``egress`` and one with ``ingress``
+direction.
 
 .. code-block:: console
 
     $ openstack network qos rule create --type bandwidth-limit \
-        --max-kbps 50000 --max-burst-kbits 50000 bandwidth-control
+        --max-kbps 50000 --max-burst-kbits 50000 --egress bandwidth-control
     +----------------+--------------------------------------+
     | Field          | Value                                |
     +----------------+--------------------------------------+
+    | direction      | egress                               |
     | id             | 0db48906-a762-4d32-8694-3f65214c34a6 |
     | max_burst_kbps | 50000                                |
     | max_kbps       | 50000                                |
     | name           | None                                 |
     | project_id     |                                      |
     +----------------+--------------------------------------+
+
+    $ openstack network qos rule create --type bandwidth-limit \
+        --max-kbps 10000 --max-burst-kbits 10000 --ingress bandwidth-control
+    +----------------+--------------------------------------+
+    | Field          | Value                                |
+    +----------------+--------------------------------------+
+    | direction      | ingress                              |
+    | id             | faabef24-e23a-4fdf-8e92-f8cb66998834 |
+    | max_burst_kbps | 10000                                |
+    | max_kbps       | 10000                                |
+    | name           | None                                 |
+    | project_id     |                                      |
+    +----------------+--------------------------------------+
+
+    $ openstack network qos rule create --type minimum-bandwidth \
+        --min-kbps 1000 --egress bandwidth-control
+    +------------+--------------------------------------+
+    | Field      | Value                                |
+    +------------+--------------------------------------+
+    | direction  | egress                               |
+    | id         | da858b32-44bc-43c9-b92b-cf6e2fa836ab |
+    | min_kbps   | 1000                                 |
+    | name       | None                                 |
+    | project_id |                                      |
+    +------------+--------------------------------------+
 
     $ openstack network qos policy show bandwidth-control
     +-------------------+-------------------------------------------------------------------+
@@ -695,9 +705,15 @@ It is also possible to combine several rules in one policy:
     | name              | bandwidth-control                                                 |
     | project_id        | 7cc5a84e415d48e69d2b06aa67b317d8                                  |
     | revision_number   | 4                                                                 |
-    | rules             | [{u'max_kbps': 50000, u'type': u'bandwidth_limit',                |
+    | rules             | [{u'max_kbps': 50000, u'direction': u'egress',                    |
+    |                   |   u'type': u'bandwidth_limit',                                    |
     |                   |   u'id': u'0db48906-a762-4d32-8694-3f65214c34a6',                 |
     |                   |   u'max_burst_kbps': 50000,                                       |
+    |                   |   u'qos_policy_id': u'8491547e-add1-4c6c-a50e-42121237256c'},     |
+    |                   | [{u'max_kbps': 10000, u'direction': u'ingress',                   |
+    |                   |   u'type': u'bandwidth_limit',                                    |
+    |                   |   u'id': u'faabef24-e23a-4fdf-8e92-f8cb66998834',                 |
+    |                   |   u'max_burst_kbps': 10000,                                       |
     |                   |   u'qos_policy_id': u'8491547e-add1-4c6c-a50e-42121237256c'},     |
     |                   |  {u'direction':                                                   |
     |                   |   u'egress', u'min_kbps': 1000, u'type': u'minimum_bandwidth',    |

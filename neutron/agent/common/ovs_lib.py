@@ -30,7 +30,7 @@ import tenacity
 from neutron._i18n import _
 from neutron.agent.common import ip_lib
 from neutron.agent.common import utils
-from neutron.agent.ovsdb import api as ovsdb_api
+from neutron.agent.ovsdb import impl_idl
 from neutron.common import constants as common_constants
 from neutron.common import utils as common_utils
 from neutron.conf.agent import ovs_conf
@@ -72,15 +72,15 @@ CTRL_BURST_LIMIT_MIN = 25
 
 
 def _ovsdb_result_pending(result):
-    """Return True if ovs-vsctl indicates the result is still pending."""
-    # ovs-vsctl can return '[]' for an ofport that has not yet been assigned
+    """Return True if ovsdb indicates the result is still pending."""
+    # ovsdb can return '[]' for an ofport that has not yet been assigned
     return result == []
 
 
 def _ovsdb_retry(fn):
     """Decorator for retrying when OVS has yet to assign an ofport.
 
-    The instance's vsctl_timeout is used as the max waiting time. This relies
+    The instance's ovsdb_timeout is used as the max waiting time. This relies
     on the fact that instance methods receive self as the first argument.
     """
     @six.wraps(fn)
@@ -91,7 +91,7 @@ def _ovsdb_retry(fn):
             retry=tenacity.retry_if_result(_ovsdb_result_pending),
             wait=tenacity.wait_exponential(multiplier=0.01, max=1),
             stop=tenacity.stop_after_delay(
-                self.vsctl_timeout))(fn)
+                self.ovsdb_timeout))(fn)
         return new_fn(*args, **kwargs)
     return wrapped
 
@@ -115,8 +115,8 @@ class VifPort(object):
 class BaseOVS(object):
 
     def __init__(self):
-        self.vsctl_timeout = cfg.CONF.OVS.ovsdb_timeout
-        self.ovsdb = ovsdb_api.from_config(self)
+        self.ovsdb_timeout = cfg.CONF.OVS.ovsdb_timeout
+        self.ovsdb = impl_idl.api_factory()
 
     def add_manager(self, connection_uri, timeout=_SENTINEL):
         """Have ovsdb-server listen for manager connections
@@ -210,9 +210,10 @@ OF_PROTOCOL_TO_VERSION = {
 
 def version_from_protocol(protocol):
     if protocol not in OF_PROTOCOL_TO_VERSION:
-        raise Exception("unknown OVS protocol string, cannot compare: %s, "
-                        "(known: %s)" % (protocol,
-                                         list(OF_PROTOCOL_TO_VERSION)))
+        raise Exception(_("unknown OVS protocol string, cannot compare: "
+                          "%(protocol)s, (known: %(known)s)") %
+                        {'protocol': protocol,
+                         'known': list(OF_PROTOCOL_TO_VERSION)})
     return OF_PROTOCOL_TO_VERSION[protocol]
 
 
@@ -270,6 +271,8 @@ class OVSBridge(BaseOVS):
 
     #创建ovs桥
     def create(self, secure_mode=False):
+        other_config = {
+            'mac-table-size': str(cfg.CONF.OVS.bridge_mac_table_size)}
         with self.ovsdb.transaction() as txn:
             txn.add(
                 self.ovsdb.add_br(self.br_name,
@@ -282,6 +285,9 @@ class OVSBridge(BaseOVS):
             txn.add(
                 self.ovsdb.db_add('Bridge', self.br_name,
                                   'protocols', self._highest_protocol_needed))
+            txn.add(
+                self.ovsdb.db_set('Bridge', self.br_name,
+                                  ('other_config', other_config)))
             if secure_mode:
                 #默认配置为安全模式
                 txn.add(self.ovsdb.set_fail_mode(self.br_name,
@@ -406,7 +412,7 @@ class OVSBridge(BaseOVS):
             # broken here
             LOG.exception("Timed out retrieving datapath_id on bridge %s.",
                           self.br_name)
-            raise RuntimeError('No datapath_id on bridge %s' % self.br_name)
+            raise RuntimeError(_('No datapath_id on bridge %s') % self.br_name)
 
     #按action要求处理flow (支持del,mod,add)
     def do_action_flows(self, action, kwargs_list, use_bundle=False):
@@ -421,8 +427,8 @@ class OVSBridge(BaseOVS):
                     # cookie to match flows whatever their cookie is
                     kw.pop('cookie')
                     if kw.get('cookie_mask'):  # non-zero cookie mask
-                        raise Exception("cookie=COOKIE_ANY but cookie_mask "
-                                        "set to %s" % kw.get('cookie_mask'))
+                        raise Exception(_("cookie=COOKIE_ANY but cookie_mask "
+                                          "set to %s") % kw.get('cookie_mask'))
                 elif 'cookie' in kw:
                     # a cookie was specified, use it
                     #如果是删除操作，且指定了cookie,检查是否在结尾指定'/-1'如未指定，则添加
@@ -902,12 +908,12 @@ class OVSBridge(BaseOVS):
             max_bw_in_bytes = other_config.get("cir")
             if max_bw_in_bytes is not None:
                 max_kbps = common_utils.bits_to_kilobits(
-                    common_utils.bytes_to_bits(int(max_bw_in_bytes)),
+                    common_utils.bytes_to_bits(int(float(max_bw_in_bytes))),
                     common_constants.SI_BASE)
             max_burst_in_bytes = other_config.get("cbs")
             if max_burst_in_bytes is not None:
                 max_burst_kbit = common_utils.bits_to_kilobits(
-                    common_utils.bytes_to_bits(int(max_burst_in_bytes)),
+                    common_utils.bytes_to_bits(int(float(max_burst_in_bytes))),
                     common_constants.SI_BASE)
         return max_kbps, max_burst_kbit
 

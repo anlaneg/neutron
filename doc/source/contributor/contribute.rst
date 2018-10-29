@@ -194,7 +194,7 @@ set. Feel free to reach out to the VMT in public or in private.
 
 Also, the VMT is an autonomous subgroup of the much larger `OpenStack Security
 project-team
-<http://governance.openstack.org/reference/projects/security.html>`_. They're a
+<https://governance.openstack.org/tc/reference/projects/security.html>`_. They're a
 knowledgeable bunch and quite responsive if you want to get their opinions or
 help with security-related issues (vulnerabilities or otherwise).
 
@@ -344,7 +344,7 @@ oslo.i18n
 
 * Each subproject repository should have its own oslo.i18n integration
   wrapper module ``${MODULE_NAME}/_i18n.py``. The detail is found at
-  https://docs.openstack.org/oslo.i18n/latest/usage.html.
+  https://docs.openstack.org/oslo.i18n/latest/user/usage.html.
 
   .. note::
 

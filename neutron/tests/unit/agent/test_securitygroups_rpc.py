@@ -538,7 +538,7 @@ class SGServerRpcCallBackTestCase(test_sg.SecurityGroupDBTestCase):
         fake_gateway = FAKE_IP[const.IPv6]
         with self.network() as n,\
                 self.subnet(n, gateway_ip=fake_gateway,
-                            cidr=fake_prefix, ip_version=6
+                            cidr=fake_prefix, ip_version=const.IP_VERSION_6
                             ) as subnet_v6,\
                 self.security_group() as sg1:
             sg1_id = sg1['security_group']['id']
@@ -651,7 +651,7 @@ class SGServerRpcCallBackTestCase(test_sg.SecurityGroupDBTestCase):
         fake_gateway = FAKE_IP[const.IPv6]
         with self.network() as n,\
                 self.subnet(n, gateway_ip=fake_gateway,
-                            cidr=fake_prefix, ip_version=6
+                            cidr=fake_prefix, ip_version=const.IP_VERSION_6
                             ) as subnet_v6,\
                 self.security_group() as sg1:
             sg1_id = sg1['security_group']['id']
@@ -709,7 +709,7 @@ class SGServerRpcCallBackTestCase(test_sg.SecurityGroupDBTestCase):
         fake_gateway = FAKE_IP[const.IPv6]
         with self.network() as n,\
                 self.subnet(n, gateway_ip=fake_gateway,
-                            cidr=fake_prefix, ip_version=6
+                            cidr=fake_prefix, ip_version=const.IP_VERSION_6
                             ) as subnet_v6,\
                 self.security_group() as sg1,\
                 self.security_group() as sg2:
@@ -1363,9 +1363,9 @@ class SecurityGroupAgentRpcApiTestCase(base.BaseTestCase):
             None, security_groups=[])
         self.assertFalse(self.mock_cast.called)
 
+
 # Note(nati) bn -> binary_name
 # id -> device_id
-
 PHYSDEV_MOD = '-m physdev'
 PHYSDEV_IS_BRIDGED = '--physdev-is-bridged'
 

@@ -20,22 +20,22 @@ from neutron_lib.api.definitions import network as net_def
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
+from neutron_lib.db import api as db_api
+from neutron_lib.db import utils as db_utils
 from neutron_lib import exceptions as n_exc
 from neutron_lib.objects import exceptions as obj_exc
 from neutron_lib.plugins import constants
 from neutron_lib.plugins import directory
+from neutron_lib.plugins import utils as p_utils
 from oslo_log import log as logging
 
 from neutron._i18n import _
 from neutron.common import exceptions as c_exc
 from neutron.db import _resource_extend as resource_extend
-from neutron.db import _utils as db_utils
-from neutron.db import api as db_api
 from neutron.db import common_db_mixin
 from neutron.objects import auto_allocate as auto_allocate_obj
 from neutron.objects import base as base_obj
 from neutron.objects import network as net_obj
-from neutron.plugins.common import utils as p_utils
 from neutron.services.auto_allocate import exceptions
 
 LOG = logging.getLogger(__name__)

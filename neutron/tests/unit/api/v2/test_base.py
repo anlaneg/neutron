@@ -24,12 +24,13 @@ from neutron_lib import context
 from neutron_lib import exceptions as n_exc
 from neutron_lib import fixture
 from neutron_lib.plugins import directory
+from neutron_lib.tests.unit import fake_notifier
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_policy import policy as oslo_policy
 from oslo_utils import uuidutils
 import six
-import six.moves.urllib.parse as urlparse
+from six.moves import urllib
 import webob
 from webob import exc
 import webtest
@@ -42,7 +43,6 @@ from neutron import policy
 from neutron import quota
 from neutron.quota import resource_registry
 from neutron.tests import base
-from neutron.tests import fake_notifier
 from neutron.tests import tools
 from neutron.tests.unit import dummy_plugin
 from neutron.tests.unit import testlib_api
@@ -86,9 +86,11 @@ class APIv2TestBase(base.BaseTestCase):
         self._plugin_patcher = mock.patch(plugin, autospec=True)
         self.plugin = self._plugin_patcher.start()
         instance = self.plugin.return_value
-        instance.supported_extension_aliases = ['empty-string-filtering']
+        instance.supported_extension_aliases = ['empty-string-filtering',
+                                                'filter-validation']
         instance._NeutronPluginBaseV2__native_pagination_support = True
         instance._NeutronPluginBaseV2__native_sorting_support = True
+        instance._NeutronPluginBaseV2__filter_validation_support = True
         tools.make_mock_plugin_json_encodable(instance)
 
         api = router.APIRouter()
@@ -590,16 +592,16 @@ class JSONV2TestCase(APIv2TestBase, testlib_api.WebTestCase):
         self.assertEqual(1, len(next_links))
         self.assertEqual(1, len(previous_links))
 
-        url = urlparse.urlparse(next_links[0]['href'])
+        url = urllib.parse.urlparse(next_links[0]['href'])
         self.assertEqual(url.path, _get_path('networks'))
         params['marker'] = [id2]
-        self.assertEqual(params, urlparse.parse_qs(url.query))
+        self.assertEqual(params, urllib.parse.parse_qs(url.query))
 
-        url = urlparse.urlparse(previous_links[0]['href'])
+        url = urllib.parse.urlparse(previous_links[0]['href'])
         self.assertEqual(url.path, _get_path('networks'))
         params['marker'] = [id1]
         params['page_reverse'] = ['True']
-        self.assertEqual(params, urlparse.parse_qs(url.query))
+        self.assertEqual(params, urllib.parse.parse_qs(url.query))
 
     def test_list_pagination_with_last_page(self):
         id = str(_uuid())
@@ -629,12 +631,12 @@ class JSONV2TestCase(APIv2TestBase, testlib_api.WebTestCase):
                 previous_links.append(r)
         self.assertEqual(1, len(previous_links))
 
-        url = urlparse.urlparse(previous_links[0]['href'])
+        url = urllib.parse.urlparse(previous_links[0]['href'])
         self.assertEqual(url.path, _get_path('networks'))
         expect_params = params.copy()
         expect_params['marker'] = [id]
         expect_params['page_reverse'] = ['True']
-        self.assertEqual(expect_params, urlparse.parse_qs(url.query))
+        self.assertEqual(expect_params, urllib.parse.parse_qs(url.query))
 
     def test_list_pagination_with_empty_page(self):
         return_value = []
@@ -655,12 +657,12 @@ class JSONV2TestCase(APIv2TestBase, testlib_api.WebTestCase):
                     previous_links.append(r)
         self.assertEqual(1, len(previous_links))
 
-        url = urlparse.urlparse(previous_links[0]['href'])
+        url = urllib.parse.urlparse(previous_links[0]['href'])
         self.assertEqual(url.path, _get_path('networks'))
         expect_params = params.copy()
         del expect_params['marker']
         expect_params['page_reverse'] = ['True']
-        self.assertEqual(expect_params, urlparse.parse_qs(url.query))
+        self.assertEqual(expect_params, urllib.parse.parse_qs(url.query))
 
     def test_list_pagination_reverse_with_last_page(self):
         id = str(_uuid())
@@ -691,13 +693,13 @@ class JSONV2TestCase(APIv2TestBase, testlib_api.WebTestCase):
                 next_links.append(r)
         self.assertEqual(1, len(next_links))
 
-        url = urlparse.urlparse(next_links[0]['href'])
+        url = urllib.parse.urlparse(next_links[0]['href'])
         self.assertEqual(url.path, _get_path('networks'))
         expected_params = params.copy()
         del expected_params['page_reverse']
         expected_params['marker'] = [id]
         self.assertEqual(expected_params,
-                         urlparse.parse_qs(url.query))
+                         urllib.parse.parse_qs(url.query))
 
     def test_list_pagination_reverse_with_empty_page(self):
         return_value = []
@@ -718,12 +720,12 @@ class JSONV2TestCase(APIv2TestBase, testlib_api.WebTestCase):
                     next_links.append(r)
         self.assertEqual(1, len(next_links))
 
-        url = urlparse.urlparse(next_links[0]['href'])
+        url = urllib.parse.urlparse(next_links[0]['href'])
         self.assertEqual(url.path, _get_path('networks'))
         expect_params = params.copy()
         del expect_params['marker']
         del expect_params['page_reverse']
-        self.assertEqual(expect_params, urlparse.parse_qs(url.query))
+        self.assertEqual(expect_params, urllib.parse.parse_qs(url.query))
 
     def test_create(self):
         net_id = _uuid()
@@ -830,6 +832,14 @@ class JSONV2TestCase(APIv2TestBase, testlib_api.WebTestCase):
 
     def test_create_no_resource(self):
         data = {}
+        self._test_create_failure_bad_request('networks', data)
+
+    def test_create_object_string_not_json(self):
+        data = {'network': 'a string'}
+        self._test_create_failure_bad_request('networks', data)
+
+    def test_create_object_boolean_not_json(self):
+        data = {'network': True}
         self._test_create_failure_bad_request('networks', data)
 
     def test_create_missing_attr(self):
@@ -1546,11 +1556,29 @@ class ListArgsTestCase(base.BaseTestCase):
         self.assertEqual([], api_common.list_args(request, 'fields'))
 
 
+class SortingTestCase(base.BaseTestCase):
+    def test_get_sorts(self):
+        path = '/?sort_key=foo&sort_dir=desc&sort_key=bar&sort_dir=asc'
+        request = webob.Request.blank(path)
+        attr_info = {'foo': {'key': 'val'}, 'bar': {'key': 'val'}}
+        expect_val = [('foo', False), ('bar', True)]
+        actual_val = api_common.get_sorts(request, attr_info)
+        self.assertEqual(expect_val, actual_val)
+
+    def test_get_sorts_with_project_id(self):
+        path = '/?sort_key=project_id&sort_dir=desc'
+        request = webob.Request.blank(path)
+        attr_info = {'tenant_id': {'key': 'val'}}
+        expect_val = [('project_id', False)]
+        actual_val = api_common.get_sorts(request, attr_info)
+        self.assertEqual(expect_val, actual_val)
+
+
 class FiltersTestCase(base.BaseTestCase):
     def test_all_skip_args(self):
         path = '/?fields=4&fields=3&fields=2&fields=1'
         request = webob.Request.blank(path)
-        self.assertEqual({}, api_common.get_filters(request, None,
+        self.assertEqual({}, api_common.get_filters(request, {},
                                                     ["fields"]))
 
     @mock.patch('neutron.api.api_common.is_empty_string_filtering_supported',
@@ -1574,6 +1602,63 @@ class FiltersTestCase(base.BaseTestCase):
         expect_val = {'foo': ['4'], 'bar': ['3'], 'baz': ['2'], 'qux': ['1']}
         actual_val = api_common.get_filters(request, {})
         self.assertEqual(expect_val, actual_val)
+
+    def test_attr_info_with_project_info_populated(self):
+        path = '/?foo=4&bar=3&baz=2&qux=1'
+        request = webob.Request.blank(path)
+        attr_info = {'tenant_id': {'key': 'val'}}
+        expect_val = {'foo': ['4'], 'bar': ['3'], 'baz': ['2'], 'qux': ['1']}
+        actual_val = api_common.get_filters(request, attr_info)
+        self.assertEqual(expect_val, actual_val)
+        expect_attr_info = {'tenant_id': {'key': 'val'},
+                            'project_id': {'key': 'val'}}
+        self.assertEqual(expect_attr_info, attr_info)
+
+    @mock.patch('neutron.api.api_common.is_filter_validation_enabled',
+                return_value=True)
+    def test_attr_info_with_filter_validation(self, mock_validation_enabled):
+        attr_info = {}
+        self._test_attr_info(attr_info)
+
+        attr_info = {'foo': {}}
+        self._test_attr_info(attr_info)
+
+        attr_info = {'foo': {'is_filter': False}}
+        self._test_attr_info(attr_info)
+
+        attr_info = {'foo': {'is_filter': False}, 'bar': {'is_filter': True},
+                     'baz': {'is_filter': True}, 'qux': {'is_filter': True}}
+        self._test_attr_info(attr_info)
+
+        attr_info = {'foo': {'is_filter': True}, 'bar': {'is_filter': True},
+                     'baz': {'is_filter': True}, 'qux': {'is_filter': True}}
+        expect_val = {'foo': ['4'], 'bar': ['3'], 'baz': ['2'], 'qux': ['1']}
+        self._test_attr_info(attr_info, expect_val)
+
+        attr_info = {'foo': {'is_filter': True}, 'bar': {'is_filter': True},
+                     'baz': {'is_filter': True}, 'qux': {'is_filter': True},
+                     'quz': {}}
+        expect_val = {'foo': ['4'], 'bar': ['3'], 'baz': ['2'], 'qux': ['1']}
+        self._test_attr_info(attr_info, expect_val)
+
+        attr_info = {'foo': {'is_filter': True}, 'bar': {'is_filter': True},
+                     'baz': {'is_filter': True}, 'qux': {'is_filter': True},
+                     'quz': {'is_filter': False}}
+        expect_val = {'foo': ['4'], 'bar': ['3'], 'baz': ['2'], 'qux': ['1']}
+        self._test_attr_info(attr_info, expect_val)
+
+    def _test_attr_info(self, attr_info, expect_val=None):
+        path = '/?foo=4&bar=3&baz=2&qux=1'
+        request = webob.Request.blank(path)
+        if expect_val:
+            actual_val = api_common.get_filters(
+                request, attr_info,
+                is_filter_validation_supported=True)
+            self.assertEqual(expect_val, actual_val)
+        else:
+            self.assertRaises(
+                exc.HTTPBadRequest, api_common.get_filters, request, attr_info,
+                is_filter_validation_supported=True)
 
     def test_attr_info_without_conversion(self):
         path = '/?foo=4&bar=3&baz=2&qux=1'

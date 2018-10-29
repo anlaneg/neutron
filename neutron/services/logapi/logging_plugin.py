@@ -13,7 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from neutron.db import api as db_api
+from neutron_lib.db import api as db_api
+
 from neutron.db import db_base_plugin_common
 from neutron.extensions import logging as log_ext
 from neutron.objects import base as base_obj
@@ -31,10 +32,12 @@ class LoggingPlugin(log_ext.LoggingPluginBase):
 
     __native_pagination_support = True
     __native_sorting_support = True
+    __filter_validation_support = True
 
     def __init__(self):
         super(LoggingPlugin, self).__init__()
         self.driver_manager = driver_mgr.LoggingServiceDriverManager()
+        self.validator_mgr = validators.ResourceValidateRequest.get_instance()
 
     @property
     def supported_logging_types(self):
@@ -66,12 +69,8 @@ class LoggingPlugin(log_ext.LoggingPluginBase):
     def create_log(self, context, log):
         """Create a log object"""
         log_data = log['log']
-        resource_type = log_data['resource_type']
-        if resource_type not in self.supported_logging_types:
-            raise log_exc.InvalidLogResourceType(
-                resource_type=resource_type)
-        validators.validate_request(context, log_data)
-        with db_api.context_manager.writer.using(context):
+        self.validator_mgr.validate_request(context, log_data)
+        with db_api.CONTEXT_WRITER.using(context):
             # body 'log' contains both tenant_id and project_id
             # but only latter needs to be used to create Log object.
             # We need to remove redundant keyword.
@@ -90,7 +89,7 @@ class LoggingPlugin(log_ext.LoggingPluginBase):
     def update_log(self, context, log_id, log):
         """Update information for the specified log object"""
         log_data = log['log']
-        with db_api.context_manager.writer.using(context):
+        with db_api.CONTEXT_WRITER.using(context):
             log_obj = log_object.Log(context, id=log_id)
             log_obj.update_fields(log_data, reset_changes=True)
             log_obj.update()
@@ -105,7 +104,7 @@ class LoggingPlugin(log_ext.LoggingPluginBase):
 
     def delete_log(self, context, log_id):
         """Delete the specified log object"""
-        with db_api.context_manager.writer.using(context):
+        with db_api.CONTEXT_WRITER.using(context):
             log_obj = self._get_log(context, log_id)
             log_obj.delete()
             self.driver_manager.call(

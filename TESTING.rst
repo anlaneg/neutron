@@ -304,7 +304,7 @@ Example
 Neutron offers a Quality of Service API, initially offering bandwidth
 capping at the port level. In the reference implementation, it does this by
 utilizing an OVS feature.
-neutron.tests.fullstack.test_qos.TestQoSWithOvsAgent.test_qos_policy_rule_lifecycle
+neutron.tests.fullstack.test_qos.TestBwLimitQoSOvs.test_bw_limit_qos_policy_rule_lifecycle
 is a positive example of how the fullstack testing infrastructure should be used.
 It creates a network, subnet, QoS policy & rule and a port utilizing that policy.
 It then asserts that the expected bandwidth limitation is present on the OVS
@@ -321,10 +321,6 @@ present in current Ubuntu Xenial 16.04 kernel. Kernel was fixed with this
 `commit <https://github.com/torvalds/linux/commit/bbec7802c6948c8626b71a4fe31283cb4691c358>`_
 and backported with this
 `openvswitch commit <https://github.com/openvswitch/ovs/commit/b1c74f35273122db4ce2728a70fd34b98f525434>`_.
-
-Currently we compile openvswitch userland and kernel module from source for
-the ovsfw tempest job on the gate. This is to avoid ovs-vswitchd core dumps.
-See the gate_hook.sh comments for details.
 
 API Tests
 ~~~~~~~~~
@@ -408,7 +404,7 @@ Rally Tests
 
 Rally tests (rally-jobs/plugins) use the `rally <http://rally.readthedocs.io/>`_
 infrastructure to exercise a neutron deployment. Guidelines for writing a
-good rally test can be found in the `rally plugin documentation <http://rally.readthedocs.io/en/latest/plugins.html>`_.
+good rally test can be found in the `rally plugin documentation <http://rally.readthedocs.io/en/latest/plugins/>`_.
 There are also some examples in tree; the process for adding rally plugins to
 neutron requires three steps: 1) write a plugin and place it under rally-jobs/plugins/.
 This is your rally scenario; 2) (optional) add a setup file under rally-jobs/extra/.
@@ -490,7 +486,7 @@ see this wiki page: https://wiki.openstack.org/wiki/Testr
 
 .. _Testr: https://wiki.openstack.org/wiki/Testr
 .. _tox: http://tox.readthedocs.org/en/latest/
-.. _virtualenvs: https://pypi.python.org/pypi/virtualenv
+.. _virtualenvs: https://pypi.org/project/virtualenv
 
 PEP8 and Unit Tests
 ~~~~~~~~~~~~~~~~~~~
@@ -528,7 +524,7 @@ tools/configure_for_func_testing.sh should be followed.
 IMPORTANT: configure_for_func_testing.sh relies on DevStack to perform
 extensive modification to the underlying host. Execution of the
 script requires sudo privileges and it is recommended that the
-following commands be invoked only on a clean and disposeable VM.
+following commands be invoked only on a clean and disposable VM.
 A VM that has had DevStack previously installed on it is also fine. ::
 
     git clone https://git.openstack.org/openstack-dev/devstack ../devstack
@@ -543,35 +539,72 @@ to deploy Neutron to the target host.
 Fullstack Tests
 ~~~~~~~~~~~~~~~
 
-To run all the full-stack tests, you may use: ::
+To run all the fullstack tests, you may use: ::
 
     tox -e dsvm-fullstack
 
-Since full-stack tests often require the same resources and
+Since fullstack tests often require the same resources and
 dependencies as the functional tests, using the configuration script
-tools/configure_for_func_testing.sh is advised (As described above).
-When running full-stack tests on a clean VM for the first time, we
-advise to run ./stack.sh successfully to make sure all Neutron's
-dependencies are met. Full-stack based Neutron daemons produce logs to a
-sub-folder in /opt/stack/logs/dsvm-fullstack-logs (for example, a test named
-"test_example" will produce logs to /opt/stack/logs/dsvm-fullstack-logs/test_example.log),
-so that will be a good place to look if your test is failing.
-Fullstack test suite assumes 240.0.0.0/4 (Class E) range in root namespace of
-the test machine is available for its usage.
+tools/configure_for_func_testing.sh is advised (as described above).
+Before running the script, you must first set the following environment
+variable so things are setup correctly ::
+
+    export VENV=dsvm-fullstack
+
+When running fullstack tests on a clean VM for the first time, it is
+important to make sure all of Neutron's package dependencies have been met.
+As mentioned in the functional test section above, this can be done by
+running the configure script with the '-i' argument ::
+
+    ./tools/configure_for_func_testing.sh ../devstack -i
+
+You can also run './stack.sh', and if successful, it will have also
+verified the package dependencies have been met.
+When running on a new VM it is suggested to set the following environment
+variable as well, to make sure that all requirements (including database and
+message bus) are installed and set ::
+
+    export IS_GATE=False
+
+Fullstack-based Neutron daemons produce logs to a sub-folder in the
+$OS_LOG_PATH directory (default: /opt/stack/logs, note: if running fullstack
+tests on a newly created VM, make sure that $OS_LOG_PATH exists with the
+correct permissions) called 'dsvm-fullstack-logs'.
+For example, a test named "test_example" will produce logs in
+$OS_LOG_PATH/dsvm-fullstack-logs/test_example/, as well as create
+$OS_LOG_PATH/dsvm-fullstack-logs/test_example.txt, so that is a good place
+to look if your test is failing.
+
+The fullstack test suite assumes 240.0.0.0/4 (Class E) range in the root
+namespace of the test machine is available for its usage.
 
 API & Scenario Tests
 ~~~~~~~~~~~~~~~~~~~~
 
-To run the api or scenario tests, deploy Tempest and Neutron with DevStack and
-then run the following command, from the tempest directory: ::
+To run the api or scenario tests, deploy Tempest, neutron-tempest-plugin
+and Neutron with DevStack and then run the following command,
+from the tempest directory: ::
 
-    tox -e all-plugin
+    $ export DEVSTACK_GATE_TEMPEST_REGEX="neutron"
+    $ tox -e all-plugin $DEVSTACK_GATE_TEMPEST_REGEX
 
-If you want to limit the amount of tests that you would like to run, you
-can do, for instance: ::
+If you want to limit the amount of tests, or run an individual test,
+you can do, for instance: ::
 
-    export DEVSTACK_GATE_TEMPEST_REGEX="<you-regex>" # e.g. "neutron"
-    tox -e all-plugin $DEVSTACK_GATE_TEMPEST_REGEX
+    $ tox -e all-plugin neutron_tempest_plugin.api.admin.test_routers_ha
+    $ tox -e all-plugin neutron_tempest_plugin.api.test_qos.QosTestJSON.test_create_policy
+
+If you want to use special config for Neutron, like use advanced images (Ubuntu
+or CentOS) testing advanced features, you may need to add config
+in tempest/etc/tempest.conf:
+
+.. code-block:: ini
+
+   [neutron_plugin_options]
+   image_is_advanced = True
+
+The Neutron tempest plugin configs are under ``neutron_plugin_options`` scope
+of ``tempest.conf``.
 
 Running Individual Tests
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -585,9 +618,9 @@ For example, the following would run only a single test or test case::
       $ tox -e py27 neutron.tests.unit.test_manager.NeutronManagerTestCase
       $ tox -e py27 neutron.tests.unit.test_manager.NeutronManagerTestCase.test_service_plugin_is_loaded
 
-If you want to pass other arguments to ostestr, you can do the following::
+If you want to pass other arguments to stestr, you can do the following::
 
-      $ tox -e py27 -- --regex neutron.tests.unit.test_manager --serial
+      $ tox -e py27 -- neutron.tests.unit.test_manager --serial
 
 
 Coverage

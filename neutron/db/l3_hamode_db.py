@@ -16,19 +16,24 @@
 import functools
 
 import netaddr
+from neutron_lib.api.definitions import l3 as l3_apidef
+from neutron_lib.api.definitions import l3_ext_ha_mode as l3_ext_ha_apidef
 from neutron_lib.api.definitions import port as port_def
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as providernet
 from neutron_lib.api import extensions
 from neutron_lib.api import validators
 from neutron_lib.callbacks import events
+from neutron_lib.callbacks import priority_group
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as n_exc
 from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.exceptions import l3_ext_ha_mode as l3ha_exc
 from neutron_lib.objects import exceptions as obj_base
+from neutron_lib.plugins import utils as p_utils
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import helpers as log_helpers
@@ -44,15 +49,11 @@ from neutron.common import constants as n_const
 from neutron.common import utils as n_utils
 from neutron.conf.db import l3_hamode_db
 from neutron.db import _utils as db_utils
-from neutron.db import api as db_api
 from neutron.db.availability_zone import router as router_az_db
 from neutron.db import l3_dvr_db
-from neutron.db.l3_dvr_db import is_distributed_router
-from neutron.db.models import l3ha as l3ha_model
 from neutron.objects import base
 from neutron.objects import l3_hamode
 from neutron.objects import router as l3_obj
-from neutron.plugins.common import utils as p_utils
 
 
 VR_ID_RANGE = set(range(1, 255))
@@ -124,6 +125,7 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                              'ha_vr_id': router_db.extra_attributes.ha_vr_id})
                         return
 
+                    old_router = self._make_router_dict(router_db)
                     allocated_vr_ids = self._get_allocated_vr_id(context,
                                                                  network_id)
                     available_vr_ids = VR_ID_RANGE - allocated_vr_ids
@@ -141,6 +143,15 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                         "Router %(router_id)s has been allocated a ha_vr_id "
                         "%(ha_vr_id)d.",
                         {'router_id': router_id, 'ha_vr_id': allocation.vr_id})
+                    router_body = {l3_apidef.ROUTER:
+                            {l3_ext_ha_apidef.HA_INFO: True,
+                             'ha_vr_id': allocation.vr_id}}
+                    registry.publish(resources.ROUTER, events.PRECOMMIT_UPDATE,
+                                     self, payload=events.DBEventPayload(
+                                         context, request_body=router_body,
+                                         states=(old_router,),
+                                         resource_id=router_id,
+                                         desired_state=router_db))
 
                     return allocation.vr_id
 
@@ -246,9 +257,9 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                     port_id=port_id,
                     router_id=router_id,
                     port_type=constants.DEVICE_OWNER_ROUTER_HA_INTF).create()
-                portbinding = l3ha_model.L3HARouterAgentPortBinding(
+                portbinding = l3_hamode.L3HARouterAgentPortBinding(context,
                     port_id=port_id, router_id=router_id)
-                context.session.add(portbinding)
+                portbinding.create()
 
             return portbinding
         except db_exc.DBReferenceError as e:
@@ -283,10 +294,12 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                                     router_id)
         deletion = functools.partial(self._core_plugin.delete_port, context,
                                      l3_port_check=False)
-        port, bindings = db_utils.safe_creation(context, creation,
-                                                deletion, content,
-                                                transaction=False)
-        return bindings
+        port, binding = db_utils.safe_creation(context, creation,
+                                               deletion, content,
+                                               transaction=False)
+        # _create_ha_port_binding returns the binding object now and
+        # to populate agent relation db_obj is used.
+        return binding.db_obj
 
     def _delete_ha_interfaces(self, context, router_id):
         admin_ctx = context.elevated()
@@ -324,7 +337,8 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
         router_is_uuid = isinstance(router, six.string_types)
         if router_is_uuid:
             router = self._get_router(context, router)
-        if is_ha_router(router) and not is_distributed_router(router):
+        if (is_ha_router(router) and not
+                l3_dvr_db.is_distributed_router(router)):
             #如果是ha路由器，但不是分布式路由器，则返回ha_replicated_int
             return constants.DEVICE_OWNER_HA_REPLICATED_INT
         return super(L3_HA_NAT_db_mixin,
@@ -344,7 +358,8 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
         return n_utils.create_object_with_dependency(
             creator, dep_getter, dep_creator, dep_id_attr, dep_deleter)[1]
 
-    @registry.receives(resources.ROUTER, [events.BEFORE_CREATE])
+    @registry.receives(resources.ROUTER, [events.BEFORE_CREATE],
+                       priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     @db_api.retry_if_session_inactive()
     def _before_router_create(self, resource, event, trigger,
                               context, router, **kwargs):
@@ -357,7 +372,8 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
         if not self.get_ha_network(context, router['tenant_id']):
             self._create_ha_network(context, router['tenant_id'])
 
-    @registry.receives(resources.ROUTER, [events.PRECOMMIT_CREATE])
+    @registry.receives(resources.ROUTER, [events.PRECOMMIT_CREATE],
+                       priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     def _precommit_router_create(self, resource, event, trigger, context,
                                  router, router_db, **kwargs):
         """Event handler to set ha flag and status on creation."""
@@ -376,7 +392,8 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                 l3ha_exc.HANetworkConcurrentDeletion(
                         tenant_id=router['tenant_id']))
 
-    @registry.receives(resources.ROUTER, [events.AFTER_CREATE])
+    @registry.receives(resources.ROUTER, [events.AFTER_CREATE],
+                       priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     def _after_router_create(self, resource, event, trigger, context,
                              router_id, router, router_db, **kwargs):
         if not router['ha']:
@@ -397,7 +414,8 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                     context, router_id,
                     {'status': constants.ERROR})['status']
 
-    @registry.receives(resources.ROUTER, [events.PRECOMMIT_UPDATE])
+    @registry.receives(resources.ROUTER, [events.PRECOMMIT_UPDATE],
+                       priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     def _validate_migration(self, resource, event, trigger, payload=None):
         """Event handler on precommit update to validate migration."""
 
@@ -418,7 +436,11 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
             # This will throw HANotEnoughAvailableAgents if there aren't
             # enough l3 agents to handle this router.
             self.get_number_of_agents_for_scheduling(payload.context)
+            old_owner = constants.DEVICE_OWNER_ROUTER_INTF
+            new_owner = constants.DEVICE_OWNER_HA_REPLICATED_INT
         else:
+            old_owner = constants.DEVICE_OWNER_HA_REPLICATED_INT
+            new_owner = constants.DEVICE_OWNER_ROUTER_INTF
 
             ha_network = self.get_ha_network(payload.context,
                                              payload.desired_state.tenant_id)
@@ -431,20 +453,14 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
             self.set_extra_attr_value(payload.context, payload.desired_state,
                                       'ha', requested_ha_state)
             return
-        if requested_ha_state:
-            self._migrate_router_ports(
-                payload.context, payload.desired_state,
-                old_owner=constants.DEVICE_OWNER_ROUTER_INTF,
-                new_owner=constants.DEVICE_OWNER_HA_REPLICATED_INT)
-        else:
-            self._migrate_router_ports(
-                payload.context, payload.desired_state,
-                old_owner=constants.DEVICE_OWNER_HA_REPLICATED_INT,
-                new_owner=constants.DEVICE_OWNER_ROUTER_INTF)
+        self._migrate_router_ports(
+             payload.context, payload.desired_state,
+             old_owner=old_owner, new_owner=new_owner)
         self.set_extra_attr_value(
             payload.context, payload.desired_state, 'ha', requested_ha_state)
 
-    @registry.receives(resources.ROUTER, [events.AFTER_UPDATE])
+    @registry.receives(resources.ROUTER, [events.AFTER_UPDATE],
+                       priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     def _reconfigure_ha_resources(self, resource, event, trigger, context,
                                   router_id, old_router, router, router_db,
                                   **kwargs):
@@ -499,7 +515,8 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                      "%(tenant)s.",
                      {'network': net_id, 'tenant': tenant_id})
 
-    @registry.receives(resources.ROUTER, [events.PRECOMMIT_DELETE])
+    @registry.receives(resources.ROUTER, [events.PRECOMMIT_DELETE],
+                       priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     def _release_router_vr_id(self, resource, event, trigger, context,
                               router_db, **kwargs):
         """Event handler for removal of VRID during router delete."""
@@ -510,7 +527,8 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                 self._delete_vr_id_allocation(
                     context, ha_network, router_db.extra_attributes.ha_vr_id)
 
-    @registry.receives(resources.ROUTER, [events.AFTER_DELETE])
+    @registry.receives(resources.ROUTER, [events.AFTER_DELETE],
+                       priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     @db_api.retry_if_session_inactive()
     def _cleanup_ha_network(self, resource, event, trigger, context,
                             router_id, original, **kwargs):
@@ -698,6 +716,41 @@ class L3_HA_NAT_db_mixin(l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                     n_exc.PortNotFound):
                 # Take concurrently deleted interfaces in to account
                 pass
+
+    def _get_gateway_port_host(self, context, router, gw_ports):
+        if not router.get('ha'):
+            return super(L3_HA_NAT_db_mixin, self)._get_gateway_port_host(
+                context, router, gw_ports)
+
+        gw_port_id = router['gw_port_id']
+        gateway_port = gw_ports.get(gw_port_id)
+        if not gw_port_id or not gateway_port:
+            return
+        gateway_port_status = gateway_port['status']
+        gateway_port_binding_host = gateway_port[portbindings.HOST_ID]
+
+        admin_ctx = context.elevated()
+        router_id = router['id']
+        ha_bindings = self.get_l3_bindings_hosting_router_with_ha_states(
+            admin_ctx, router_id)
+        LOG.debug("HA router %(router_id)s gateway port %(gw_port_id)s "
+                  "binding host: %(host)s, status: %(status)s",
+                  {"router_id": router_id,
+                   "gw_port_id": gateway_port['id'],
+                   "host": gateway_port_binding_host,
+                   "status": gateway_port_status})
+        for ha_binding_agent, ha_binding_state in ha_bindings:
+            if ha_binding_state != n_const.HA_ROUTER_STATE_ACTIVE:
+                continue
+            # For create router gateway, the gateway port may not be ACTIVE
+            # yet, so we return 'master' host directly.
+            if gateway_port_status != constants.PORT_STATUS_ACTIVE:
+                return ha_binding_agent.host
+            # Do not let the original 'master' (current is backup) host,
+            # override the gateway port binding host.
+            if (gateway_port_status == constants.PORT_STATUS_ACTIVE and
+                    ha_binding_agent.host == gateway_port_binding_host):
+                return ha_binding_agent.host
 
 
 def is_ha_router(router):

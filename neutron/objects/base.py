@@ -16,6 +16,7 @@ import copy
 import functools
 import itertools
 
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as n_exc
 from neutron_lib.objects import exceptions as o_exc
 from oslo_db import exception as obj_exc
@@ -28,9 +29,9 @@ from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import exception as obj_exception
 from oslo_versionedobjects import fields as obj_fields
 import six
+from sqlalchemy import orm
 
 from neutron._i18n import _
-from neutron.db import api as db_api
 from neutron.db import standard_attr
 from neutron.objects.db import api as obj_db_api
 from neutron.objects.extensions import standardattributes
@@ -63,12 +64,14 @@ def register_filter_hook_on_model(model, filter_name):
 
 
 class Pager(object):
-    '''
+    '''Pager class
+
     This class represents a pager object. It is consumed by get_objects to
     specify sorting and pagination criteria.
     '''
     def __init__(self, sorts=None, limit=None, page_reverse=None, marker=None):
-        '''
+        '''Initialize
+
         :param sorts: A list of (key, direction) tuples.
                       direction: True == ASC, False == DESC
         :param limit: maximum number of items to return
@@ -447,7 +450,8 @@ class NeutronDbObject(NeutronObject):
 
     @classmethod
     def modify_fields_to_db(cls, fields):
-        """
+        """Modify the fields before data is inserted into DB.
+
         This method enables to modify the fields and its
         content before data is inserted into DB.
 
@@ -486,6 +490,10 @@ class NeutronDbObject(NeutronObject):
         for field, field_db in cls.fields_need_translation.items():
             if field_db in result:
                 result[field] = result.pop(field_db)
+        for k, v in result.items():
+            # don't allow sqlalchemy lists to propagate outside
+            if isinstance(v, orm.collections.InstrumentedList):
+                result[k] = list(v)
         return result
 
     @classmethod
@@ -521,19 +529,20 @@ class NeutronDbObject(NeutronObject):
     def db_context_writer(cls, context):
         """Return read-write session activation decorator."""
         if cls.new_facade or cls._use_db_facade(context):
-            return db_api.context_manager.writer.using(context)
+            return db_api.CONTEXT_WRITER.using(context)
         return db_api.autonested_transaction(context.session)
 
     @classmethod
     def db_context_reader(cls, context):
         """Return read-only session activation decorator."""
         if cls.new_facade or cls._use_db_facade(context):
-            return db_api.context_manager.reader.using(context)
+            return db_api.CONTEXT_READER.using(context)
         return db_api.autonested_transaction(context.session)
 
     @classmethod
     def get_object(cls, context, **kwargs):
-        """
+        """Fetch a single object
+
         Return the first result of given context or None if the result doesn't
         contain any row. Next, convert it to a versioned object.
 
@@ -557,7 +566,8 @@ class NeutronDbObject(NeutronObject):
     @classmethod
     def get_objects(cls, context, _pager=None, validate_filters=True,
                     **kwargs):
-        """
+        """Fetch a list of objects
+
         Fetch all results from DB and convert them to versioned objects.
 
         :param context:
@@ -577,8 +587,7 @@ class NeutronDbObject(NeutronObject):
 
     @classmethod
     def update_object(cls, context, values, validate_filters=True, **kwargs):
-        """
-        Update an object that match filtering criteria from DB.
+        """Update an object that match filtering criteria from DB.
 
         :param context:
         :param values: multiple keys to update in matching objects
@@ -606,8 +615,7 @@ class NeutronDbObject(NeutronObject):
 
     @classmethod
     def update_objects(cls, context, values, validate_filters=True, **kwargs):
-        """
-        Update objects that match filtering criteria from DB.
+        """Update objects that match filtering criteria from DB.
 
         :param context:
         :param values: multiple keys to update in matching objects
@@ -632,8 +640,7 @@ class NeutronDbObject(NeutronObject):
 
     @classmethod
     def delete_objects(cls, context, validate_filters=True, **kwargs):
-        """
-        Delete objects that match filtering criteria from DB.
+        """Delete objects that match filtering criteria from DB.
 
         :param context:
         :param validate_filters: Raises an error in case of passing an unknown
@@ -697,7 +704,8 @@ class NeutronDbObject(NeutronObject):
         return fields
 
     def load_synthetic_db_fields(self, db_obj=None):
-        """
+        """Load synthetic DB fields
+
         Load the synthetic fields that are stored in a different table from the
         main object.
 
@@ -710,8 +718,9 @@ class NeutronDbObject(NeutronObject):
         # subclasses=True
         for field in self.synthetic_fields:
             try:
+                field_def = self.fields[field]
                 objclasses = NeutronObjectRegistry.obj_classes(
-                ).get(self.fields[field].objname)
+                ).get(field_def.objname)
             except AttributeError:
                 # NOTE(rossella_s) this is probably because this field is not
                 # an ObjectField
@@ -732,25 +741,28 @@ class NeutronDbObject(NeutronObject):
 
             synthetic_field_db_name = (
                 self.fields_need_translation.get(field, field))
-            synth_db_objs = (db_obj.get(synthetic_field_db_name, None)
-                             if db_obj else None)
 
             # synth_db_objs can be list, empty list or None, that is why
             # we need 'is not None', because [] is valid case for 'True'
-            if synth_db_objs is not None:
-                if not isinstance(synth_db_objs, list):
-                    synth_db_objs = [synth_db_objs]
-                synth_objs = [objclass._load_object(self.obj_context, obj)
-                              for obj in synth_db_objs]
-            else:
-                synth_objs = objclass.get_objects(
-                    self.obj_context, **{
-                        k: getattr(self, v) if v in self else db_obj.get(v)
-                        for k, v in foreign_keys.items()})
-            if isinstance(self.fields[field], obj_fields.ObjectField):
-                setattr(self, field, synth_objs[0] if synth_objs else None)
-            else:
+            if isinstance(field_def, obj_fields.ListOfObjectsField):
+                synth_db_objs = (db_obj.get(synthetic_field_db_name, None)
+                                 if db_obj else None)
+                if synth_db_objs is not None:
+                    synth_objs = [objclass._load_object(self.obj_context, obj)
+                                  for obj in synth_db_objs]
+                else:
+                    synth_objs = objclass.get_objects(
+                        self.obj_context, **{
+                            k: getattr(self, v) if v in self else db_obj.get(v)
+                            for k, v in foreign_keys.items()})
                 setattr(self, field, synth_objs)
+            else:
+                synth_db_obj = (db_obj.get(synthetic_field_db_name, None)
+                                if db_obj else None)
+                if synth_db_obj:
+                    synth_db_obj = objclass._load_object(self.obj_context,
+                                                         synth_db_obj)
+                setattr(self, field, synth_db_obj)
             self.obj_reset_changes([field])
 
     def create(self):
@@ -808,8 +820,7 @@ class NeutronDbObject(NeutronObject):
 
     @classmethod
     def count(cls, context, validate_filters=True, **kwargs):
-        """
-        Count the number of objects matching filtering criteria.
+        """Count the number of objects matching filtering criteria.
 
         :param context:
         :param validate_filters: Raises an error in case of passing an unknown
@@ -825,8 +836,7 @@ class NeutronDbObject(NeutronObject):
 
     @classmethod
     def objects_exist(cls, context, validate_filters=True, **kwargs):
-        """
-        Check if objects are present in DB.
+        """Check if objects are present in DB.
 
         :param context:
         :param validate_filters: Raises an error in case of passing an unknown

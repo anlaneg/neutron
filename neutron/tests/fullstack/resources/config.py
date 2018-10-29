@@ -18,13 +18,18 @@ import tempfile
 
 from neutron_lib import constants
 
+from neutron.common import constants as c_const
 from neutron.common import utils
 from neutron.plugins.ml2.extensions import qos as qos_ext
+from neutron.tests import base
 from neutron.tests.common import config_fixtures
 from neutron.tests.common.exclusive_resources import port
 from neutron.tests.common import helpers as c_helpers
+from neutron.tests.fullstack import base as fullstack_base
 
 PHYSICAL_NETWORK_NAME = "physnet1"
+MINIMUM_BANDWIDTH_INGRESS_KBPS = 1000
+MINIMUM_BANDWIDTH_EGRESS_KBPS = 1000
 
 
 class ConfigFixture(config_fixtures.ConfigFileFixture):
@@ -61,6 +66,7 @@ class NeutronConfigFixture(ConfigFixture):
                 'service_plugins': env_desc.service_plugins,
                 'auth_strategy': 'noauth',
                 'debug': 'True',
+                'global_physnet_mtu': str(env_desc.global_mtu),
                 'agent_down_time': str(env_desc.agent_down_time),
                 'transport_url':
                     'rabbit://%(user)s:%(password)s@%(host)s:5672/%(vhost)s' %
@@ -68,7 +74,7 @@ class NeutronConfigFixture(ConfigFixture):
                      'password': rabbitmq_environment.password,
                      'host': rabbitmq_environment.host,
                      'vhost': rabbitmq_environment.vhost},
-                'api_workers': 2,
+                'api_workers': '2',
             },
             'database': {
                 'connection': connection,
@@ -115,6 +121,9 @@ class NeutronConfigFixture(ConfigFixture):
     def _generate_policy_json(self):
         return c_helpers.find_sample_file('policy.json')
 
+    def get_host(self):
+        return self.config['DEFAULT']['host']
+
 
 class ML2ConfigFixture(ConfigFixture):
 
@@ -150,7 +159,7 @@ class ML2ConfigFixture(ConfigFixture):
 
 class OVSConfigFixture(ConfigFixture):
 
-    def __init__(self, env_desc, host_desc, temp_dir, local_ip):
+    def __init__(self, env_desc, host_desc, temp_dir, local_ip, **kwargs):
         super(OVSConfigFixture, self).__init__(
             env_desc, host_desc, temp_dir,
             base_filename='openvswitch_agent.ini')
@@ -168,6 +177,7 @@ class OVSConfigFixture(ConfigFixture):
             'agent': {
                 'l2_population': str(self.env_desc.l2_pop),
                 'arp_responder': str(self.env_desc.arp_responder),
+                'debug_iptables_rules': str(env_desc.debug_iptables)
             }
         })
 
@@ -179,11 +189,25 @@ class OVSConfigFixture(ConfigFixture):
                 'int_peer_patch_port': self._generate_int_peer(),
                 'tun_peer_patch_port': self._generate_tun_peer()})
         else:
-            self.config['ovs']['bridge_mappings'] = (
-                self._generate_bridge_mappings())
+            device = utils.get_rand_device_name(prefix='br-eth')
+            self.config['ovs']['bridge_mappings'] = '%s:%s' % (
+                    PHYSICAL_NETWORK_NAME, device)
+            if env_desc.report_bandwidths:
+                self.config['ovs'][c_const.RP_BANDWIDTHS] = \
+                    '%s:%s:%s' % (device, MINIMUM_BANDWIDTH_EGRESS_KBPS,
+                                  MINIMUM_BANDWIDTH_INGRESS_KBPS)
 
         if env_desc.qos:
             self.config['agent']['extensions'] = 'qos'
+        if env_desc.log:
+            self.config['agent']['extensions'] = 'log'
+            test_name = kwargs.get("test_name")
+            test_name = base.sanitize_log_path(test_name)
+            self.config.update({
+                'network_log': {
+                    'local_output_log_base':
+                        self._generate_temp_log_file(test_name)}
+            })
 
     def _setUp(self):
         if self.config['ovs']['of_interface'] == 'native':
@@ -192,10 +216,6 @@ class OVSConfigFixture(ConfigFixture):
                     port.ExclusivePort(constants.PROTO_NAME_TCP)).port
             })
         super(OVSConfigFixture, self)._setUp()
-
-    def _generate_bridge_mappings(self):
-        return '%s:%s' % (PHYSICAL_NETWORK_NAME,
-                          utils.get_rand_device_name(prefix='br-eth'))
 
     def _generate_integration_bridge(self):
         return utils.get_rand_device_name(prefix='br-int')
@@ -208,6 +228,13 @@ class OVSConfigFixture(ConfigFixture):
 
     def _generate_tun_peer(self):
         return utils.get_rand_device_name(prefix='patch-int')
+
+    def _generate_temp_log_file(self, test_name):
+        log_dir_path = os.path.join(fullstack_base.DEFAULT_LOG_DIR, test_name)
+        if not os.path.exists(log_dir_path):
+            os.mkdir(log_dir_path, 0o755)
+        return '%s/%s.log' % (log_dir_path,
+                              utils.get_rand_name(prefix="test-sg-"))
 
     def get_br_int_name(self):
         return self.config.ovs.integration_bridge
@@ -235,6 +262,9 @@ class LinuxBridgeConfigFixture(ConfigFixture):
             },
             'securitygroup': {
                 'firewall_driver': host_desc.firewall_driver,
+            },
+            'AGENT': {
+                'debug_iptables_rules': str(env_desc.debug_iptables)
             }
         })
         if env_desc.qos:

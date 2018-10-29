@@ -15,7 +15,8 @@
 import collections
 import datetime
 
-from neutron.db import api as db_api
+from neutron_lib.db import api as db_api
+
 from neutron.objects import quota as quota_obj
 
 
@@ -85,7 +86,7 @@ def set_quota_usage(context, resource, tenant_id,
     :param delta: Specifies whether in_use is an absolute number
                   or a delta (default to False)
     """
-    with db_api.context_manager.writer.using(context):
+    with db_api.CONTEXT_WRITER.using(context):
         usage_data = quota_obj.QuotaUsage.get_object(
             context, resource=resource, project_id=tenant_id)
         if not usage_data:
@@ -106,7 +107,7 @@ def set_quota_usage(context, resource, tenant_id,
 
 
 @db_api.retry_if_session_inactive()
-@db_api.context_manager.writer
+@db_api.CONTEXT_WRITER
 def set_quota_usage_dirty(context, resource, tenant_id, dirty=True):
     """Set quota usage dirty bit for a given resource and tenant.
 
@@ -125,7 +126,7 @@ def set_quota_usage_dirty(context, resource, tenant_id, dirty=True):
 
 
 @db_api.retry_if_session_inactive()
-@db_api.context_manager.writer
+@db_api.CONTEXT_WRITER
 def set_resources_quota_usage_dirty(context, resources, tenant_id, dirty=True):
     """Set quota usage dirty bit for a given tenant and multiple resources.
 
@@ -146,7 +147,7 @@ def set_resources_quota_usage_dirty(context, resources, tenant_id, dirty=True):
 
 
 @db_api.retry_if_session_inactive()
-@db_api.context_manager.writer
+@db_api.CONTEXT_WRITER
 def set_all_quota_usage_dirty(context, resource, dirty=True):
     """Set the dirty bit on quota usage for all tenants.
 
@@ -196,7 +197,7 @@ def get_reservation(context, reservation_id):
 
 
 @db_api.retry_if_session_inactive()
-@db_api.context_manager.writer
+@db_api.CONTEXT_WRITER
 def remove_reservation(context, reservation_id, set_dirty=False):
     reservation = quota_obj.Reservation.get_object(context, id=reservation_id)
     if not reservation:
@@ -232,6 +233,6 @@ def get_reservations_for_resources(context, tenant_id, resources,
 
 
 @db_api.retry_if_session_inactive()
-@db_api.context_manager.writer
+@db_api.CONTEXT_WRITER
 def remove_expired_reservations(context, tenant_id=None):
     return quota_obj.Reservation.delete_expired(context, utcnow(), tenant_id)

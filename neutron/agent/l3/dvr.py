@@ -59,8 +59,7 @@ class AgentMixin(object):
         mac = arp_table['mac_address']
         subnet_id = arp_table['subnet_id']
         #arp表项，ip,mac,子网id,要求扫执的动作
-        nud_state = arp_table.get('nud_state')
-        ri._update_arp_entry(ip, mac, subnet_id, action, nud_state=nud_state)
+        ri._update_arp_entry(ip, mac, subnet_id, action)
 
     def add_arp_entry(self, context, payload):
         """Add arp entry into router namespace.  Called from RPC."""

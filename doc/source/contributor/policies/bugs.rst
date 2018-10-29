@@ -122,6 +122,25 @@ steps you will need to follow in order to be prepared.
   can be present to discuss them.
 
 
+Bug Deputy routines in your week
+--------------------------------
+
+* Scan 'New' bugs to triage.
+  If it doesn't have enough info to triage, ask more info and
+  mark it 'Incomplete'.
+  If you could confirm it by yourself, mark it 'Confirmed'.
+  Otherwise, find someone familiar with the topic and ask his/her help.
+
+* Scan 'Incomplete' bugs to see if it got more info.
+  If it was, make it back to 'New'.
+
+* Repeat the above routines for bugs filed in your week at least.
+  If you can, do the same for older bugs.
+
+* Take a note of bugs you processed.
+  At the end of your week, post a report on openstack-dev mailing list.
+
+
 Plugin and Driver Repositories
 ------------------------------
 
@@ -134,7 +153,7 @@ However, you should add Neutron (Or any other project) to that list only if you
 expect that a patch is needed to that repo in order to solve the bug.
 
 It's also worth adding that some of these projects are part of the so
-called Neutron `stadium <http://governance.openstack.org/reference/projects/neutron.html#deliverables-and-tags>`_.
+called Neutron `stadium <https://governance.openstack.org/tc/reference/projects/neutron.html#deliverables-and-tags>`_.
 Because of that, their release is managed centrally by the Neutron
 release team; requests for releases need to be funnelled and screened
 properly before they can happen. Release request process is described
@@ -149,7 +168,7 @@ Bug Screening Best Practices
 When screening bug reports, the first step for the bug deputy is to assess
 how well written the bug report is, and whether there is enough information
 for anyone else besides the bug submitter to reproduce the bug and come up
-with a fix. There is plenty of information on the `OpenStack wiki <https://wiki.openstack.org/wiki/Bugs>`_
+with a fix. There is plenty of information on the `OpenStack Bugs <https://docs.openstack.org/project-team-guide/bugs.html>`_
 on how to write a good bug `report <https://wiki.openstack.org/wiki/BugFilingRecommendations>`_
 and to learn how to tell a good bug report from a bad one. Should the bug
 report not adhere to these best practices, the bug deputy's first step
@@ -206,7 +225,7 @@ following these suggestions:
     single node? Is it multi-node? Are you reporting an issue in your own
     environment or something you encountered in the OpenStack CI
     Infrastructure, aka the Gate?
-  * Perceived severity: what would you consider the `importance <https://wiki.openstack.org/wiki/Bugs#Importance>`_
+  * Perceived severity: what would you consider the `importance <https://docs.openstack.org/project-team-guide/bugs.html#Importance>`_
     to be?
 
 * Tags (Affected component): try to use the existing tags by relying on

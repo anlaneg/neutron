@@ -61,6 +61,9 @@ DNSMASQ_SERVICE_NAME = 'dnsmasq'
 DHCP_RELEASE_TRIES = 3
 DHCP_RELEASE_TRIES_SLEEP = 0.3
 
+# this variable will be removed when neutron-lib is updated with this value
+DHCP_OPT_CLIENT_ID_NUM = 61
+
 
 class DictModel(dict):
     """Convert dict into an object that provides attribute access to values."""
@@ -127,6 +130,7 @@ class DhcpBase(object):
                  version=None, plugin=None):
         self.conf = conf
         self.network = network
+        self.dns_domain = self.network.get('dns_domain', self.conf.dns_domain)
         self.process_monitor = process_monitor
         self.device_manager = DeviceManager(self.conf, plugin)
         self.version = version
@@ -253,11 +257,8 @@ class DhcpLocalProcess(DhcpBase):
             LOG.warning('Failed trying to delete interface: %s',
                         self.interface_name)
 
-        #移除对应的namespace
-        if not ip_lib.network_namespace_exists(self.network.namespace):
-            LOG.debug("Namespace already deleted: %s", self.network.namespace)
-            return
         try:
+            #移除对应的namespace
             ip_lib.delete_network_namespace(self.network.namespace)
         except RuntimeError:
             LOG.warning('Failed trying to delete namespace: %s',
@@ -431,8 +432,8 @@ class Dnsmasq(DhcpLocalProcess):
         for server in self.conf.dnsmasq_dns_servers:
             cmd.append('--server=%s' % server)
 
-        if self.conf.dns_domain:
-            cmd.append('--domain=%s' % self.conf.dns_domain)
+        if self.dns_domain:
+            cmd.append('--domain=%s' % self.dns_domain)
 
         if self.conf.dhcp_broadcast_reply:
             cmd.append('--dhcp-broadcast')
@@ -623,8 +624,8 @@ class Dnsmasq(DhcpLocalProcess):
                     hostname = 'host-%s' % alloc.ip_address.replace(
                         '.', '-').replace(':', '-')
                     fqdn = hostname
-                    if self.conf.dns_domain:
-                        fqdn = '%s.%s' % (fqdn, self.conf.dns_domain)
+                    if self.dns_domain:
+                        fqdn = '%s.%s' % (fqdn, self.dns_domain)
                 yield (port, alloc, hostname, fqdn, no_dhcp, no_opts)
 
     def _get_port_extra_dhcp_opts(self, port):
@@ -749,7 +750,9 @@ class Dnsmasq(DhcpLocalProcess):
     def _get_client_id(self, port):
         if self._get_port_extra_dhcp_opts(port):
             for opt in port.extra_dhcp_opts:
-                if opt.opt_name == edo_ext.DHCP_OPT_CLIENT_ID:
+                if opt.opt_name in (edo_ext.DHCP_OPT_CLIENT_ID,
+                                    DHCP_OPT_CLIENT_ID_NUM,
+                                    str(DHCP_OPT_CLIENT_ID_NUM)):
                     return opt.opt_value
 
     def _read_hosts_file_leases(self, filename):
@@ -773,7 +776,8 @@ class Dnsmasq(DhcpLocalProcess):
         return leases
 
     def _read_leases_file_leases(self, filename, ip_version=None):
-        """
+        """Read dnsmasq dhcp leases file
+
         Read information from leases file, which is needed to pass to
         dhcp_release6 command line utility if some of these leases are not
         needed anymore
@@ -826,6 +830,10 @@ class Dnsmasq(DhcpLocalProcess):
                                         filename)
                             continue
                     parts = l.strip().split()
+                    if len(parts) != 5:
+                        LOG.warning('Invalid lease entry %s found in %s '
+                                    'lease file, ignoring', parts, filename)
+                        continue
                     (iaid, ip, client_id) = parts[1], parts[2], parts[4]
                     ip = ip.strip('[]')
                     if (ip_version and
@@ -969,9 +977,9 @@ class Dnsmasq(DhcpLocalProcess):
                 # dns-server submitted by the server
                 subnet_index_map[subnet.id] = i
 
-            if self.conf.dns_domain and subnet.ip_version == 6:
+            if self.dns_domain and subnet.ip_version == 6:
                 options.append('tag:tag%s,option6:domain-search,%s' %
-                               (i, ''.join(self.conf.dns_domain)))
+                               (i, ''.join(self.dns_domain)))
 
             gateway = subnet.gateway_ip
             host_routes = []
@@ -1037,7 +1045,9 @@ class Dnsmasq(DhcpLocalProcess):
                     [netaddr.IPAddress(ip.ip_address).version
                      for ip in port.fixed_ips])
                 for opt in port.extra_dhcp_opts:
-                    if opt.opt_name == edo_ext.DHCP_OPT_CLIENT_ID:
+                    if opt.opt_name in (edo_ext.DHCP_OPT_CLIENT_ID,
+                                        DHCP_OPT_CLIENT_ID_NUM,
+                                        str(DHCP_OPT_CLIENT_ID_NUM)):
                         continue
                     opt_ip_version = opt.ip_version
                     if opt_ip_version in port_ip_versions:

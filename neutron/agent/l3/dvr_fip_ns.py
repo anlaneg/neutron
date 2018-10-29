@@ -177,7 +177,15 @@ class FipNamespace(namespaces.Namespace):
                          namespace=ns_name,
                          prefix=FIP_EXT_DEV_PREFIX,
                          mtu=ex_gw_port.get('mtu'))
-
+        if self.agent_conf.external_network_bridge:
+            # NOTE(Swami): for OVS implementations remove the DEAD VLAN tag
+            # on ports. DEAD VLAN tag is added to each newly created port
+            # and should be removed by L2 agent but if
+            # external_network_bridge is set than external gateway port is
+            # created in this bridge and will not be touched by L2 agent.
+            # This is related to lp#1767422
+            self.driver.remove_vlan_tag(
+                self.agent_conf.external_network_bridge, interface_name)
         # Remove stale fg devices
         # 移除掉错误的fg设备
         ip_wrapper = ip_lib.IPWrapper(namespace=ns_name)
@@ -475,7 +483,13 @@ class FipNamespace(namespaces.Namespace):
         #为veth设置ip地址
         self._add_cidr_to_device(rtr_2_fip_dev, str(rtr_2_fip))
         self._add_cidr_to_device(fip_2_rtr_dev, str(fip_2_rtr))
-        
+
+        # Add permanant ARP entries on each side of veth pair
+        rtr_2_fip_dev.neigh.add(common_utils.cidr_to_ip(fip_2_rtr),
+                                fip_2_rtr_dev.link.address)
+        fip_2_rtr_dev.neigh.add(common_utils.cidr_to_ip(rtr_2_fip),
+                                rtr_2_fip_dev.link.address)
+
         #添加到外网的默认规则路由
         self._add_rtr_ext_route_rule_to_route_table(ri, fip_2_rtr,
                                                     fip_2_rtr_name)
