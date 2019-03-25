@@ -17,13 +17,13 @@ from neutron_lib.api.definitions import dns as dns_apidef
 from neutron_lib.api.definitions import l3 as l3_apidef
 from neutron_lib.api import extensions
 from neutron_lib.api import validators
+from neutron_lib.db import resource_extend
 from neutron_lib import exceptions as n_exc
 from neutron_lib.exceptions import dns as dns_exc
 from oslo_config import cfg
 from oslo_log import log as logging
 
 from neutron._i18n import _
-from neutron.db import _resource_extend as resource_extend
 from neutron.objects import floatingip as fip_obj
 from neutron.objects import network
 from neutron.objects import ports as port_obj
@@ -92,7 +92,8 @@ class DNSDbMixin(object):
                 context, floatingip_data, req_data))
         dns_actions_data = None
         if current_dns_name and current_dns_domain:
-            fip_obj.FloatingIPDNS(context,
+            fip_obj.FloatingIPDNS(
+                context,
                 floatingip_id=floatingip_data['id'],
                 dns_name=req_data[dns_apidef.DNSNAME],
                 dns_domain=req_data[dns_apidef.DNSDOMAIN],
@@ -149,7 +150,8 @@ class DNSDbMixin(object):
             else:
                 return
         if current_dns_name and current_dns_domain:
-            fip_obj.FloatingIPDNS(context,
+            fip_obj.FloatingIPDNS(
+                context,
                 floatingip_id=floatingip_data['id'],
                 dns_name='',
                 dns_domain='',

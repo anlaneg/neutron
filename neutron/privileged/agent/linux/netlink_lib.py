@@ -40,17 +40,52 @@ from ctypes import util
 import re
 
 from neutron_lib import constants
+from neutron_lib import exceptions
 from oslo_log import log as logging
 
 from neutron._i18n import _
-from neutron.common import exceptions
 from neutron import privileged
 from neutron.privileged.agent.linux import netlink_constants as nl_constants
 
 LOG = logging.getLogger(__name__)
 
-nfct = ctypes.CDLL(util.find_library('netfilter_conntrack'))
+nfct_lib = util.find_library('netfilter_conntrack')
+nfct = ctypes.CDLL(nfct_lib)
 libc = ctypes.CDLL(util.find_library('libc.so.6'))
+
+# In unit tests the actual nfct library may not be installed, and since we
+# don't make actual calls to it we don't want to add a hard dependency.
+if nfct_lib:
+    # It's important that the types be defined properly on all of the functions
+    # we call from nfct, otherwise pointers can be truncated and cause
+    # segfaults.
+    nfct.nfct_set_attr.argtypes = [ctypes.c_void_p,
+                                   ctypes.c_int,
+                                   ctypes.c_void_p]
+    nfct.nfct_set_attr_u8.argtypes = [ctypes.c_void_p,
+                                      ctypes.c_int,
+                                      ctypes.c_uint8]
+    nfct.nfct_set_attr_u16.argtypes = [ctypes.c_void_p,
+                                       ctypes.c_int,
+                                       ctypes.c_uint16]
+    nfct.nfct_snprintf.argtypes = [ctypes.c_char_p,
+                                   ctypes.c_uint,
+                                   ctypes.c_void_p,
+                                   ctypes.c_uint,
+                                   ctypes.c_uint,
+                                   ctypes.c_uint]
+    nfct.nfct_new.restype = ctypes.c_void_p
+    nfct.nfct_destroy.argtypes = [ctypes.c_void_p]
+    nfct.nfct_query.argtypes = [ctypes.c_void_p,
+                                ctypes.c_int,
+                                ctypes.c_void_p]
+    nfct.nfct_callback_register.argtypes = [ctypes.c_void_p,
+                                            ctypes.c_int,
+                                            ctypes.c_void_p,
+                                            ctypes.c_void_p]
+    nfct.nfct_open.restype = ctypes.c_void_p
+    nfct.nfct_close.argtypes = [ctypes.c_void_p]
+
 
 IP_VERSIONS = [constants.IP_VERSION_4, constants.IP_VERSION_6]
 DATA_CALLBACK = None
@@ -60,7 +95,7 @@ ATTR_POSITIONS = {
     'icmp': [('type', 6), ('code', 7), ('src', 4), ('dst', 5), ('id', 8),
              ('zone', 16)],
     'icmpv6': [('type', 6), ('code', 7), ('src', 4), ('dst', 5), ('id', 8),
-             ('zone', 16)],
+               ('zone', 16)],
     'tcp': [('sport', 7), ('dport', 8), ('src', 5), ('dst', 6), ('zone', 15)],
     'udp': [('sport', 6), ('dport', 7), ('src', 4), ('dst', 5), ('zone', 14)]
 }
@@ -196,8 +231,8 @@ class ConntrackManager(object):
 
     def __enter__(self):
         self.conntrack_handler = nfct.nfct_open(
-            nl_constants.CONNTRACK,
-            nl_constants.NFNL_SUBSYS_CTNETLINK)
+            nl_constants.NFNL_SUBSYS_CTNETLINK,
+            nl_constants.CONNTRACK)
         if not self.conntrack_handler:
             msg = _("Failed to open new conntrack handler")
             LOG.critical(msg)

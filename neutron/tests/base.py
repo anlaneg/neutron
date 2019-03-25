@@ -20,6 +20,7 @@ import abc
 import contextlib
 import functools
 import inspect
+import logging
 import os
 import os.path
 
@@ -38,6 +39,7 @@ from oslo_utils import fileutils
 from oslo_utils import strutils
 from oslotest import base
 import six
+from sqlalchemy import exc as sqlalchemy_exc
 import testtools
 
 from neutron._i18n import _
@@ -46,7 +48,6 @@ from neutron.api.rpc.callbacks.consumer import registry as rpc_consumer_reg
 from neutron.api.rpc.callbacks.producer import registry as rpc_producer_reg
 from neutron.common import config
 from neutron.conf.agent import common as agent_config
-from neutron.db import _resource_extend as resource_extend
 from neutron.db import agentschedulers_db
 from neutron import manager
 from neutron import policy
@@ -104,6 +105,28 @@ def unstable_test(reason):
             except Exception as e:
                 msg = ("%s was marked as unstable because of %s, "
                        "failure was: %s") % (self.id(), reason, e)
+                raise self.skipTest(msg)
+        return inner
+    return decor
+
+
+def skip_if_timeout(reason):
+    def decor(f):
+        @functools.wraps(f)
+        def inner(self, *args, **kwargs):
+            try:
+                return f(self, *args, **kwargs)
+            except fixtures.TimeoutException:
+                msg = ("Timeout raised for test %s, skipping it "
+                       "because of: %s") % (self.id(), reason)
+                raise self.skipTest(msg)
+            except sqlalchemy_exc.InterfaceError:
+                # In case of db tests very often TimeoutException is reason of
+                # some sqlalchemy InterfaceError exception and that is final
+                # raised exception which needs to be handled
+                msg = ("DB connection broken in test %s. It is very likely "
+                       "that this happend because of test timeout. "
+                       "Skipping test because of: %s") % (self.id(), reason)
                 raise self.skipTest(msg)
         return inner
     return decor
@@ -181,6 +204,17 @@ class DietTestCase(base.BaseTestCase):
     def setUp(self):
         super(DietTestCase, self).setUp()
 
+        # Suppress some log messages during test runs, otherwise it may cause
+        # issues with subunit parser when running on Python 3. It happened for
+        # example for neutron-functional tests.
+        # With this suppress of log levels DEBUG logs will not be captured by
+        # stestr on pythonlogging stream and will not cause this parser issue.
+        supress_logs = ['neutron', 'neutron_lib', 'stevedore', 'oslo_policy',
+                        'oslo_concurrency', 'oslo_db', 'alembic', 'ovsdbapp']
+        for supress_log in supress_logs:
+            logger = logging.getLogger(supress_log)
+            logger.setLevel(logging.ERROR)
+
         # FIXME(amuller): this must be called in the Neutron unit tests base
         # class. Moving this may cause non-deterministic failures. Bug #1489098
         # for more info.
@@ -205,16 +239,12 @@ class DietTestCase(base.BaseTestCase):
         # six before removing the cleanup callback from here.
         self.addCleanup(mock.patch.stopall)
 
-        self.addCleanup(self.reset_resource_extend_functions)
+        self.useFixture(fixture.DBResourceExtendFixture())
 
         self.addOnException(self.check_for_systemexit)
         self.orig_pid = os.getpid()
 
         tools.reset_random_seed()
-
-    @staticmethod
-    def reset_resource_extend_functions():
-        resource_extend._resource_extend_functions = {}
 
     def addOnException(self, handler):
 

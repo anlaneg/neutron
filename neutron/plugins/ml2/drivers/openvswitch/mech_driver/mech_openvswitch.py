@@ -14,6 +14,7 @@
 #    under the License.
 
 import os
+import uuid
 
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import events
@@ -22,6 +23,7 @@ from neutron_lib import constants
 from oslo_config import cfg
 from oslo_log import log
 
+from neutron._i18n import _
 from neutron.agent import securitygroups_rpc
 from neutron.conf.plugins.ml2.drivers.openvswitch import mech_ovs_conf
 from neutron.plugins.ml2.drivers import mech_agent
@@ -49,11 +51,16 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     """
     #对ovs机制驱动而言，其实际上仅有在port_bind时有事情做
 
+    resource_provider_uuid5_namespace = uuid.UUID(
+        '87ee7d5c-73bb-11e8-9008-c4d987b2a692')
+
     def __init__(self):
         sg_enabled = securitygroups_rpc.is_firewall_enabled()
-        hybrid_plug_required = (not cfg.CONF.SECURITYGROUP.firewall_driver or
+        hybrid_plug_required = (
+            not cfg.CONF.SECURITYGROUP.firewall_driver or
             cfg.CONF.SECURITYGROUP.firewall_driver in (
-                IPTABLES_FW_DRIVER_FULL, 'iptables_hybrid')) and sg_enabled
+                IPTABLES_FW_DRIVER_FULL, 'iptables_hybrid')
+        ) and sg_enabled
         vif_details = {portbindings.CAP_PORT_FILTER: sg_enabled,
                        portbindings.OVS_HYBRID_PLUG: hybrid_plug_required}
         # NOTE(moshele): Bind DIRECT (SR-IOV) port allows
@@ -88,6 +95,24 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     def get_mappings(self, agent):
         #返回自身桥配置
         return agent['configurations'].get('bridge_mappings', {})
+
+    def get_standard_device_mappings(self, agent):
+        """Return the agent's bridge mappings in a standard way.
+
+        The common format for OVS and SRIOv mechanism drivers:
+        {'physnet_name': ['device_or_bridge_1', 'device_or_bridge_2']}
+
+        :param agent: The agent
+        :returns A dict in the format: {'physnet_name': ['bridge_or_device']}
+        :raises ValueError: if there is no bridge_mappings key in
+                            agent['configurations']
+        """
+        if 'bridge_mappings' in agent['configurations']:
+            return {k: [v] for k, v in
+                    agent['configurations']['bridge_mappings'].items()}
+        else:
+            raise ValueError(_('Cannot standardize bridge mappings of agent '
+                               'type: %s'), agent['agent_type'])
 
     def check_vlan_transparency(self, context):
         """Currently Openvswitch driver doesn't support vlan transparency."""
@@ -147,9 +172,10 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         if bridge_name:
             vif_details[portbindings.VIF_DETAILS_BRIDGE_NAME] = bridge_name
 
-        registry.publish(a_const.OVS_BRIDGE_NAME, events.BEFORE_READ,
-            set_bridge_name_inner, payload=events.EventPayload(
-                None, metadata={'port': port}))
+        registry.publish(
+            a_const.OVS_BRIDGE_NAME, events.BEFORE_READ,
+            set_bridge_name_inner,
+            payload=events.EventPayload(None, metadata={'port': port}))
 
     def _pre_get_vif_details(self, agent, context):
         a_config = agent['configurations']

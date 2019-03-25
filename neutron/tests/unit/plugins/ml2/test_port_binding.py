@@ -18,13 +18,13 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import portbindings_extended as pbe_ext
 from neutron_lib import constants as const
 from neutron_lib import context
+from neutron_lib import exceptions
 from neutron_lib.plugins import directory
 from neutron_lib.plugins import utils
 from oslo_config import cfg
 from oslo_serialization import jsonutils
 import webob.exc
 
-from neutron.common import exceptions
 from neutron.conf.plugins.ml2 import config
 from neutron.conf.plugins.ml2.drivers import driver_type
 from neutron.plugins.ml2 import driver_context
@@ -640,3 +640,20 @@ class ExtendedPortBindingTestCase(test_plugin.NeutronDbPluginV2TestCase):
         port, new_binding = self._create_port_and_binding()
         response = self._delete_port_binding(port['id'], 'other-host')
         self.assertEqual(webob.exc.HTTPNotFound.code, response.status_int)
+
+    def test_binding_fail_for_unknown_allocation(self):
+        # The UUID is a random one - which of course is unknown to neutron
+        # as a resource provider UUID.
+        profile = {'allocation': 'ccccbb4c-2adf-11e9-91bc-db7063775d06'}
+        kwargs = {pbe_ext.PROFILE: profile}
+        device_owner = '%s%s' % (const.DEVICE_OWNER_COMPUTE_PREFIX, 'nova')
+
+        with self.port(device_owner=device_owner) as port:
+            port_id = port['port']['id']
+            response = self._create_port_binding(
+                self.fmt, port_id, self.host, **kwargs)
+
+            self.assertEqual(webob.exc.HTTPInternalServerError.code,
+                             response.status_int)
+            self.assertTrue(exceptions.PortBindingError.__name__ in
+                            response.text)

@@ -15,12 +15,12 @@
 
 from neutron_lib.agent import topics
 from neutron_lib.plugins import directory
+from neutron_lib import rpc as n_rpc
 from oslo_log import helpers as log_helpers
 from oslo_log import log as logging
 import oslo_messaging
 
 from neutron.common import constants
-from neutron.common import rpc as n_rpc
 
 LOG = logging.getLogger(__name__)
 
@@ -102,8 +102,7 @@ class DVRServerRpcCallback(object):
         host = kwargs.get('host')
         subnet = kwargs.get('subnet')
         LOG.debug("DVR Agent requests list of VM ports on host %s", host)
-        return self.plugin.get_ports_on_host_by_subnet(context,
-            host, subnet)
+        return self.plugin.get_ports_on_host_by_subnet(context, host, subnet)
 
     def get_subnet_for_dvr(self, context, **kwargs):
         fixed_ips = kwargs.get('fixed_ips')

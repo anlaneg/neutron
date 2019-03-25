@@ -18,6 +18,7 @@ import hmac
 from neutron_lib.agent import topics
 from neutron_lib import constants
 from neutron_lib import context
+from neutron_lib import rpc as n_rpc
 from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging
@@ -34,7 +35,6 @@ from neutron.agent import rpc as agent_rpc
 from neutron.common import cache_utils as cache
 from neutron.common import constants as n_const
 from neutron.common import ipv6_utils
-from neutron.common import rpc as n_rpc
 from neutron.conf.agent.metadata import config
 
 LOG = logging.getLogger(__name__)
@@ -162,9 +162,11 @@ class MetadataProxyHandler(object):
         ports = self._get_ports(remote_address, network_id, router_id)
         LOG.debug("Gotten ports for remote_address %(remote_address)s, "
                   "network_id %(network_id)s, router_id %(router_id)s are: "
-                  "%(ports)s", {"remote_address": remote_address,
-                  "network_id": network_id, "router_id": router_id,
-                  "ports": ports})
+                  "%(ports)s",
+                  {"remote_address": remote_address,
+                   "network_id": network_id,
+                   "router_id": router_id,
+                   "ports": ports})
 
         if len(ports) == 1:
             return ports[0]['device_id'], ports[0]['tenant_id']
@@ -231,7 +233,8 @@ class MetadataProxyHandler(object):
             explanation = six.text_type(msg)
             return webob.exc.HTTPInternalServerError(explanation=explanation)
         else:
-            raise Exception(_('Unexpected response code: %s') % resp.status)
+            raise Exception(_('Unexpected response code: %s') %
+                            resp.status_code)
 
     def _sign_instance_id(self, instance_id):
         secret = self.conf.metadata_proxy_shared_secret

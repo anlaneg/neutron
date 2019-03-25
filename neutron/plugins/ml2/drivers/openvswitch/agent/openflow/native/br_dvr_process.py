@@ -14,9 +14,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from ryu.lib.packet import ether_types
-from ryu.lib.packet import icmpv6
-from ryu.lib.packet import in_proto
+from os_ken.lib.packet import ether_types
+from os_ken.lib.packet import icmpv6
+from os_ken.lib.packet import in_proto
 
 
 class OVSDVRProcessMixin(object):
@@ -35,16 +35,16 @@ class OVSDVRProcessMixin(object):
     def install_dvr_process_ipv4(self, vlan_tag, gateway_ip):
         # block ARP
         (_dp, ofp, ofpp) = self._get_dp()
-        match = self._dvr_process_ipv4_match(ofp, ofpp,
-            vlan_tag=vlan_tag, gateway_ip=gateway_ip)
+        match = self._dvr_process_ipv4_match(ofp, ofpp, vlan_tag=vlan_tag,
+                                             gateway_ip=gateway_ip)
         self.install_drop(table_id=self.dvr_process_table_id,
                           priority=3,
                           match=match)
 
     def delete_dvr_process_ipv4(self, vlan_tag, gateway_ip):
         (_dp, ofp, ofpp) = self._get_dp()
-        match = self._dvr_process_ipv4_match(ofp, ofpp,
-            vlan_tag=vlan_tag, gateway_ip=gateway_ip)
+        match = self._dvr_process_ipv4_match(ofp, ofpp, vlan_tag=vlan_tag,
+                                             gateway_ip=gateway_ip)
         self.uninstall_flows(table_id=self.dvr_process_table_id,
                              match=match)
 
@@ -59,15 +59,15 @@ class OVSDVRProcessMixin(object):
     def install_dvr_process_ipv6(self, vlan_tag, gateway_mac):
         # block RA
         (_dp, ofp, ofpp) = self._get_dp()
-        match = self._dvr_process_ipv6_match(ofp, ofpp,
-            vlan_tag=vlan_tag, gateway_mac=gateway_mac)
+        match = self._dvr_process_ipv6_match(ofp, ofpp, vlan_tag=vlan_tag,
+                                             gateway_mac=gateway_mac)
         self.install_drop(table_id=self.dvr_process_table_id, priority=3,
                           match=match)
 
     def delete_dvr_process_ipv6(self, vlan_tag, gateway_mac):
         (_dp, ofp, ofpp) = self._get_dp()
-        match = self._dvr_process_ipv6_match(ofp, ofpp,
-            vlan_tag=vlan_tag, gateway_mac=gateway_mac)
+        match = self._dvr_process_ipv6_match(ofp, ofpp, vlan_tag=vlan_tag,
+                                             gateway_mac=gateway_mac)
         self.uninstall_flows(table_id=self.dvr_process_table_id,
                              match=match)
 

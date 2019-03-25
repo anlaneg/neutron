@@ -18,6 +18,7 @@ import socket
 import ssl
 
 import mock
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as exception
 from oslo_config import cfg
 from six.moves import urllib
@@ -25,7 +26,6 @@ import testtools
 import webob
 import webob.exc
 
-from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
 from neutron.tests import base
 from neutron.tests.common import helpers
@@ -68,13 +68,13 @@ class TestServiceBase(base.BaseTestCase):
 class TestWorkerService(TestServiceBase):
     """WorkerService tests."""
 
-    @mock.patch('neutron.db.api.context_manager.get_legacy_facade')
+    @mock.patch.object(db_api, 'get_context_manager')
     def test_start_withoutdb_call(self, apimock):
         _service = mock.Mock()
         _service.pool.spawn.return_value = None
 
         _app = mock.Mock()
-        workerservice = wsgi.WorkerService(_service, _app)
+        workerservice = wsgi.WorkerService(_service, _app, "on")
         workerservice.start()
         self.assertFalse(apimock.called)
 
@@ -82,7 +82,7 @@ class TestWorkerService(TestServiceBase):
         _service = mock.Mock()
         _app = mock.Mock()
 
-        worker_service = wsgi.WorkerService(_service, _app)
+        worker_service = wsgi.WorkerService(_service, _app, "on")
         self._test_reset(worker_service)
 
 
@@ -580,7 +580,8 @@ class JSONDeserializerTest(base.BaseTestCase):
         deserializer = wsgi.JSONDeserializer()
 
         self.assertRaises(
-            n_exc.MalformedRequestBody, deserializer.default, data_string)
+            exception.MalformedRequestBody,
+            deserializer.default, data_string)
 
     def test_json_with_utf8(self):
         data = b'{"a": "\xe7\xbd\x91\xe7\xbb\x9c"}'
@@ -621,7 +622,7 @@ class ResourceTest(base.BaseTestCase):
 
     @staticmethod
     def my_fault_body_function():
-            return 'off'
+        return 'off'
 
     class Controller(object):
         def index(self, request, index=None):

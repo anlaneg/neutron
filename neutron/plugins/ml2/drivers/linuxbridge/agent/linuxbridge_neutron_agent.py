@@ -24,6 +24,7 @@ import sys
 import netaddr
 from neutron_lib.agent import topics
 from neutron_lib import constants
+from neutron_lib import exceptions
 from neutron_lib.plugins import utils as plugin_utils
 from neutron_lib.utils import helpers
 from oslo_config import cfg
@@ -38,7 +39,6 @@ from neutron.agent.linux import bridge_lib
 from neutron.agent.linux import ip_lib
 from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
 from neutron.common import config as common_config
-from neutron.common import exceptions
 from neutron.common import profiler as setup_profiler
 from neutron.common import utils
 from neutron.conf.agent import common as agent_config
@@ -172,7 +172,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
             network_id[:lconst.RESOURCE_ID_LENGTH]
         return bridge_name
 
-    def get_subinterface_name(self, physical_interface, vlan_id):
+    @staticmethod
+    def get_subinterface_name(physical_interface, vlan_id):
         if not vlan_id:
             LOG.warning("Invalid VLAN ID, will lead to incorrect "
                         "subinterface name")
@@ -207,7 +208,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
     def get_tap_device_name(interface_id):
         return lb_utils.get_tap_device_name(interface_id)
 
-    def get_vxlan_device_name(self, segmentation_id):
+    @staticmethod
+    def get_vxlan_device_name(segmentation_id):
         if 0 <= int(segmentation_id) <= constants.MAX_VXLAN_VNI:
             return VXLAN_INTERFACE_PREFIX + str(segmentation_id)
         else:
@@ -237,7 +239,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
         bridges.difference_update(self.bridge_mappings.values())
         return bridges
 
-    def get_tap_devices_count(self, bridge_name):
+    @staticmethod
+    def get_tap_devices_count(bridge_name):
         if_list = bridge_lib.BridgeDevice(bridge_name).get_interfaces()
         return len([interface for interface in if_list if
                     interface.startswith(constants.TAP_DEVICE_PREFIX)])
@@ -519,8 +522,9 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
                     ctx.reraise = False
                     return False
 
-    def _add_tap_interface(self, network_id, network_type, physical_network,
-                          segmentation_id, tap_device_name, device_owner, mtu):
+    def _add_tap_interface(self, network_id,
+                           network_type, physical_network, segmentation_id,
+                           tap_device_name, device_owner, mtu):
         """Add tap interface.
 
         If a VIF has been plugged into a network, this function will
@@ -570,7 +574,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
                       "thus added elsewhere.", data)
         return True
 
-    def _set_tap_mtu(self, tap_device_name, mtu):
+    @staticmethod
+    def _set_tap_mtu(tap_device_name, mtu):
         ip_lib.IPDevice(tap_device_name).link.set_mtu(mtu)
 
     def plug_interface(self, network_id, network_segment, tap_name,
@@ -622,7 +627,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
             LOG.debug("Cannot delete bridge %s; it does not exist",
                       bridge_name)
 
-    def remove_interface(self, bridge_name, interface_name):
+    @staticmethod
+    def remove_interface(bridge_name, interface_name):
         bridge_device = bridge_lib.BridgeDevice(bridge_name)
         if bridge_device.exists():
             if not bridge_device.owns_interface(interface_name):
@@ -673,7 +679,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
         # See bug/1622833 for details.
         return {d: bridge_lib.get_interface_ifindex(d) for d in devices}
 
-    def get_all_devices(self):
+    @staticmethod
+    def get_all_devices():
         devices = set()
         for device in bridge_lib.get_bridge_names():
             if device.startswith(constants.TAP_DEVICE_PREFIX):
@@ -713,7 +720,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
         finally:
             self.delete_interface(test_iface)
 
-    def vxlan_mcast_supported(self):
+    @staticmethod
+    def vxlan_mcast_supported():
         if not cfg.CONF.VXLAN.vxlan_group:
             LOG.warning('VXLAN muticast group(s) must be provided in '
                         'vxlan_group option to enable VXLAN MCAST mode')
@@ -741,24 +749,28 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
             raise exceptions.VxlanNetworkUnsupported()
         LOG.debug('Using %s VXLAN mode', self.vxlan_mode)
 
-    def fdb_ip_entry_exists(self, mac, ip, interface):
+    @staticmethod
+    def fdb_ip_entry_exists(mac, ip, interface):
         ip_version = utils.get_ip_version(ip)
         entry = ip_lib.dump_neigh_entries(ip_version, interface, dst=ip,
                                           lladdr=mac)
         return entry != []
 
-    def fdb_bridge_entry_exists(self, mac, interface, agent_ip=None):
+    @staticmethod
+    def fdb_bridge_entry_exists(mac, interface, agent_ip=None):
         entries = bridge_lib.FdbInterface.show(interface)
         if not agent_ip:
             return mac in entries
 
         return (agent_ip in entries and mac in entries)
 
-    def add_fdb_ip_entry(self, mac, ip, interface):
+    @staticmethod
+    def add_fdb_ip_entry(mac, ip, interface):
         if cfg.CONF.VXLAN.arp_responder:
             ip_lib.add_neigh_entry(ip, mac, interface)
 
-    def remove_fdb_ip_entry(self, mac, ip, interface):
+    @staticmethod
+    def remove_fdb_ip_entry(mac, ip, interface):
         if cfg.CONF.VXLAN.arp_responder:
             ip_lib.delete_neigh_entry(ip, mac, interface)
 
@@ -824,7 +836,8 @@ class LinuxBridgeManager(amb.CommonAgentManagerBase):
             iptables_manager)
         return self.agent_api
 
-    def _get_iptables_manager(self, sg_agent):
+    @staticmethod
+    def _get_iptables_manager(sg_agent):
         if not sg_agent:
             return None
         if cfg.CONF.SECURITYGROUP.firewall_driver in IPTABLES_DRIVERS:

@@ -20,15 +20,16 @@ from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib.db import api as db_api
+from neutron_lib.db import resource_extend
 from neutron_lib.db import utils as db_utils
 from neutron_lib import exceptions as n_exc
 from neutron_lib.plugins import directory
 from oslo_concurrency import lockutils
+from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import helpers as log_helpers
 from oslo_utils import uuidutils
 
-from neutron.db import _resource_extend as resource_extend
 from neutron.db import common_db_mixin
 from neutron.db import segments_db as db
 from neutron.extensions import segment as extension
@@ -36,6 +37,26 @@ from neutron import manager
 from neutron.objects import base as base_obj
 from neutron.objects import network
 from neutron.services.segments import exceptions
+
+
+_USER_CONFIGURED_SEGMENT_PLUGIN = None
+
+
+def check_user_configured_segment_plugin():
+    global _USER_CONFIGURED_SEGMENT_PLUGIN
+    # _USER_CONFIGURED_SEGMENT_PLUGIN will contain 3 possible values:
+    # 1. None, this just happens during neutron-server startup.
+    # 2. True, this means that users configure the 'segments'
+    #    service plugin in neutron config file.
+    # 3. False, this means that can not find 'segments' service
+    #    plugin in neutron config file.
+    # This function just load once to store the result
+    # into _USER_CONFIGURED_SEGMENT_PLUGIN during neutron-server startup.
+    if _USER_CONFIGURED_SEGMENT_PLUGIN is None:
+        segment_class = 'neutron.services.segments.plugin.Plugin'
+        _USER_CONFIGURED_SEGMENT_PLUGIN = any(
+            p in cfg.CONF.service_plugins for p in ['segments', segment_class])
+    return _USER_CONFIGURED_SEGMENT_PLUGIN
 
 
 class SegmentDbMixin(common_db_mixin.CommonDbMixin):
@@ -168,9 +189,13 @@ class SegmentDbMixin(common_db_mixin.CommonDbMixin):
         """Delete an existing segment."""
         segment_dict = self.get_segment(context, uuid)
         # Do some preliminary operations before deleting the segment
-        registry.notify(resources.SEGMENT, events.BEFORE_DELETE,
-                        self.delete_segment, context=context,
-                        segment=segment_dict, for_net_delete=for_net_delete)
+        registry.publish(resources.SEGMENT, events.BEFORE_DELETE,
+                         self.delete_segment,
+                         payload=events.DBEventPayload(
+                             context, metadata={
+                                 'for_net_delete': for_net_delete},
+                             states=(segment_dict,),
+                             resource_id=uuid))
 
         # Delete segment in DB
         with db_api.CONTEXT_WRITER.using(context):
@@ -181,9 +206,11 @@ class SegmentDbMixin(common_db_mixin.CommonDbMixin):
                             self.delete_segment, context=context,
                             segment=segment_dict)
 
-        registry.notify(resources.SEGMENT, events.AFTER_DELETE,
-                        self.delete_segment, context=context,
-                        segment=segment_dict)
+        registry.publish(resources.SEGMENT, events.AFTER_DELETE,
+                         self.delete_segment,
+                         payload=events.DBEventPayload(
+                             context, states=(segment_dict,),
+                             resource_id=uuid))
 
 
 @db_api.retry_if_session_inactive()
@@ -255,9 +282,15 @@ def map_segment_to_hosts(context, segment_id, hosts):
 
 
 def _update_segment_host_mapping_for_agent(resource, event, trigger,
-                                           context, host, plugin, agent):
+                                           payload=None):
+    plugin = payload.metadata.get('plugin')
+    agent = payload.desired_state
+    host = payload.metadata.get('host')
+    context = payload.context
+
     check_segment_for_agent = getattr(plugin, 'check_segment_for_agent', None)
-    if not check_segment_for_agent:
+    if (not check_user_configured_segment_plugin() or
+            not check_segment_for_agent):
         return
     phys_nets = _get_phys_nets(agent)
     if not phys_nets:
@@ -288,7 +321,8 @@ def _add_segment_host_mapping_for_segment(resource, event, trigger,
         return
     cp = directory.get_plugin()
     check_segment_for_agent = getattr(cp, 'check_segment_for_agent', None)
-    if not hasattr(cp, 'get_agents') or not check_segment_for_agent:
+    if not check_user_configured_segment_plugin() or not hasattr(
+            cp, 'get_agents') or not check_segment_for_agent:
         # not an agent-supporting plugin
         registry.unsubscribe(_add_segment_host_mapping_for_segment,
                              resources.SEGMENT, events.PRECOMMIT_CREATE)

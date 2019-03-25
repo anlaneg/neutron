@@ -80,7 +80,7 @@ Finally, the PTL will work with the deputy to produce a brief summary of the
 issues of the week to be shared with the larger team during the weekly IRC
 meeting and tracked in the meeting notes. If for some reason the deputy is not
 going to attend the team meeting to report, the deputy should consider sending
-a brief report to the openstack-dev@ mailing list in advance of the meeting.
+a brief report to the openstack-discuss@ mailing list in advance of the meeting.
 
 
 Getting Ready to Serve as the Neutron Bug Deputy
@@ -138,7 +138,7 @@ Bug Deputy routines in your week
   If you can, do the same for older bugs.
 
 * Take a note of bugs you processed.
-  At the end of your week, post a report on openstack-dev mailing list.
+  At the end of your week, post a report on openstack-discuss mailing list.
 
 
 Plugin and Driver Repositories
@@ -385,7 +385,8 @@ more will be added over time if needed.
 +-------------------------------+-----------------------------------------+----------------------+
 | baremetal_                    | A bug affecting Ironic support          | Sukhdev Kapur        |
 +-------------------------------+-----------------------------------------+----------------------+
-| db_                           | A bug affecting the DB layer            | Ann Taraday          |
+| db_                           | A bug affecting the DB layer            | Ann Taraday/         |
+|                               |                                         | Nate Johnston        |
 +-------------------------------+-----------------------------------------+----------------------+
 | deprecation_                  | To track config/feature deprecations    | Neutron PTL/drivers  |
 +-------------------------------+-----------------------------------------+----------------------+
@@ -393,13 +394,13 @@ more will be added over time if needed.
 +-------------------------------+-----------------------------------------+----------------------+
 | doc_                          | A bug affecting in-tree doc             | Boden Russell        |
 +-------------------------------+-----------------------------------------+----------------------+
-| fullstack_                    | A bug in the fullstack subtree          | Jakub Libosvar       |
+| fullstack_                    | A bug in the fullstack subtree          | Hongbin Lu           |
 +-------------------------------+-----------------------------------------+----------------------+
-| functional-tests_             | A bug in the functional tests subtree   | Jakub Libosvar       |
+| functional-tests_             | A bug in the functional tests subtree   | Hongbin Lu           |
 +-------------------------------+-----------------------------------------+----------------------+
 | fwaas_                        | A bug affecting neutron-fwaas           | Sridar K.            |
 +-------------------------------+-----------------------------------------+----------------------+
-| gate-failure_                 | A bug affecting gate stability          | Armando Migliaccio   |
+| gate-failure_                 | A bug affecting gate stability          | Slawek Kaplonski     |
 +-------------------------------+-----------------------------------------+----------------------+
 | ipv6_                         | A bug affecting IPv6 support            | Brian Haley          |
 +-------------------------------+-----------------------------------------+----------------------+
@@ -408,7 +409,8 @@ more will be added over time if needed.
 | l3-bgp_                       | A bug affecting neutron-dynamic-routing | Vikram Choudhary     |
 +-------------------------------+-----------------------------------------+----------------------+
 | l3-dvr-backlog_               | A bug affecting distributed routing     | Swami V./            |
-|                               |                                         | Brian Haley          |
+|                               |                                         | Brian Haley/         |
+|                               |                                         | Yulong Liu           |
 +-------------------------------+-----------------------------------------+----------------------+
 | l3-ha_                        | A bug affecting L3 HA (vrrp)            | Brian Haley          |
 +-------------------------------+-----------------------------------------+----------------------+
@@ -434,13 +436,13 @@ more will be added over time if needed.
 +-------------------------------+-----------------------------------------+----------------------+
 | oslo_                         | An interop/cross-project issue          | N/A                  |
 +-------------------------------+-----------------------------------------+----------------------+
-| ovs_                          | A bug affecting ML2/OVS                 | Jakub Libosvar       |
+| ovs_                          | A bug affecting ML2/OVS                 | Miguel Lavalle       |
 +-------------------------------+-----------------------------------------+----------------------+
-| ovs-fw_                       | A bug affecting OVS firewall            | Jakub Libosvar       |
+| ovs-fw_                       | A bug affecting OVS firewall            | Miguel Lavalle       |
 +-------------------------------+-----------------------------------------+----------------------+
 | ovs-lib_                      | A bug affecting OVS Lib                 | Terry Wilson         |
 +-------------------------------+-----------------------------------------+----------------------+
-| py35_                         | Issues affecting the Python 3 porting   | Jakub Libosvar       |
+| py3_                          | Issues affecting the Python 3 porting   | Nate Johnston        |
 +-------------------------------+-----------------------------------------+----------------------+
 | qos_                          | A bug affecting ML2/QoS                 | Slawek Kaplonski     |
 +-------------------------------+-----------------------------------------+----------------------+
@@ -458,15 +460,15 @@ more will be added over time if needed.
 +-------------------------------+-----------------------------------------+----------------------+
 | sriov-pci-pt_                 | A bug affecting Sriov/PCI PassThrough   | Moshe Levi           |
 +-------------------------------+-----------------------------------------+----------------------+
-| tempest_                      | A bug in tempest subtree tests          | Jakub Libosvar       |
+| tempest_                      | A bug in tempest subtree tests          | Hongbin Lu           |
 +-------------------------------+-----------------------------------------+----------------------+
 | troubleshooting_              | An issue affecting ease of debugging    | Boden Russell        |
 +-------------------------------+-----------------------------------------+----------------------+
-| unittest_                     | A bug affecting the unit test subtree   | Jakub Libosvar       |
+| unittest_                     | A bug affecting the unit test subtree   | Hongbin Lu           |
 +-------------------------------+-----------------------------------------+----------------------+
 | usability_                    | UX, interoperability, feature parity    | PTL/Drivers Team     |
 +-------------------------------+-----------------------------------------+----------------------+
-| xxx-backport-potential_       | Cherry-pick request for stable team     | Ihar Hrachyshka/     |
+| xxx-backport-potential_       | Cherry-pick request for stable team     | Bernard Cafarelli/   |
 |                               |                                         | Brian Haley          |
 +-------------------------------+-----------------------------------------+----------------------+
 
@@ -723,13 +725,13 @@ OVS Lib
 * `OVS Lib - All bugs <https://bugs.launchpad.net/neutron/+bugs?field.tag=ovs-lib>`_
 * `OVS Lib - In progress <https://bugs.launchpad.net/neutron/+bugs?field.status%3Alist=INPROGRESS&field.tag=ovs-lib>`_
 
-.. _py35:
+.. _py3:
 
-PY35
-++++
+PY3
++++
 
-* `Py35 - All bugs <https://bugs.launchpad.net/neutron/+bugs?field.tag=py35>`_
-* `Py35 - In progress <https://bugs.launchpad.net/neutron/+bugs?field.status%3Alist=INPROGRESS&field.tag=py35>`_
+* `Py3 - All bugs <https://bugs.launchpad.net/neutron/+bugs?field.tag=py3>`_
+* `Py3 - In progress <https://bugs.launchpad.net/neutron/+bugs?field.status%3Alist=INPROGRESS&field.tag=py3>`_
 
 .. _qos:
 

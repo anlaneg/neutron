@@ -17,8 +17,10 @@ import mock
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
 from neutron_lib.plugins.ml2 import api
+from oslo_config import cfg
 import testtools
 
+from neutron.conf.plugins.ml2.drivers.mech_sriov import mech_sriov_conf
 from neutron.plugins.ml2.drivers.mech_sriov.mech_driver \
     import exceptions as exc
 from neutron.plugins.ml2.drivers.mech_sriov.mech_driver import mech_driver
@@ -26,20 +28,20 @@ from neutron.tests.unit.plugins.ml2 import _test_mech_agent as base
 
 
 class TestFakePortContext(base.FakePortContext):
-        def __init__(self, agent_type, agents, segments,
-                     vnic_type=portbindings.VNIC_NORMAL,
-                     profile=None):
-            super(TestFakePortContext, self).__init__(agent_type,
-                                                      agents,
-                                                      segments,
-                                                      vnic_type=vnic_type,
-                                                      profile=profile)
+    def __init__(self, agent_type, agents, segments,
+                 vnic_type=portbindings.VNIC_NORMAL,
+                 profile=None):
+        super(TestFakePortContext, self).__init__(agent_type,
+                                                  agents,
+                                                  segments,
+                                                  vnic_type=vnic_type,
+                                                  profile=profile)
 
-        def set_binding(self, segment_id, vif_type, vif_details, state):
-            self._bound_segment_id = segment_id
-            self._bound_vif_type = vif_type
-            self._bound_vif_details = vif_details
-            self._bound_state = state
+    def set_binding(self, segment_id, vif_type, vif_details, state):
+        self._bound_segment_id = segment_id
+        self._bound_vif_type = vif_type
+        self._bound_vif_details = vif_details
+        self._bound_state = state
 
 
 class SriovNicSwitchMechanismBaseTestCase(base.AgentMechanismBaseTestCase):
@@ -84,6 +86,28 @@ class SriovSwitchMechGenericTestCase(SriovNicSwitchMechanismBaseTestCase,
         for network_type in self.driver.get_allowed_network_types(agent=None):
             segment = {api.NETWORK_TYPE: network_type}
             self.assertTrue(self.driver.check_segment_for_agent(segment))
+
+    def test_driver_responsible_for_ports_allocation(self):
+        agents = [
+            {'agent_type': 'NIC Switch agent',
+             'configurations': {'resource_provider_bandwidths': {'eth0': {}}},
+             'host': 'host',
+             'id': '1'}
+        ]
+        segments = []
+        # uuid -v5 87f1895c-73bb-11e8-9008-c4d987b2a692 host:eth0
+        profile = {'allocation': '5762cf50-781b-5f01-8ebc-0cce8c9e74cd'}
+
+        port_ctx = base.FakePortContext(
+            self.AGENT_TYPE,
+            agents,
+            segments,
+            vnic_type=portbindings.VNIC_DIRECT,
+            profile=profile)
+        with mock.patch.object(self.driver, '_possible_agents_for_port',
+                               return_value=agents):
+            self.assertTrue(
+                self.driver.responsible_for_ports_allocation(port_ctx))
 
 
 class SriovMechVlanTestCase(SriovNicSwitchMechanismBaseTestCase,
@@ -195,3 +219,89 @@ class SriovSwitchMechVifDetailsTestCase(SriovNicSwitchMechanismBaseTestCase):
 
         self.driver.bind_port(context)
         self.assertEqual(constants.PORT_STATUS_ACTIVE, context._bound_state)
+
+
+class SriovSwitchMechVnicTypesTestCase(SriovNicSwitchMechanismBaseTestCase):
+
+    def setUp(self):
+        self.override_vnic_types = [portbindings.VNIC_DIRECT,
+                                    portbindings.VNIC_MACVTAP]
+        self.driver_with_vnic_types = \
+            mech_driver.SriovNicSwitchMechanismDriver(
+                supported_vnic_types=self.override_vnic_types)
+        self.default_supported_vnics = [
+                portbindings.VNIC_DIRECT,
+                portbindings.VNIC_MACVTAP,
+                portbindings.VNIC_DIRECT_PHYSICAL]
+        self.blacklist_cfg = {
+            'SRIOV_DRIVER': {
+                'vnic_type_blacklist': []
+            }
+        }
+        super(SriovSwitchMechVnicTypesTestCase, self).setUp()
+
+    def test_default_vnic_types(self):
+        self.assertEqual(self.default_supported_vnics,
+                         self.driver.supported_vnic_types)
+
+    def test_override_default_vnic_types(self):
+        self.assertEqual(
+            self.override_vnic_types,
+            self.driver_with_vnic_types.supported_vnic_types)
+
+    def test_vnic_type_blacklist_valid_item(self):
+        self.blacklist_cfg['SRIOV_DRIVER']['vnic_type_blacklist'] = \
+            [portbindings.VNIC_MACVTAP]
+
+        fake_conf = cfg.CONF
+        fake_conf_fixture = base.MechDriverConfFixture(
+            fake_conf, self.blacklist_cfg,
+            mech_sriov_conf.register_sriov_mech_driver_opts)
+        self.useFixture(fake_conf_fixture)
+
+        test_driver = mech_driver.SriovNicSwitchMechanismDriver(
+            supported_vnic_types=self.default_supported_vnics)
+
+        supported_vnic_types = test_driver.supported_vnic_types
+        self.assertNotIn(portbindings.VNIC_MACVTAP, supported_vnic_types)
+        self.assertEqual(len(self.default_supported_vnics) - 1,
+                         len(supported_vnic_types))
+
+    def test_vnic_type_blacklist_not_valid_item(self):
+        self.blacklist_cfg['SRIOV_DRIVER']['vnic_type_blacklist'] = ['foo']
+        fake_conf = cfg.CONF
+        fake_conf_fixture = base.MechDriverConfFixture(
+            fake_conf, self.blacklist_cfg,
+            mech_sriov_conf.register_sriov_mech_driver_opts)
+        self.useFixture(fake_conf_fixture)
+
+        self.assertRaises(ValueError,
+                          mech_driver.SriovNicSwitchMechanismDriver)
+
+    def test_vnic_type_blacklist_all_items(self):
+        self.blacklist_cfg['SRIOV_DRIVER']['vnic_type_blacklist'] = \
+            [portbindings.VNIC_DIRECT,
+             portbindings.VNIC_MACVTAP,
+             portbindings.VNIC_DIRECT_PHYSICAL]
+
+        fake_conf = cfg.CONF
+        fake_conf_fixture = base.MechDriverConfFixture(
+            fake_conf, self.blacklist_cfg,
+            mech_sriov_conf.register_sriov_mech_driver_opts)
+        self.useFixture(fake_conf_fixture)
+
+        self.assertRaises(ValueError,
+                          mech_driver.SriovNicSwitchMechanismDriver)
+
+
+class SriovSwitchDeviceMappingsTestCase(SriovNicSwitchMechanismBaseTestCase):
+
+    def test_standard_device_mappings(self):
+        mappings = self.driver.get_standard_device_mappings(self.AGENTS[0])
+        self.assertDictEqual(self.GOOD_CONFIGS['device_mappings'], mappings)
+
+    def test_standard_device_mappings_negative(self):
+        fake_agent = {'agent_type': constants.AGENT_TYPE_NIC_SWITCH,
+                      'configurations': {}}
+        self.assertRaises(ValueError, self.driver.get_standard_device_mappings,
+                          fake_agent)

@@ -308,6 +308,16 @@ class PortContext(MechanismDriverContext, api.PortContext):
         self._binding.vif_details = jsonutils.dumps(vif_details) #vif的绑定参数
         self._new_port_status = status #新的端口状态
 
+    def _unset_binding(self):
+        '''Undo a previous call to set_binding() before it gets committed.
+
+        This method is for MechanismManager and is not part of the driver API.
+        '''
+        self._new_bound_segment = None
+        self._binding.vif_type = portbindings.VIF_TYPE_UNBOUND
+        self._binding.vif_details = ''
+        self._new_port_status = None
+
     def continue_binding(self, segment_id, next_segments_to_bind):
         # TODO(rkukura) Verify binding allowed, segment in network
         self._new_bound_segment = segment_id

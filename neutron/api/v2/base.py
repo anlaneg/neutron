@@ -22,6 +22,7 @@ from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.db import api as db_api
 from neutron_lib import exceptions
+from neutron_lib import rpc as n_rpc
 from oslo_log import log as logging
 from oslo_policy import policy as oslo_policy
 from oslo_utils import excutils
@@ -31,8 +32,6 @@ from neutron._i18n import _
 from neutron.api import api_common
 from neutron.api.v2 import resource as wsgi_resource
 from neutron.common import constants as n_const
-from neutron.common import exceptions as n_exc
-from neutron.common import rpc as n_rpc
 from neutron import policy
 from neutron import quota
 from neutron.quota import resource_registry
@@ -328,8 +327,8 @@ class Controller(object):
             fields_to_strip += self._exclude_attributes_by_policy(
                 request.context, obj_list[0])
         collection = {self._collection:
-                      [self._filter_attributes(obj,
-                          fields_to_strip=fields_to_strip)
+                      [self._filter_attributes(
+                           obj, fields_to_strip=fields_to_strip)
                        for obj in obj_list]}
         pagination_links = pagination_helper.get_links(obj_list)
         if pagination_links:
@@ -486,7 +485,7 @@ class Controller(object):
                     {self._resource: delta},
                     self._plugin)
                 reservations.append(reservation)
-        except n_exc.QuotaResourceUnknown as e:
+        except exceptions.QuotaResourceUnknown as e:
             # We don't want to quota this resource
             LOG.debug(e)
 

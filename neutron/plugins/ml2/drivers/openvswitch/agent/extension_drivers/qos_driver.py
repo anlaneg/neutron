@@ -40,9 +40,21 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver):
     def consume_api(self, agent_api):
         self.agent_api = agent_api
 
+    def _minimum_bandwidth_initialize(self):
+        """Clear QoS setting at agent restart.
+
+        This is for clearing stale settings (such as ports and QoS tables
+        deleted while the agent is down). The current implementation
+        can not find stale settings. The solution is to clear everything and
+        rebuild. There is no performance impact however the QoS feature will
+        be down until the QoS rules are rebuilt.
+        """
+        self.br_int.clear_minimum_bandwidth_qos()
+
     def initialize(self):
         self.br_int = self.agent_api.request_int_br()
         self.cookie = self.br_int.default_cookie
+        self._minimum_bandwidth_initialize()
 
     def create_bandwidth_limit(self, port, rule):
         self.update_bandwidth_limit(port, rule)
@@ -64,30 +76,33 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver):
 
     def delete_bandwidth_limit(self, port):
         port_id = port.get('port_id')
+        vif_port = port.get('vif_port')
         port = self.ports[port_id].pop((qos_consts.RULE_TYPE_BANDWIDTH_LIMIT,
                                         constants.EGRESS_DIRECTION),
                                        None)
-        if not port:
+
+        if not port and not vif_port:
             LOG.debug("delete_bandwidth_limit was received "
                       "for port %s but port was not found. "
                       "It seems that bandwidth_limit is already deleted",
                       port_id)
             return
-        vif_port = port.get('vif_port')
+        vif_port = vif_port or port.get('vif_port')
         self.br_int.delete_egress_bw_limit_for_port(vif_port.port_name)
 
     def delete_bandwidth_limit_ingress(self, port):
         port_id = port.get('port_id')
+        vif_port = port.get('vif_port')
         port = self.ports[port_id].pop((qos_consts.RULE_TYPE_BANDWIDTH_LIMIT,
                                         constants.INGRESS_DIRECTION),
                                        None)
-        if not port:
+        if not port and not vif_port:
             LOG.debug("delete_bandwidth_limit_ingress was received "
                       "for port %s but port was not found. "
                       "It seems that bandwidth_limit is already deleted",
                       port_id)
             return
-        vif_port = port.get('vif_port')
+        vif_port = vif_port or port.get('vif_port')
         self.br_int.delete_ingress_bw_limit_for_port(vif_port.port_name)
 
     def create_dscp_marking(self, port, rule):
@@ -135,15 +150,19 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver):
                                      actions=actions)
 
     def delete_dscp_marking(self, port):
+        vif_port = port.get('vif_port')
         dscp_port = self.ports[port['port_id']].pop(qos_consts.
                                                     RULE_TYPE_DSCP_MARKING, 0)
-        if dscp_port:
-            port_num = dscp_port['vif_port'].ofport
-            self.br_int.uninstall_flows(in_port=port_num, table_id=0, reg2=0)
-        else:
+
+        if not dscp_port and not vif_port:
             LOG.debug("delete_dscp_marking was received for port %s but "
                       "no port information was stored to be deleted",
                       port['port_id'])
+            return
+
+        vif_port = vif_port or dscp_port.get('vif_port')
+        port_num = vif_port.ofport
+        self.br_int.uninstall_flows(in_port=port_num, table_id=0, reg2=0)
 
     def _update_egress_bandwidth_limit(self, vif_port, rule):
         max_kbps = rule.max_kbps
@@ -167,24 +186,36 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver):
             max_burst_kbps
         )
 
-    # Note(lajoskatona): As minimum bandwidth rule was allowed to be used by
-    # OVS and SRIOV even with ingress direction for the placement based
-    # enforcement, but the dataplane enforcement implementation is not yet
-    # ready these methods are empty.
-    # For details see:
-    # RFE for placement based enforcement:
-    # https://bugs.launchpad.net/neutron/+bug/1578989
-    # RFE for dataplane based enforcement:
-    # https://bugs.launchpad.net/neutron/+bug/1560963
     def create_minimum_bandwidth(self, port, rule):
-        LOG.debug("Minimum bandwidth rule was created for port %s and "
-                  "rule %s.", port['port_id'], rule.id)
+        self.update_minimum_bandwidth(port, rule)
 
     def update_minimum_bandwidth(self, port, rule):
-        LOG.debug("Minimum bandwidth rule was updated for port %s and "
-                  "rule %s.", port['port_id'], rule.id)
+        vif_port = port.get('vif_port')
+        if not vif_port:
+            LOG.debug('update_minimum_bandwidth was received for port %s but '
+                      'vif_port was not found. It seems that port is already '
+                      'deleted', port.get('port_id'))
+            return
+        # queue_num is used to identify the port which traffic come from,
+        # it needs to be unique across br-int. It is convenient to use ofport
+        # as queue_num because it is unique in br-int and start from 1.
+        egress_port_names = []
+        for phy_br in self.agent_api.request_phy_brs():
+            ports = phy_br.get_bridge_ports('')
+            if not ports:
+                LOG.warning('Bridge %s does not have a physical port '
+                            'connected', phy_br.br_name)
+            egress_port_names.extend(ports)
+        qos_id = self.br_int.update_minimum_bandwidth_queue(
+            port['port_id'], egress_port_names, vif_port.ofport, rule.min_kbps)
+        LOG.debug('Minimum bandwidth rule was updated/created for port '
+                  '%(port_id)s and rule %(rule_id)s. QoS ID: %(qos_id)s. '
+                  'Egress ports with QoS applied: %(ports)s',
+                  {'port_id': port['port_id'], 'rule_id': rule.id,
+                   'qos_id': qos_id, 'ports': egress_port_names})
 
     def delete_minimum_bandwidth(self, port):
+        self.br_int.delete_minimum_bandwidth_queue(port['port_id'])
         LOG.debug("Minimum bandwidth rule was deleted for port: %s.",
                   port['port_id'])
 

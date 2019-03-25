@@ -20,14 +20,16 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
 from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as n_exc
+from neutron_lib.objects import utils as obj_utils
+from neutron_lib.plugins import constants as plugin_consts
+from neutron_lib.plugins import directory
+
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 from oslo_utils import excutils
-from sqlalchemy import and_
 
 from neutron.common import ipv6_utils
 from neutron.db import ipam_backend_mixin
-from neutron.db import models_v2
 from neutron.ipam import driver
 from neutron.ipam import exceptions as ipam_exc
 from neutron.objects import ports as port_obj
@@ -35,6 +37,20 @@ from neutron.objects import subnet as obj_subnet
 
 
 LOG = logging.getLogger(__name__)
+
+
+def get_ip_update_not_allowed_device_owner_list():
+    l3plugin = directory.get_plugin(plugin_consts.L3)
+    # The following list is for IPAM to prevent direct update of port
+    # IP address. Currently it only has some L3 related types.
+    # L2 plugin can add the same list here, but for now it is not required.
+    return getattr(l3plugin, 'IP_UPDATE_NOT_ALLOWED_LIST', [])
+
+
+def is_neutron_built_in_router(context, router_id):
+    l3plugin = directory.get_plugin(plugin_consts.L3)
+    return bool(l3plugin and
+                l3plugin.router_supports_scheduling(context, router_id))
 
 
 class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
@@ -165,7 +181,17 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         # Deepcopy doesn't work correctly in this case, because copy of
         # ATTR_NOT_SPECIFIED object happens. Address of copied object doesn't
         # match original object, so 'is' check fails
-        port_copy = {'port': port['port'].copy()}
+        # TODO(njohnston): Different behavior is required depending on whether
+        # a Port object is used or not; once conversion to OVO is complete only
+        # the first 'if' will be needed
+        if isinstance(port, port_obj.Port):
+            port_copy = {"port": self._make_port_dict(
+                port, process_extensions=False)}
+        elif 'port' in port:
+            port_copy = {'port': port['port'].copy()}
+        else:
+            port_copy = {'port': port.copy()}
+
         port_copy['port']['id'] = port_id
         network_id = port_copy['port']['network_id']
         ips = []
@@ -281,6 +307,20 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
 
         return fixed_ip_list
 
+    def _check_ip_changed_by_version(self, context, ip_list, version):
+        for ip in ip_list:
+            ip_address = ip.get('ip_address')
+            subnet_id = ip.get('subnet_id')
+            if ip_address:
+                ip_addr = netaddr.IPAddress(ip_address)
+                if ip_addr.version == version:
+                    return True
+            elif subnet_id:
+                subnet = obj_subnet.Subnet.get_object(context, id=subnet_id)
+                if subnet and subnet.ip_version == version:
+                    return True
+        return False
+
     def _update_ips_for_port(self, context, port, host,
                              original_ips, new_ips, mac):
         """Add or remove IPs from the port. IPAM version"""
@@ -288,6 +328,16 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         removed = []
         changes = self._get_changed_ips_for_port(
             context, original_ips, new_ips, port['device_owner'])
+
+        not_allowed_list = get_ip_update_not_allowed_device_owner_list()
+        if (port['device_owner'] in not_allowed_list and
+                is_neutron_built_in_router(context, port['device_id'])):
+            ip_v4_changed = self._check_ip_changed_by_version(
+                context, changes.remove + changes.add,
+                constants.IP_VERSION_4)
+            if ip_v4_changed:
+                raise ipam_exc.IPAddressChangeNotAllowed(port_id=port['id'])
+
         try:
             subnets = self._ipam_get_subnets(
                 context, network_id=port['network_id'], host=host,
@@ -340,8 +390,14 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
             original = self._make_port_dict(db_port, process_extensions=False)
             if original.get('mac_address') != new_mac:
                 original_ips = original.get('fixed_ips', [])
-                new_ips = new_port.setdefault('fixed_ips', original_ips)
-                new_ips_subnets = [new_ip['subnet_id'] for new_ip in new_ips]
+                # NOTE(hjensas): Only set the default for 'fixed_ips' in
+                # new_port if the original port or new_port actually have IPs.
+                # Setting the default to [] breaks deferred IP allocation.
+                # See Bug: https://bugs.launchpad.net/neutron/+bug/1811905
+                if original_ips or new_port.get('fixed_ips'):
+                    new_ips = new_port.setdefault('fixed_ips', original_ips)
+                    new_ips_subnets = [new_ip['subnet_id']
+                                       for new_ip in new_ips]
                 for orig_ip in original_ips:
                     if ipv6_utils.is_eui64_address(orig_ip.get('ip_address')):
                         subnet_to_delete = {}
@@ -385,8 +441,8 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                 port_copy = copy.deepcopy(original)
                 port_copy.update(new_port)
                 port_copy['fixed_ips'] = auto_assign_subnets
-                self.allocate_ips_for_port_and_store(context,
-                            {'port': port_copy}, port_copy['id'])
+                self.allocate_ips_for_port_and_store(
+                    context, {'port': port_copy}, port_copy['id'])
 
             getattr(db_port, 'fixed_ips')  # refresh relationship before return
 
@@ -459,11 +515,10 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         # will be available for neutron
         with context.session.begin(subtransactions=True):
             network_id = subnet['network_id']
-            port_qry = context.session.query(models_v2.Port)
-            ports = port_qry.filter(
-                and_(models_v2.Port.network_id == network_id,
-                     ~models_v2.Port.device_owner.in_(
-                         constants.ROUTER_INTERFACE_OWNERS_SNAT)))
+            ports = port_obj.Port.get_objects(
+                context, network_id=network_id,
+                device_owner=obj_utils.NotIn(
+                    constants.ROUTER_INTERFACE_OWNERS_SNAT))
             updated_ports = []
             ipam_driver = driver.Pool.get_instance(None, context)
             factory = ipam_driver.get_address_request_factory()
@@ -471,12 +526,12 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                 ip = {'subnet_id': subnet['id'],
                       'subnet_cidr': subnet['cidr'],
                       'eui64_address': True,
-                      'mac': port['mac_address']}
+                      'mac': port.mac_address}
                 ip_request = factory.get_request(context, port, ip)
                 try:
                     ip_address = ipam_subnet.allocate(ip_request)
                     allocated = port_obj.IPAllocation(
-                        context, network_id=network_id, port_id=port['id'],
+                        context, network_id=network_id, port_id=port.id,
                         ip_address=ip_address, subnet_id=subnet['id'])
                     # Do the insertion of each IP allocation entry within
                     # the context of a nested transaction, so that the entry
@@ -485,10 +540,10 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                     # already opens a nested transaction, we don't need to do
                     # it explicitly here.
                     allocated.create()
-                    updated_ports.append(port['id'])
+                    updated_ports.append(port.id)
                 except db_exc.DBReferenceError:
                     LOG.debug("Port %s was deleted while updating it with an "
-                              "IPv6 auto-address. Ignoring.", port['id'])
+                              "IPv6 auto-address. Ignoring.", port.id)
                     LOG.debug("Reverting IP allocation for %s", ip_address)
                     # Do not fail if reverting allocation was unsuccessful
                     try:
@@ -499,7 +554,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                 except ipam_exc.IpAddressAlreadyAllocated:
                     LOG.debug("Port %s got IPv6 auto-address in a concurrent "
                               "create or update port request. Ignoring.",
-                              port['id'])
+                              port.id)
             return updated_ports
 
     def allocate_subnet(self, context, network, subnet, subnetpool_id):

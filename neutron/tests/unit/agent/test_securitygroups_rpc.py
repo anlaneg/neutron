@@ -22,6 +22,8 @@ from neutron_lib.api.definitions import allowedaddresspairs as addr_apidef
 from neutron_lib import constants as const
 from neutron_lib import context
 from neutron_lib.plugins import directory
+from neutron_lib import rpc as n_rpc
+from neutron_lib.tests import tools
 from oslo_config import cfg
 import oslo_messaging
 from testtools import matchers
@@ -32,11 +34,9 @@ from neutron.agent.linux import ip_conntrack
 from neutron.agent.linux import iptables_manager
 from neutron.agent import securitygroups_rpc as sg_rpc
 from neutron.api.rpc.handlers import securitygroups_rpc
-from neutron.common import rpc as n_rpc
 from neutron.db import securitygroups_rpc_base as sg_db_rpc
 from neutron.extensions import securitygroup as ext_sg
 from neutron.tests import base
-from neutron.tests import tools
 from neutron.tests.unit.extensions import test_securitygroup as test_sg
 
 FAKE_PREFIX = {const.IPv4: '10.0.0.0/24',

@@ -14,7 +14,6 @@
 #    under the License.
 
 import errno
-import os
 import re
 import time
 
@@ -25,14 +24,14 @@ from neutron_lib import exceptions
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import excutils
+from pyroute2.netlink import rtnl
+from pyroute2.netlink.rtnl import ifaddrmsg
 from pyroute2.netlink.rtnl import ifinfmsg
 from pyroute2 import NetlinkError
 from pyroute2 import netns
-import six
 
 from neutron._i18n import _
 from neutron.agent.common import utils
-from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
 from neutron.common import utils as common_utils
 from neutron.privileged.agent.linux import ip_lib as privileged
@@ -45,6 +44,26 @@ IP_NONLOCAL_BIND = 'net.ipv4.ip_nonlocal_bind'
 LOOPBACK_DEVNAME = 'lo'
 FB_TUNNEL_DEVICE_NAMES = ['gre0', 'gretap0', 'tunl0', 'erspan0', 'sit0',
                           'ip6tnl0', 'ip6gre0']
+IP_RULE_TABLES = {'default': 253,
+                  'main': 254,
+                  'local': 255}
+
+# Rule indexes: pyroute2.netlink.rtnl
+# Rule names: https://www.systutorials.com/docs/linux/man/8-ip-rule/
+# NOTE(ralonsoh): 'masquerade' type is printed as 'nat' in 'ip rule' command
+IP_RULE_TYPES = {0: 'unspecified',
+                 1: 'unicast',
+                 6: 'blackhole',
+                 7: 'unreachable',
+                 8: 'prohibit',
+                 10: 'nat'}
+
+IP_ADDRESS_SCOPE = {rtnl.rtscopes['RT_SCOPE_UNIVERSE']: 'global',
+                    rtnl.rtscopes['RT_SCOPE_SITE']: 'site',
+                    rtnl.rtscopes['RT_SCOPE_LINK']: 'link',
+                    rtnl.rtscopes['RT_SCOPE_HOST']: 'host'}
+
+IP_ADDRESS_SCOPE_NAME = {v: k for k, v in IP_ADDRESS_SCOPE.items()}
 
 SYS_NET_PATH = '/sys/class/net'
 DEFAULT_GW_PATTERN = re.compile(r"via (\S+)")
@@ -124,40 +143,32 @@ class IPWrapper(SubProcessBase):
     def device(self, name):
         return IPDevice(name, namespace=self.namespace)
 
+    def get_devices_info(self, exclude_loopback=True,
+                         exclude_fb_tun_devices=True):
+        devices = get_devices_info(self.namespace)
+
+        retval = []
+        for device in devices:
+            if (exclude_loopback and device['name'] == LOOPBACK_DEVNAME or
+                    exclude_fb_tun_devices and
+                    device['name'] in FB_TUNNEL_DEVICE_NAMES):
+                continue
+            retval.append(device)
+        return retval
+
     #返回namespace下所有接口
     def get_devices(self, exclude_loopback=True, exclude_fb_tun_devices=True):
         retval = []
-        if self.namespace:
-            # we call out manually because in order to avoid screen scraping
-            # iproute2 we use find to see what is in the sysfs directory, as
-            # suggested by Stephen Hemminger (iproute2 dev).
-            try:
-                cmd = ['ip', 'netns', 'exec', self.namespace,
-                       'find', SYS_NET_PATH, '-maxdepth', '1',
-                       '-type', 'l', '-printf', '%f ']
-                output = utils.execute(
-                    cmd,
-                    run_as_root=True,
-                    log_fail_as_error=self.log_fail_as_error).split()
-            except RuntimeError:
-                # We could be racing with a cron job deleting namespaces.
-                # Just return a empty list if the namespace is deleted.
-                with excutils.save_and_reraise_exception() as ctx:
-                    if not self.netns.exists(self.namespace):
-                        ctx.reraise = False
-                        return []
-        else:
-            output = (
-                i for i in os.listdir(SYS_NET_PATH)
-                if os.path.islink(os.path.join(SYS_NET_PATH, i))
-            )
+        try:
+            devices = privileged.get_device_names(self.namespace)
+        except privileged.NetworkNamespaceNotFound:
+            return retval
 
-        for name in output:
+        for name in devices:
             if (exclude_loopback and name == LOOPBACK_DEVNAME or
                     exclude_fb_tun_devices and name in FB_TUNNEL_DEVICE_NAMES):
                 continue
             retval.append(IPDevice(name, namespace=self.namespace))
-
         return retval
 
     def get_device_by_ip(self, ip):
@@ -170,8 +181,18 @@ class IPWrapper(SubProcessBase):
         if not ip:
             return None
 
-        addr = IpAddrCommand(self)
-        devices = addr.get_devices_with_ip(to=ip)
+        cidr = common_utils.ip_to_cidr(ip)
+        kwargs = {'address': common_utils.cidr_to_ip(cidr)}
+        if not common_utils.is_cidr_host(cidr):
+            kwargs['mask'] = common_utils.cidr_mask_length(cidr)
+        devices = get_devices_with_ip(self.namespace, **kwargs)
+        if not devices:
+            # Search by broadcast address.
+            broadcast = common_utils.cidr_broadcast_address(cidr)
+            if broadcast:
+                devices = get_devices_with_ip(self.namespace,
+                                              broadcast=broadcast)
+
         if devices:
             return IPDevice(devices[0]['name'], namespace=self.namespace)
 
@@ -265,7 +286,8 @@ class IPWrapper(SubProcessBase):
             if len(srcport) == 2 and srcport[0] <= srcport[1]:
                 kwargs['vxlan_port_range'] = (str(srcport[0]), str(srcport[1]))
             else:
-                raise n_exc.NetworkVxlanPortRangeError(vxlan_range=srcport)
+                raise exceptions.NetworkVxlanPortRangeError(
+                    vxlan_range=srcport)
         if dstport:
             kwargs['vxlan_port'] = dstport
         privileged.create_interface(name, self.namespace, "vxlan", **kwargs)
@@ -273,13 +295,14 @@ class IPWrapper(SubProcessBase):
 
 
 class IPDevice(SubProcessBase):
-    def __init__(self, name, namespace=None):
+    def __init__(self, name, namespace=None, kind='link'):
         super(IPDevice, self).__init__(namespace=namespace)
         self._name = name
-        self.link = IpLinkCommand(self)   #接口链路配置
-        self.addr = IpAddrCommand(self)   #接口地址配置
-        self.route = IpRouteCommand(self) #路由表项
-        self.neigh = IpNeighCommand(self) #邻居表项
+        self.kind = kind
+        self.link = IpLinkCommand(self)#接口链路配置
+        self.addr = IpAddrCommand(self)#接口地址配置
+        self.route = IpRouteCommand(self)#路由表项
+        self.neigh = IpNeighCommand(self)#邻居表项
 
     def __eq__(self, other):
         return (other is not None and self.name == other.name and
@@ -380,147 +403,14 @@ class IpCommandBase(object):
                                      use_root_namespace=use_root_namespace)
 
 
-class IPRule(SubProcessBase):
-    def __init__(self, namespace=None):
-        super(IPRule, self).__init__(namespace=namespace)
-        self.rule = IpRuleCommand(self)
-
-
-class IpRuleCommand(IpCommandBase):
-    COMMAND = 'rule'
-
-    @staticmethod
-    def _make_canonical(ip_version, settings):
-        """Converts settings to a canonical representation to compare easily"""
-        def canonicalize_fwmark_string(fwmark_mask):
-            """Reformats fwmark/mask in to a canonical form
-
-            Examples, these are all equivalent:
-                "0x1"
-                0x1
-                "0x1/0xfffffffff"
-                (0x1, 0xfffffffff)
-
-            :param fwmark_mask: The firewall and mask (default 0xffffffff)
-            :type fwmark_mask: A string with / as delimiter, an iterable, or a
-                single value.
-            """
-            # Turn the value we were passed in to an iterable: fwmark[, mask]
-            if isinstance(fwmark_mask, six.string_types):
-                # A / separates the optional mask in a string
-                iterable = fwmark_mask.split('/')
-            else:
-                try:
-                    iterable = iter(fwmark_mask)
-                except TypeError:
-                    # At this point, it must be a single integer
-                    iterable = [fwmark_mask]
-
-            def to_i(s):
-                if isinstance(s, six.string_types):
-                    # Passing 0 as "base" arg to "int" causes it to determine
-                    # the base automatically.
-                    return int(s, 0)
-                # s isn't a string, can't specify base argument
-                return int(s)
-
-            integers = [to_i(x) for x in iterable]
-
-            # The default mask is all ones, the mask is 32 bits.
-            if len(integers) == 1:
-                integers.append(0xffffffff)
-
-            # We now have two integers in a list.  Convert to canonical string.
-            return '{0:#x}/{1:#x}'.format(*integers)
-
-        def canonicalize(item):
-            k, v = item
-            # ip rule shows these as 'any'
-            if k == 'from' and v == 'all':
-                #如果有'from'并且v == 'all',就返回'from','0.0.0.0'
-                return k, constants.IP_ANY[ip_version]
-            # lookup and table are interchangeable.  Use table every time.
-            if k == 'lookup':
-                return 'table', v
-            if k == 'fwmark':
-                return k, canonicalize_fwmark_string(v)
-            return k, v #其它格式
-
-        #如果settings中没有'type'，则将setttings的'type‘定义为单播报文
-        if 'type' not in settings:
-            settings['type'] = 'unicast'
-
-        return {k: str(v) for k, v in map(canonicalize, settings.items())}
-
-    def _parse_line(self, ip_version, line):
-        # Typical rules from 'ip rule show':
-        # 4030201:  from 1.2.3.4/24 lookup 10203040
-        # 1024:     from all iif qg-c43b1928-48 lookup noscope
-
-        parts = line.split()
-        if not parts:
-            return {}
-
-        # Format of line is: "priority: <key> <value> ... [<type>]"
-        settings = {k: v for k, v in zip(parts[1::2], parts[2::2])}
-        settings['priority'] = parts[0][:-1]
-        if len(parts) % 2 == 0:
-            # When line has an even number of columns, last one is the type.
-            settings['type'] = parts[-1]
-
-        return self._make_canonical(ip_version, settings)
-
-    def list_rules(self, ip_version):
-        lines = self._as_root([ip_version], ['show']).splitlines()
-        return [self._parse_line(ip_version, line) for line in lines]
-
-    def _exists(self, ip_version, **kwargs):
-        return kwargs in self.list_rules(ip_version)
-
-    def _make__flat_args_tuple(self, *args, **kwargs):
-        for kwargs_item in sorted(kwargs.items(), key=lambda i: i[0]):
-            args += kwargs_item
-        return tuple(args)
-
-    #添加策略
-    def add(self, ip, **kwargs):
-        ip_version = common_utils.get_ip_version(ip)
-
-        # In case we need to add a rule based on an incoming
-        # interface, pass the "any" IP address, for example, 0.0.0.0/0,
-        # else pass the given IP.
-        if kwargs.get('iif'):
-            kwargs.update({'from': constants.IP_ANY[ip_version]})
-        else:
-            #如果没有指定入接口，则采用源ip进行限制
-            kwargs.update({'from': ip})
-        canonical_kwargs = self._make_canonical(ip_version, kwargs)
-
-        if not self._exists(ip_version, **canonical_kwargs):
-            #没有没有，就添加这条规则
-            args_tuple = self._make__flat_args_tuple('add', **canonical_kwargs)
-            self._as_root([ip_version], args_tuple)
-
-    def delete(self, ip, **kwargs):
-        ip_version = common_utils.get_ip_version(ip)
-
-        # In case we need to delete a rule based on an incoming
-        # interface, pass the "any" IP address, for example, 0.0.0.0/0,
-        # else pass the given IP.
-        if kwargs.get('iif'):
-            kwargs.update({'from': constants.IP_ANY[ip_version]})
-        else:
-            kwargs.update({'from': ip})
-        canonical_kwargs = self._make_canonical(ip_version, kwargs)
-
-        args_tuple = self._make__flat_args_tuple('del', **canonical_kwargs)
-        self._as_root([ip_version], args_tuple)
-
-
 class IpDeviceCommandBase(IpCommandBase):
     @property
     def name(self):
         return self._parent.name
+
+    @property
+    def kind(self):
+        return self._parent.kind
 
 
 class IpLinkCommand(IpDeviceCommandBase):
@@ -564,6 +454,10 @@ class IpLinkCommand(IpDeviceCommandBase):
     def set_alias(self, alias_name):
         privileged.set_link_attribute(
             self.name, self._parent.namespace, ifalias=alias_name)
+
+    def create(self):
+        privileged.create_interface(self.name, self._parent.namespace,
+                                    self.kind)
 
     def delete(self):
         privileged.delete_interface(self.name, self._parent.namespace)
@@ -615,68 +509,40 @@ class IpAddrCommand(IpDeviceCommandBase):
     def flush(self, ip_version):
         flush_ip_addresses(ip_version, self.name, self._parent.namespace)
 
-    def get_devices_with_ip(self, name=None, scope=None, to=None,
-                            filters=None, ip_version=None):
-        """Get a list of all the devices with an IP attached in the namespace.
-
-        :param name: if it's not None, only a device with that matching name
-                     will be returned.
-        :param scope: address scope, for example, global, link, or host
-        :param to: IP address or cidr to match. If cidr then it will match
-                   any IP within the specified subnet
-        :param filters: list of any other filters supported by /sbin/ip
-        :param ip_version: 4 or 6
-        """
-        options = [ip_version] if ip_version else []
-
-        args = ['show']
-        if name:
-            args += [name]
-        if filters:
-            args += filters
-        if scope:
-            args += ['scope', scope]
-        if to:
-            args += ['to', to]
-
-        retval = []
-
-        for line in self._run(options, tuple(args)).split('\n'):
-            line = line.strip()
-
-            match = DEVICE_NAME_PATTERN.search(line)
-            if match:
-                # Found a match for a device name, but its' addresses will
-                # only appear in following lines, so we may as well continue.
-                device_name = remove_interface_suffix(match.group(2))
-                continue
-            elif not line.startswith('inet'):
-                continue
-
-            parts = line.split(" ")
-            broadcast = None
-            if parts[0] == 'inet6':
-                scope = parts[3]
-            else:
-                if parts[2] == 'brd':
-                    broadcast = parts[3]
-                    scope = parts[5]
-                else:
-                    scope = parts[3]
-
-            retval.append(dict(name=device_name,
-                               cidr=parts[1],
-                               scope=scope,
-                               broadcast=broadcast,
-                               dynamic=('dynamic' == parts[-1]),
-                               tentative=('tentative' in line),
-                               dadfailed=('dadfailed' == parts[-1])))
-        return retval
-
     def list(self, scope=None, to=None, filters=None, ip_version=None):
         """Get device details of a device named <self.name>."""
-        return self.get_devices_with_ip(
-            self.name, scope, to, filters, ip_version)
+        def filter_device(device, filters):
+            # Accepted filters: dynamic, permanent, tentative, dadfailed.
+            for filter in filters:
+                if filter == 'permanent' and device['dynamic']:
+                    return False
+                elif not device[filter]:
+                    return False
+            return True
+
+        kwargs = {}
+        if to:
+            cidr = common_utils.ip_to_cidr(to)
+            kwargs = {'address': common_utils.cidr_to_ip(cidr)}
+            if not common_utils.is_cidr_host(cidr):
+                kwargs['mask'] = common_utils.cidr_mask_length(cidr)
+        if scope:
+            kwargs['scope'] = IP_ADDRESS_SCOPE_NAME[scope]
+        if ip_version:
+            kwargs['family'] = common_utils.get_socket_address_family(
+                ip_version)
+
+        devices = get_devices_with_ip(self._parent.namespace, name=self.name,
+                                      **kwargs)
+        if not filters:
+            return devices
+
+        filtered_devices = []
+        for device in (device for device in devices
+                       if filter_device(device, filters)):
+            filtered_devices.append(device)
+
+        return filtered_devices
 
     def wait_until_address_ready(self, address, wait_time=30):
         """Wait until an address is no longer marked 'tentative'
@@ -930,18 +796,18 @@ class IpNetnsCommand(IpCommandBase):
 
 def vlan_in_use(segmentation_id, namespace=None):
     """Return True if VLAN ID is in use by an interface, else False."""
-    ip_wrapper = IPWrapper(namespace=namespace)
-    interfaces = ip_wrapper.netns.execute(["ip", "-d", "link", "list"],
-                                          check_exit_code=True)
-    return '802.1Q id %s ' % segmentation_id in interfaces
+    interfaces = get_devices_info(namespace)
+    vlans = {interface.get('vlan_id') for interface in interfaces
+             if interface.get('vlan_id')}
+    return segmentation_id in vlans
 
 
 def vxlan_in_use(segmentation_id, namespace=None):
     """Return True if VXLAN VNID is in use by an interface, else False."""
-    ip_wrapper = IPWrapper(namespace=namespace)
-    interfaces = ip_wrapper.netns.execute(["ip", "-d", "link", "list"],
-                                          check_exit_code=True)
-    return 'vxlan id %s ' % segmentation_id in interfaces
+    interfaces = get_devices_info(namespace)
+    vxlans = {interface.get('vxlan_id') for interface in interfaces
+              if interface.get('vxlan_id')}
+    return segmentation_id in vxlans
 
 
 def device_exists(device_name, namespace=None):
@@ -979,6 +845,7 @@ def get_device_mtu(device_name, namespace=None):
 
 NetworkNamespaceNotFound = privileged.NetworkNamespaceNotFound
 NetworkInterfaceNotFound = privileged.NetworkInterfaceNotFound
+IpAddressAlreadyExists = privileged.IpAddressAlreadyExists
 
 
 def add_ip_address(cidr, device, namespace=None, scope='global',
@@ -1311,18 +1178,25 @@ def set_ip_nonlocal_bind(value, namespace=None, log_fail_as_error=True):
                   log_fail_as_error=log_fail_as_error)
 
 
-def set_ip_nonlocal_bind_for_namespace(namespace):
+def set_ip_nonlocal_bind_for_namespace(namespace, value, root_namespace=False):
     """Set ip_nonlocal_bind but don't raise exception on failure."""
-    failed = set_ip_nonlocal_bind(value=0, namespace=namespace,
+    failed = set_ip_nonlocal_bind(value, namespace=namespace,
                                   log_fail_as_error=False)
+    if failed and root_namespace:
+        # Somewhere in the 3.19 kernel timeframe ip_nonlocal_bind was
+        # changed to be a per-namespace attribute.  To be backwards
+        # compatible we need to try both if at first we fail.
+        LOG.debug('Namespace (%s) does not support setting %s, '
+                  'trying in root namespace', namespace, IP_NONLOCAL_BIND)
+        return set_ip_nonlocal_bind(value)
     if failed:
         LOG.warning(
-            "%s will not be set to 0 in the root namespace in order to "
+            "%s will not be set to %d in the root namespace in order to "
             "not break DVR, which requires this value be set to 1. This "
             "may introduce a race between moving a floating IP to a "
             "different network node, and the peer side getting a "
             "populated ARP cache for a given floating IP address.",
-            IP_NONLOCAL_BIND)
+            IP_NONLOCAL_BIND, value)
 
 
 def get_ipv6_forwarding(device, namespace=None):
@@ -1330,3 +1204,241 @@ def get_ipv6_forwarding(device, namespace=None):
     cmd = ['sysctl', '-b', "net.ipv6.conf.%s.forwarding" % device]
     ip_wrapper = IPWrapper(namespace)
     return int(ip_wrapper.netns.execute(cmd, run_as_root=True))
+
+
+def _parse_ip_rule(rule, ip_version):
+    """Parse a pyroute2 rule and returns a dictionary
+
+    Parameters contained in the returned dictionary:
+    - priority: rule priority
+    - from: source IP address
+    - to: (optional) destination IP address
+    - type: rule type (see RULE_TYPES)
+    - table: table name or number (see RULE_TABLES)
+    - fwmark: (optional) FW mark
+    - iif: (optional) input interface name
+    - oif: (optional) output interface name
+
+     :param rule: pyroute2 rule dictionary
+     :param ip_version: IP version (4, 6)
+     :return: dictionary with IP rule information
+    """
+    parsed_rule = {'priority': str(rule['attrs'].get('FRA_PRIORITY', 0))}
+    from_ip = rule['attrs'].get('FRA_SRC')
+    if from_ip:
+        parsed_rule['from'] = common_utils.ip_to_cidr(
+            from_ip, prefix=rule['src_len'])
+        if common_utils.is_cidr_host(parsed_rule['from']):
+            parsed_rule['from'] = common_utils.cidr_to_ip(parsed_rule['from'])
+    else:
+        parsed_rule['from'] = constants.IP_ANY[ip_version]
+    to_ip = rule['attrs'].get('FRA_DST')
+    if to_ip:
+        parsed_rule['to'] = common_utils.ip_to_cidr(
+            to_ip, prefix=rule['dst_len'])
+        if common_utils.is_cidr_host(parsed_rule['to']):
+            parsed_rule['to'] = common_utils.cidr_to_ip(parsed_rule['to'])
+    parsed_rule['type'] = IP_RULE_TYPES[rule['action']]
+    table_num = rule['attrs']['FRA_TABLE']
+    for table_name in (name for (name, index) in
+                       IP_RULE_TABLES.items() if index == table_num):
+        parsed_rule['table'] = table_name
+        break
+    else:
+        parsed_rule['table'] = str(table_num)
+    fwmark = rule['attrs'].get('FRA_FWMARK')
+    if fwmark:
+        fwmask = rule['attrs'].get('FRA_FWMASK')
+        parsed_rule['fwmark'] = '{0:#x}/{1:#x}'.format(fwmark, fwmask)
+    iifname = rule['attrs'].get('FRA_IIFNAME')
+    if iifname:
+        parsed_rule['iif'] = iifname
+    oifname = rule['attrs'].get('FRA_OIFNAME')
+    if oifname:
+        parsed_rule['oif'] = oifname
+
+    return parsed_rule
+
+
+def list_ip_rules(namespace, ip_version):
+    """List all IP rules in a namespace
+
+    :param namespace: namespace name
+    :param ip_version: IP version (4, 6)
+    :return: list of dictionaries with the rules information
+    """
+    rules = privileged.list_ip_rules(namespace, ip_version)
+    return [_parse_ip_rule(rule, ip_version) for rule in rules]
+
+
+def _make_pyroute2_args(ip, iif, table, priority, to):
+    """Returns a dictionary of arguments to be used in pyroute rule commands
+
+    :param ip: (string) source IP or CIDR address (IPv4, IPv6)
+    :param iif: (string) input interface name
+    :param table: (string, int) table number (as an int or a string) or table
+                  name ('default', 'main', 'local')
+    :param priority: (string, int) rule priority
+    :param to: (string) destination IP or CIDR address (IPv4, IPv6)
+    :return: a dictionary with the kwargs needed in pyroute rule commands
+    """
+    ip_version = common_utils.get_ip_version(ip)
+    # In case we need to add a rule based on an incoming interface, no
+    # IP address is given; the rule default source ("from") address is
+    # "all".
+    cmd_args = {'family': common_utils.get_socket_address_family(ip_version)}
+    if iif:
+        cmd_args['iifname'] = iif
+    else:
+        cmd_args['src'] = common_utils.cidr_to_ip(ip)
+        cmd_args['src_len'] = common_utils.cidr_mask(ip)
+    if to:
+        cmd_args['dst'] = common_utils.cidr_to_ip(to)
+        cmd_args['dst_len'] = common_utils.cidr_mask(to)
+    if table:
+        cmd_args['table'] = IP_RULE_TABLES.get(table) or int(table)
+    if priority:
+        cmd_args['priority'] = int(priority)
+    return cmd_args
+
+
+def _exist_ip_rule(rules, ip, iif, table, priority, to):
+    """Check if any rule matches the conditions"""
+    for rule in rules:
+        if iif and rule.get('iif') != iif:
+            continue
+        if not iif and rule['from'] != ip:
+            continue
+        if table and rule.get('table') != str(table):
+            continue
+        if priority and rule['priority'] != str(priority):
+            continue
+        if to and rule.get('to') != to:
+            continue
+        break
+    else:
+        return False
+    return True
+
+
+def add_ip_rule(namespace, ip, iif=None, table=None, priority=None, to=None):
+    """Create an IP rule in a namespace
+
+    :param namespace: (string) namespace name
+    :param ip: (string) source IP or CIDR address (IPv4, IPv6)
+    :param iif: (Optional) (string) input interface name
+    :param table: (Optional) (string, int) table number
+    :param priority: (Optional) (string, int) rule priority
+    :param to: (Optional) (string) destination IP or CIDR address (IPv4, IPv6)
+    """
+    ip_version = common_utils.get_ip_version(ip)
+    rules = list_ip_rules(namespace, ip_version)
+    if _exist_ip_rule(rules, ip, iif, table, priority, to):
+        return
+    cmd_args = _make_pyroute2_args(ip, iif, table, priority, to)
+    privileged.add_ip_rule(namespace, **cmd_args)
+
+
+def delete_ip_rule(namespace, ip, iif=None, table=None, priority=None,
+                   to=None):
+    """Delete an IP rule in a namespace
+
+    :param namespace: (string) namespace name
+    :param ip: (string) source IP or CIDR address (IPv4, IPv6)
+    :param iif: (Optional) (string) input interface name
+    :param table: (Optional) (string, int) table number
+    :param priority: (Optional) (string, int) rule priority
+    :param to: (Optional) (string) destination IP or CIDR address (IPv4, IPv6)
+    """
+    cmd_args = _make_pyroute2_args(ip, iif, table, priority, to)
+    privileged.delete_ip_rule(namespace, **cmd_args)
+
+
+def get_attr(pyroute2_obj, attr_name):
+    """Get an attribute from a PyRoute2 object"""
+    rule_attrs = pyroute2_obj.get('attrs', [])
+    for attr in (attr for attr in rule_attrs if attr[0] == attr_name):
+        return attr[1]
+
+
+def _parse_link_device(namespace, device, **kwargs):
+    """Parse pytoute2 link device information
+
+    For each link device, the IP address information is retrieved and returned
+    in a dictionary.
+    IP address scope: http://linux-ip.net/html/tools-ip-address.html
+    """
+    retval = []
+    name = get_attr(device, 'IFLA_IFNAME')
+    ip_addresses = privileged.get_ip_addresses(namespace,
+                                               index=device['index'],
+                                               **kwargs)
+    for ip_address in ip_addresses:
+        ip = get_attr(ip_address, 'IFA_ADDRESS')
+        ip_length = ip_address['prefixlen']
+        cidr = common_utils.ip_to_cidr(ip, prefix=ip_length)
+        flags = get_attr(ip_address, 'IFA_FLAGS')
+        dynamic = not bool(flags & ifaddrmsg.IFA_F_PERMANENT)
+        tentative = bool(flags & ifaddrmsg.IFA_F_TENTATIVE)
+        dadfailed = bool(flags & ifaddrmsg.IFA_F_DADFAILED)
+        scope = IP_ADDRESS_SCOPE[ip_address['scope']]
+        retval.append({'name': name,
+                       'cidr': cidr,
+                       'scope': scope,
+                       'broadcast': get_attr(ip_address, 'IFA_BROADCAST'),
+                       'dynamic': dynamic,
+                       'tentative': tentative,
+                       'dadfailed': dadfailed})
+    return retval
+
+
+def get_devices_with_ip(namespace, name=None, **kwargs):
+    link_args = {}
+    if name:
+        link_args['ifname'] = name
+    devices = privileged.get_link_devices(namespace, **link_args)
+    retval = []
+    for parsed_ips in (_parse_link_device(namespace, device, **kwargs)
+                       for device in devices):
+        retval += parsed_ips
+    return retval
+
+
+def get_devices_info(namespace, **kwargs):
+    devices = privileged.get_link_devices(namespace, **kwargs)
+    retval = {}
+    for device in devices:
+        ret = {'index': device['index'],
+               'name': get_attr(device, 'IFLA_IFNAME'),
+               'operstate': get_attr(device, 'IFLA_OPERSTATE'),
+               'linkmode': get_attr(device, 'IFLA_LINKMODE'),
+               'mtu': get_attr(device, 'IFLA_MTU'),
+               'promiscuity': get_attr(device, 'IFLA_PROMISCUITY'),
+               'mac': get_attr(device, 'IFLA_ADDRESS'),
+               'broadcast': get_attr(device, 'IFLA_BROADCAST')}
+        ifla_link = get_attr(device, 'IFLA_LINK')
+        if ifla_link:
+            ret['parent_index'] = ifla_link
+        ifla_linkinfo = get_attr(device, 'IFLA_LINKINFO')
+        if ifla_linkinfo:
+            ret['kind'] = get_attr(ifla_linkinfo, 'IFLA_INFO_KIND')
+            ifla_data = get_attr(ifla_linkinfo, 'IFLA_INFO_DATA')
+            if ret['kind'] == 'vxlan':
+                ret['vxlan_id'] = get_attr(ifla_data, 'IFLA_VXLAN_ID')
+                ret['vxlan_group'] = get_attr(ifla_data, 'IFLA_VXLAN_GROUP')
+                ret['vxlan_link_index'] = get_attr(ifla_data,
+                                                   'IFLA_VXLAN_LINK')
+            elif ret['kind'] == 'vlan':
+                ret['vlan_id'] = get_attr(ifla_data, 'IFLA_VLAN_ID')
+        retval[device['index']] = ret
+
+    for device in retval.values():
+        if device.get('parent_index'):
+            parent_device = retval.get(device['parent_index'])
+            if parent_device:
+                device['parent_name'] = parent_device['name']
+        elif device.get('vxlan_link_index'):
+            device['vxlan_link_name'] = (
+                retval[device['vxlan_link_index']]['name'])
+
+    return list(retval.values())

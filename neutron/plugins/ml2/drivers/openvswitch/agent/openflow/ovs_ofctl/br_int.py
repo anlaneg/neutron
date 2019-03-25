@@ -40,6 +40,9 @@ class OVSIntegrationBridge(ovs_bridge.OVSAgentBridge):
         self.install_normal(table_id=constants.TRANSIENT_TABLE, priority=3) #TRANSIENT_TABLE默认为normal方式转发
         #将arp_spoof表置为drop状态（防arp攻击）
         self.install_drop(table_id=constants.ARP_SPOOF_TABLE)
+        self.install_drop(table_id=constants.LOCAL_SWITCHING,
+                          priority=constants.OPENFLOW_MAX_PRIORITY,
+                          dl_vlan=constants.DEAD_VLAN_TAG)
 
     #为canary_table中加入drop action
     def setup_canary_table(self):

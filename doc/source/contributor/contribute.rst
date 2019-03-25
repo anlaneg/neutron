@@ -174,7 +174,7 @@ Security Issues
 ~~~~~~~~~~~~~~~
 
 Here are some answers to how to handle security issues in your repo, taken
-from `this openstack-dev mailing list message
+from `this mailing list message
 <http://lists.openstack.org/pipermail/openstack-dev/2015-July/068617.html>`_:
 
 - How should security your issues be managed?
@@ -554,7 +554,7 @@ your code::
     service_type_manager = servicetype_db.ServiceTypeManager.get_instance()
     service_type_manager.add_provider_configuration(
         YOUR_SERVICE_TYPE,
-        pconf.ProviderConfiguration(YOUR_SERVICE_MODULE))
+        pconf.ProviderConfiguration(YOUR_SERVICE_MODULE, YOUR_SERVICE_TYPE))
 
 This is typically required when you instantiate your service plugin class.
 

@@ -13,11 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import uuid
+
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
 from neutron_lib.plugins.ml2 import api
+from oslo_config import cfg
+
 from oslo_log import log
 
+from neutron._i18n import _
+from neutron.conf.plugins.ml2.drivers.mech_sriov import mech_sriov_conf
 from neutron.plugins.ml2.drivers import mech_agent
 from neutron.plugins.ml2.drivers.mech_sriov.mech_driver \
     import exceptions as exc
@@ -26,6 +32,9 @@ from neutron.services.qos.drivers.sriov import driver as sriov_qos_driver
 
 LOG = log.getLogger(__name__)
 FLAT_VLAN = 0
+
+
+mech_sriov_conf.register_sriov_mech_driver_opts()
 
 
 class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
@@ -42,6 +51,9 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     """
     #sriov也是仅实现了port_bind
 
+    resource_provider_uuid5_namespace = uuid.UUID(
+        '87f1895c-73bb-11e8-9008-c4d987b2a692')
+
     def __init__(self,
                  agent_type=constants.AGENT_TYPE_NIC_SWITCH,
                  vif_details={portbindings.CAP_PORT_FILTER: False},
@@ -55,7 +67,15 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         :param supported_vnic_types: The binding:vnic_type values we can bind
         """
         self.agent_type = agent_type
-        self.supported_vnic_types = supported_vnic_types #sriov机制支持三种vnic方式
+
+        # TODO(lajoskatona): move this blacklisting to
+        # SimpleAgentMechanismDriverBase. By that e blacklisting and validation
+        # of the vnic_types would be available for all mechanism drivers.
+        self.supported_vnic_types = self.blacklist_supported_vnic_types(#sriov机制支持三种vnic方式
+            vnic_types=supported_vnic_types,
+            blacklist=cfg.CONF.SRIOV_DRIVER.vnic_type_blacklist
+        )
+
         # NOTE(ndipanov): PF passthrough requires a different vif type
         # 对于VNIC_DIRECT_PHYSICAL，使用VIF_TYPE_HOSTDEV_PHY，其它使用VIF_TYPE_HW_VEB
         self.vnic_type_for_vif_type = (
@@ -73,6 +93,23 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     def get_mappings(self, agent):
         #获取给定agent的设备mappings
         return agent['configurations'].get('device_mappings', {})
+
+    def get_standard_device_mappings(self, agent):
+        """Return the agent's device mappings in a standard way.
+
+        The common format for OVS and SRIOv mechanism drivers:
+        {'physnet_name': ['device_or_bridge_1', 'device_or_bridge_2']}
+
+        :param agent: The agent
+        :returns A dict in the format: {'physnet_name': ['bridge_or_device']}
+        :raises ValueError: if there is no device_mappings key in
+                            agent['configurations']
+        """
+        if 'device_mappings' in agent['configurations']:
+            return agent['configurations']['device_mappings']
+        else:
+            raise ValueError(_('Cannot standardize device mappings of agent '
+                               'type: %s'), agent['agent_type'])
 
     def bind_port(self, context):
         LOG.debug("Attempting to bind port %(port)s on "

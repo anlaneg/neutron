@@ -129,6 +129,9 @@ class TunnelTest(object):
             'int-%s' % self.MAP_TUN_BRIDGE: self.MAP_TUN_INT_OFPORT
         }
 
+        mock.patch('neutron.agent.rpc.PluginReportStateAPI.'
+                   'has_alive_neutron_server').start()
+
         def lookup_br(br_name, *args, **kwargs):
             return self.ovs_bridges[br_name]
 
@@ -183,10 +186,13 @@ class TunnelTest(object):
             ovs_lib.BaseOVS,
             'get_bridge_external_bridge_id').start()
         self.get_bridge_external_bridge_id.side_effect = (
-            lambda bridge: bridge if bridge in self.ovs_bridges else None)
+            lambda bridge, log_errors: bridge if bridge in self.ovs_bridges
+            else None)
 
         self.execute = mock.patch('neutron.agent.common.utils.execute').start()
-
+        self.mock_check_bridge_datapath_id = mock.patch.object(
+            self.mod_agent.OVSNeutronAgent,
+            '_check_bridge_datapath_id').start()
         self._define_expected_calls()
 
     def _define_expected_calls(self, arp_responder=False):
@@ -302,8 +308,10 @@ class TunnelTest(object):
             cfg.CONF.set_override(k, v, 'AGENT')
 
         ext_mgr = mock.Mock()
-        return self.mod_agent.OVSNeutronAgent(
+        agent = self.mod_agent.OVSNeutronAgent(
             bridge_classes, ext_mgr, cfg.CONF)
+        mock.patch.object(agent.ovs.ovsdb, 'idl_monitor').start()
+        return agent
 
     def _verify_mock_call(self, mock_obj, expected):
         mock_obj.assert_has_calls(expected)
@@ -644,7 +652,7 @@ class TunnelTestOFCtl(TunnelTest, ovs_test_base.OVSOFCtlTestBase):
     pass
 
 
-class TunnelTestRyu(TunnelTest, ovs_test_base.OVSRyuTestBase):
+class TunnelTestOSKen(TunnelTest, ovs_test_base.OVSOSKenTestBase):
     pass
 
 
@@ -742,8 +750,8 @@ class TunnelTestUseVethIntercoOFCtl(TunnelTestUseVethInterco,
     pass
 
 
-class TunnelTestUseVethIntercoRyu(TunnelTestUseVethInterco,
-                                  ovs_test_base.OVSRyuTestBase):
+class TunnelTestUseVethIntercoOSKen(TunnelTestUseVethInterco,
+                                  ovs_test_base.OVSOSKenTestBase):
     pass
 
 
@@ -761,6 +769,6 @@ class TunnelTestWithMTUOFCtl(TunnelTestWithMTU,
     pass
 
 
-class TunnelTestWithMTURyu(TunnelTestWithMTU,
-                           ovs_test_base.OVSRyuTestBase):
+class TunnelTestWithMTUOSKen(TunnelTestWithMTU,
+                           ovs_test_base.OVSOSKenTestBase):
     pass

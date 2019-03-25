@@ -222,7 +222,7 @@ In order to ensure correct operations, a row-level lock is acquired in
 the transaction which creates the reservation. The lock is acquired when
 reading usage data. In case of write-set certification failures,
 which can occur in active/active clusters such as MySQL galera, the decorator
-neutron.db.api.retry_db_errors will retry the transaction if a DBDeadLock
+neutron_lib.db.api.retry_db_errors will retry the transaction if a DBDeadLock
 exception is raised.
 While non-locking approaches are possible, it has been found out that, since
 a non-locking algorithms increases the chances of collision, the cost of
@@ -346,7 +346,7 @@ References
 ----------
 
 .. [#] Subnet allocation extension: http://git.openstack.org/cgit/openstack/neutron/tree/neutron/extensions/subnetallocation.py
-.. [#] DB Quota driver class: http://git.openstack.org/cgit/openstack/neutron/tree/neutron/db/quota_db.py#n33
+.. [#] DB Quota driver class: http://git.openstack.org/cgit/openstack/neutron/tree/neutron/db/quota/driver.py#n30
 .. [#] Quota API extension controller: http://git.openstack.org/cgit/openstack/neutron/tree/neutron/extensions/quotasv2.py#n40
 .. [#] Neutron resource attribute map: http://git.openstack.org/cgit/openstack/neutron/tree/neutron/api/v2/attributes.py#n639
 .. [#] Base controller class: http://git.openstack.org/cgit/openstack/neutron/tree/neutron/api/v2/base.py#n50

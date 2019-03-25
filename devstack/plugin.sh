@@ -6,11 +6,14 @@ source $LIBDIR/l2_agent
 source $LIBDIR/l2_agent_sriovnicswitch
 source $LIBDIR/l3_agent
 source $LIBDIR/ml2
+source $LIBDIR/network_segment_range
 source $LIBDIR/qos
 source $LIBDIR/ovs
 source $LIBDIR/segments
 source $LIBDIR/trunk
 source $LIBDIR/log
+source $LIBDIR/fip_port_forwarding
+source $LIBDIR/uplink_status_propagation
 
 Q_BUILD_OVS_FROM_GIT=$(trueorfalse False Q_BUILD_OVS_FROM_GIT)
 
@@ -29,6 +32,9 @@ if [[ "$1" == "stack" ]]; then
             fi
             ;;
         post-config)
+            if is_service_enabled neutron-uplink-status-propagation; then
+                configure_uplink_status_propagation_extension
+            fi
             if is_service_enabled q-flavors neutron-flavors; then
                 configure_flavors
             fi
@@ -51,6 +57,9 @@ if [[ "$1" == "stack" ]]; then
             if is_service_enabled neutron-segments; then
                 configure_segments_extension
             fi
+            if is_service_enabled neutron-network-segment-range; then
+                configure_network_segment_range
+            fi
             if is_service_enabled q-agt neutron-agent; then
                 configure_l2_agent
             fi
@@ -67,6 +76,10 @@ if [[ "$1" == "stack" ]]; then
             if is_service_enabled q-l3 neutron-l3; then
                 if is_service_enabled q-qos neutron-qos; then
                     configure_l3_agent_extension_fip_qos
+                    configure_l3_agent_extension_gateway_ip_qos
+                fi
+                if is_service_enabled q-port-forwarding neutron-port-forwarding; then
+                    configure_port_forwarding
                 fi
                 configure_l3_agent
             fi

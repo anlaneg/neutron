@@ -24,6 +24,7 @@ from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as lib_consts
 from neutron_lib.db import api as db_api
+from neutron_lib.db import resource_extend
 from neutron_lib.db import utils as db_utils
 from neutron_lib import exceptions as lib_exc
 from neutron_lib.exceptions import l3 as lib_l3_exc
@@ -36,8 +37,8 @@ from neutron._i18n import _
 from neutron.api.rpc.callbacks import events as rpc_events
 from neutron.api.rpc.handlers import resources_rpc
 from neutron.common import utils
-from neutron.db import _resource_extend as resource_extend
 from neutron.db import db_base_plugin_common
+from neutron.db import l3_dvr_db
 from neutron.extensions import floating_ip_port_forwarding as fip_pf
 from neutron.objects import base as base_obj
 from neutron.objects import port_forwarding as pf
@@ -45,6 +46,9 @@ from neutron.objects import router as l3_obj
 from neutron.services.portforwarding.common import exceptions as pf_exc
 
 LOG = logging.getLogger(__name__)
+
+# Move to neutron-lib someday.
+PORT_FORWARDING_FLOATINGIP_KEY = '_pf_floatingips'
 
 
 def make_result_with_fields(f):
@@ -69,6 +73,8 @@ class PortForwardingPlugin(fip_pf.PortForwardingPluginBase):
 
     This class implements a Port Forwarding plugin.
     """
+
+    required_service_plugins = ['router']
 
     supported_extension_aliases = ['floating-ip-port-forwarding',
                                    'expose-port-forwarding-in-fip']
@@ -102,6 +108,27 @@ class PortForwardingPlugin(fip_pf.PortForwardingPluginBase):
                 port_forwarding_result.append(pf_dict)
             result_dict[apidef.COLLECTION_NAME] = port_forwarding_result
         return result_dict
+
+    @registry.receives(resources.FLOATING_IP, [events.BEFORE_CREATE,
+                                               events.BEFORE_UPDATE])
+    def _check_port_has_port_forwarding(self, resource, event,
+                                        trigger, payload=None):
+        port_id = payload.request_body['floatingip'].get('port_id')
+        if not port_id:
+            return
+
+        pf_objs = pf.PortForwarding.get_objects(
+            payload.context, internal_port_id=port_id)
+        if not pf_objs:
+            return
+        # Port may not bind to host yet, or port may migrate from one
+        # dvr_no_external host to one dvr host. So we just do not allow
+        # all dvr router's floating IP to be binded to a port which
+        # already has port forwarding.
+        router = self.l3_plugin.get_router(payload.context.elevated(),
+                                           pf_objs[0].router_id)
+        if l3_dvr_db.is_distributed_router(router):
+            raise pf_exc.PortHasPortForwarding(port_id=port_id)
 
     @registry.receives(resources.FLOATING_IP, [events.PRECOMMIT_UPDATE,
                                                events.PRECOMMIT_DELETE])
@@ -277,12 +304,26 @@ class PortForwardingPlugin(fip_pf.PortForwardingPluginBase):
             raise lib_exc.BadRequest(resource=apidef.RESOURCE_NAME,
                                      msg=message)
 
+    def _check_port_has_binding_floating_ip(self, context, port_forwarding):
+        port_id = port_forwarding['internal_port_id']
+        floatingip_objs = l3_obj.FloatingIP.get_objects(
+            context.elevated(),
+            fixed_port_id=port_id)
+        if floatingip_objs:
+            floating_ip_address = floatingip_objs[0].floating_ip_address
+            raise pf_exc.PortHasBindingFloatingIP(
+                floating_ip_address=floating_ip_address,
+                fip_id=floatingip_objs[0].id,
+                port_id=port_id,
+                fixed_ip=port_forwarding['internal_ip_address'])
+
     @db_base_plugin_common.convert_result_to_dict
     def create_floatingip_port_forwarding(self, context, floatingip_id,
                                           port_forwarding):
         port_forwarding = port_forwarding.get(apidef.RESOURCE_NAME)
         port_forwarding['floatingip_id'] = floatingip_id
 
+        self._check_port_has_binding_floating_ip(context, port_forwarding)
         with db_api.CONTEXT_WRITER.using(context):
             fip_obj = self._get_fip_obj(context, floatingip_id)
             if fip_obj.fixed_port_id:
@@ -329,6 +370,8 @@ class PortForwardingPlugin(fip_pf.PortForwardingPluginBase):
         new_internal_port_id = None
         if port_forwarding and port_forwarding.get('internal_port_id'):
             new_internal_port_id = port_forwarding.get('internal_port_id')
+            self._check_port_has_binding_floating_ip(context, port_forwarding)
+
         try:
             with db_api.CONTEXT_WRITER.using(context):
                 fip_obj = self._get_fip_obj(context, floatingip_id)
@@ -403,10 +446,12 @@ class PortForwardingPlugin(fip_pf.PortForwardingPluginBase):
         if not specify_params:
             specify_params = [
                 {'floatingip_id': floatingip_id,
-                 'external_port': port_forwarding['external_port']},
+                 'external_port': port_forwarding['external_port'],
+                 'protocol': port_forwarding['protocol']},
                 {'internal_port_id': port_forwarding['internal_port_id'],
                  'internal_ip_address': port_forwarding['internal_ip_address'],
-                 'internal_port': port_forwarding['internal_port']}]
+                 'internal_port': port_forwarding['internal_port'],
+                 'protocol': port_forwarding['protocol']}]
         for param in specify_params:
             objs = pf.PortForwarding.get_objects(context, **param)
             if objs:
@@ -471,18 +516,25 @@ class PortForwardingPlugin(fip_pf.PortForwardingPluginBase):
         router_ids = [router.get('id') for router in routers]
         router_pf_fip_set = collections.defaultdict(set)
         fip_pfs = collections.defaultdict(set)
-        router_fip = collections.defaultdict(set)
+        router_fip_ids = collections.defaultdict(set)
         item_pf_fields = pf.PortForwarding.get_port_forwarding_obj_by_routers(
             context, router_ids)
 
         for router_id, fip_addr, pf_id, fip_id in item_pf_fields:
             router_pf_fip_set[router_id].add(utils.ip_to_cidr(fip_addr, 32))
             fip_pfs[fip_id].add(pf_id)
-            router_fip[router_id].add(fip_id)
+            router_fip_ids[router_id].add(fip_id)
 
         for router in routers:
-            if router['id'] in router_fip:
+            if router['id'] in router_fip_ids:
                 router['port_forwardings_fip_set'] = router_pf_fip_set[
                     router['id']]
-                router['fip_managed_by_port_forwardings'] = router_fip[
+                router['fip_managed_by_port_forwardings'] = router_fip_ids[
                     router['id']]
+
+                router_pf_fips_info = router.get(
+                    PORT_FORWARDING_FLOATINGIP_KEY, [])
+                for fip_id in router_fip_ids[router['id']]:
+                    fip = self.l3_plugin.get_floatingip(context, fip_id)
+                    router_pf_fips_info.append(fip)
+                router[PORT_FORWARDING_FLOATINGIP_KEY] = router_pf_fips_info

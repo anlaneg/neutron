@@ -20,7 +20,6 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
-from neutron_lib.exceptions import agent as agent_exc
 
 from neutron_lib import constants
 from neutron_lib import context
@@ -28,13 +27,15 @@ from neutron_lib import context
 from neutron.api.rpc.handlers import l3_rpc
 from neutron.common import constants as n_const
 from neutron.tests.common import helpers
+from neutron.tests.functional import base as functional_base
 from neutron.tests.unit.plugins.ml2 import base as ml2_test_base
 
 
 DEVICE_OWNER_COMPUTE = constants.DEVICE_OWNER_COMPUTE_PREFIX + 'fake'
 
 
-class L3DvrTestCaseBase(ml2_test_base.ML2TestFramework):
+class L3DvrTestCaseBase(ml2_test_base.ML2TestFramework,
+                        functional_base.BaseLoggingTestCase):
     def setUp(self):
         super(L3DvrTestCaseBase, self).setUp()
         self.l3_agent = helpers.register_l3_agent(
@@ -338,12 +339,9 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                 self.context, router['id'],
                 {'subnet_id': int_subnet['subnet']['id']})
             if test_agent_mode is None:
-                self.assertRaises(
-                    agent_exc.AgentNotFoundByTypeHost,
-                    self.l3_plugin.create_fip_agent_gw_port_if_not_exists,
-                    self.context,
-                    ext_net_id,
-                    'host1')
+                self.assertIsNone(
+                    self.l3_plugin.create_fip_agent_gw_port_if_not_exists(
+                        self.context, ext_net_id, 'host1'))
                 return
             floating_ip = {'floating_network_id': ext_net_id,
                            'router_id': router['id'],
@@ -766,11 +764,12 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                 floating_ip = self.l3_plugin.create_floatingip(
                     self.context, {'floatingip': floating_ip})
                 expected_routers_updated_calls = [
-                        mock.call(self.context, mock.ANY, HOST1),
-                        mock.call(self.context, mock.ANY, HOST2),
-                        mock.call(self.context, mock.ANY, 'host0')]
+                    mock.call(self.context, mock.ANY, 'host0'),
+                    mock.call(self.context, mock.ANY, HOST1),
+                    mock.call(self.context, mock.ANY, HOST1),
+                    mock.call(self.context, mock.ANY, HOST2)]
                 l3_notifier.routers_updated_on_host.assert_has_calls(
-                        expected_routers_updated_calls)
+                        expected_routers_updated_calls, any_order=True)
                 self.assertFalse(l3_notifier.routers_updated.called)
                 router_info = (
                     self.l3_plugin.list_active_sync_routers_on_active_l3_agent(
@@ -1089,7 +1088,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                      {'port': {
                          'allowed_address_pairs': allowed_address_pairs}})
                 self.assertEqual(
-                    2, l3_notifier.routers_updated_on_host.call_count)
+                    3, l3_notifier.routers_updated_on_host.call_count)
                 updated_vm_port1 = self.core_plugin.get_port(
                     self.context, vm_port['id'])
                 updated_vm_port2 = self.core_plugin.get_port(
@@ -1139,9 +1138,10 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                 expected_routers_updated_calls = [
                         mock.call(self.context, mock.ANY, HOST1),
                         mock.call(self.context, mock.ANY, HOST2),
+                        mock.call(self.context, mock.ANY, HOST1),
                         mock.call(self.context, mock.ANY, 'host0')]
                 l3_notifier.routers_updated_on_host.assert_has_calls(
-                        expected_routers_updated_calls)
+                        expected_routers_updated_calls, any_order=True)
                 self.assertFalse(l3_notifier.routers_updated.called)
                 router_info = (
                     self.l3_plugin.list_active_sync_routers_on_active_l3_agent(

@@ -89,6 +89,7 @@ class CommonAgentLoop(service.Service):
         configurations = {'extensions': self.ext_manager.names()}
         configurations.update(self.mgr.get_agent_configurations())
 
+        self.failed_report_state = False
         # TODO(mangelajo): optimize resource_versions (see ovs agent)
         self.agent_state = {
             'binary': self.agent_binary,
@@ -136,7 +137,12 @@ class CommonAgentLoop(service.Service):
             self.agent_state.pop('resource_versions', None)
             self.agent_state.pop('start_flag', None)
         except Exception:
+            self.failed_report_state = True
             LOG.exception("Failed reporting state!")
+            return
+        if self.failed_report_state:
+            self.failed_report_state = False
+            LOG.info("Successfully reported state after a previous failure.")
 
     def _validate_rpc_endpoints(self):
         if not isinstance(self.endpoints[0],
@@ -308,10 +314,11 @@ class CommonAgentLoop(service.Service):
                                            device_details['port_id'],
                                            device_details['device'])
                 self.ext_manager.handle_port(self.context, device_details)
-                registry.notify(local_resources.PORT_DEVICE,
-                                events.AFTER_UPDATE, self,
-                                context=self.context,
-                                device_details=device_details)
+                registry.publish(local_resources.PORT_DEVICE,
+                                 events.AFTER_UPDATE, self,
+                                 payload=events.DBEventPayload(
+                                     self.context, states=(device_details,),
+                                     resource_id=device))
             elif c_const.NO_ACTIVE_BINDING in device_details:
                 LOG.info("Device %s has no active binding in host", device)
             else:
@@ -355,9 +362,10 @@ class CommonAgentLoop(service.Service):
                 LOG.exception("Error occurred while processing extensions "
                               "for port removal %s", device)
                 resync = True
-            registry.notify(local_resources.PORT_DEVICE, events.AFTER_DELETE,
-                            self, context=self.context, device=device,
-                            port_id=port_id)
+            registry.publish(local_resources.PORT_DEVICE, events.AFTER_DELETE,
+                             self, payload=events.DBEventPayload(
+                                 self.context, states=(details,),
+                                 resource_id=device))
         self.mgr.delete_arp_spoofing_protection(devices)
         return resync
 

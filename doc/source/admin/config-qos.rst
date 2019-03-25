@@ -53,7 +53,7 @@ traffic directions (from the VM point of view).
      Rule \\ back end      Open vSwitch         SR-IOV            Linux bridge
     ====================  ===================  ================  ===================
      Bandwidth limit       Egress \\ Ingress    Egress (1)        Egress \\ Ingress
-     Minimum bandwidth     -                    Egress            -
+     Minimum bandwidth     Egress (2)           Egress            -
      DSCP marking          Egress               -                 Egress
     ====================  ===================  ================  ===================
 
@@ -61,6 +61,8 @@ traffic directions (from the VM point of view).
 
    (1) Max burst parameter is skipped because it is not supported by the
        IP tool.
+   (2) Only for physical bridges (tenant networks, provider networks), tunneled
+       traffic is not shaped yet.
 
 In the most simple case, the property can be represented by a simple Python
 list defined on the class.
@@ -117,7 +119,7 @@ On the controller nodes:
 
    .. code-block:: none
 
-      service_plugins = router, qos
+      service_plugins = router,qos
 
 #. In ``/etc/neutron/plugins/ml2/ml2_conf.ini``, add ``qos`` to
    ``extension_drivers`` in the ``[ml2]`` section. For example:
@@ -125,7 +127,7 @@ On the controller nodes:
    .. code-block:: ini
 
       [ml2]
-      extension_drivers = port_security, qos
+      extension_drivers = port_security,qos
 
 #. Edit the configuration file for the agent you are using and set the
    ``extensions`` to include ``qos`` in the ``[agent]`` section of the
@@ -162,6 +164,28 @@ On the network and compute nodes:
 
       [agent]
       extensions = fip_qos
+
+
+#. Optionally, in order to enable QoS for router gateway IPs, set the
+   ``extensions`` option in the ``[agent]`` section of
+   ``/etc/neutron/l3_agent.ini`` to include ``gateway_ip_qos``. Set this
+   to all the ``dvr_snat`` or ``legacy`` L3 agents. For example:
+
+   .. code-block:: ini
+
+      [agent]
+      extensions = gateway_ip_qos
+
+
+   And ``gateway_ip_qos`` should work together with the ``fip_qos`` in L3
+   agent for centralized routers, then all L3 IPs with binding QoS policy
+   can be limited under the QoS bandwidth limit rules:
+
+   .. code-block:: ini
+
+      [agent]
+      extensions = fip_qos, gateway_ip_qos
+
 
 #. As rate limit doesn't work on Open vSwitch's ``internal`` ports,
    optionally, as a workaround, to make QoS bandwidth limit work on

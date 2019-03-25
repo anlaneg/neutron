@@ -15,9 +15,21 @@
 #    under the License.
 
 from neutron_lib.agent import topics
+from neutron_lib.api.definitions import dvr
+from neutron_lib.api.definitions import extraroute
+from neutron_lib.api.definitions import fip_port_details
+from neutron_lib.api.definitions import floatingip_pools
 from neutron_lib.api.definitions import l3 as l3_apidef
+from neutron_lib.api.definitions import l3_ext_gw_mode
+from neutron_lib.api.definitions import l3_ext_ha_mode
+from neutron_lib.api.definitions import l3_flavors
+from neutron_lib.api.definitions import l3_port_ip_change_not_allowed
+from neutron_lib.api.definitions import qos_gateway_ip
+from neutron_lib.api.definitions import router_availability_zone
 from neutron_lib import constants as n_const
+from neutron_lib.db import resource_extend
 from neutron_lib.plugins import constants as plugin_constants
+from neutron_lib import rpc as n_rpc
 from neutron_lib.services import base as service_base
 from oslo_config import cfg
 from oslo_log import helpers as log_helpers
@@ -26,16 +38,15 @@ from oslo_utils import importutils
 
 from neutron.api.rpc.agentnotifiers import l3_rpc_agent_api
 from neutron.api.rpc.handlers import l3_rpc
-from neutron.common import rpc as n_rpc
-from neutron.db import _resource_extend as resource_extend
 from neutron.db import common_db_mixin
 from neutron.db import dns_db
 from neutron.db import extraroute_db
 from neutron.db import l3_dvr_ha_scheduler_db
 from neutron.db import l3_dvrscheduler_db
+from neutron.db import l3_fip_pools_db
 from neutron.db import l3_fip_port_details
 from neutron.db import l3_fip_qos
-from neutron.db import l3_gwmode_db
+from neutron.db import l3_gateway_ip_qos
 from neutron.db import l3_hamode_db
 from neutron.db import l3_hascheduler_db
 from neutron.db.models import l3 as l3_models
@@ -54,11 +65,11 @@ def disable_dvr_extension_by_config(aliases):
             aliases.remove('dvr')
 
 
-def disable_qos_fip_extension_by_plugins(aliases):
+def disable_l3_qos_extension_by_plugins(ext, aliases):
     qos_class = 'neutron.services.qos.qos_plugin.QoSPlugin'
     if all(p not in cfg.CONF.service_plugins for p in ['qos', qos_class]):
-        if 'qos-fip' in aliases:
-            aliases.remove('qos-fip')
+        if ext in aliases:
+            aliases.remove(ext)
 
 
 @resource_extend.has_resource_extenders
@@ -66,11 +77,12 @@ class L3RouterPlugin(service_base.ServicePluginBase,
                      common_db_mixin.CommonDbMixin,
                      extraroute_db.ExtraRoute_db_mixin,
                      l3_hamode_db.L3_HA_NAT_db_mixin,
-                     l3_gwmode_db.L3_NAT_db_mixin,
+                     l3_gateway_ip_qos.L3_gw_ip_qos_db_mixin,
                      l3_dvr_ha_scheduler_db.L3_DVR_HA_scheduler_db_mixin,
                      dns_db.DNSDbMixin,
                      l3_fip_qos.FloatingQoSDbMixin,
-                     l3_fip_port_details.Fip_port_details_db_mixin):
+                     l3_fip_port_details.Fip_port_details_db_mixin,
+                     l3_fip_pools_db.FloatingIPPoolsMixin):
 
     """Implementation of the Neutron L3 Router Service Plugin.
 
@@ -81,15 +93,27 @@ class L3RouterPlugin(service_base.ServicePluginBase,
     l3_db.L3_NAT_db_mixin, l3_hamode_db.L3_HA_NAT_db_mixin,
     l3_dvr_db.L3_NAT_with_dvr_db_mixin, and extraroute_db.ExtraRoute_db_mixin.
     """
-    _supported_extension_aliases = ["dvr", "router", "ext-gw-mode",
-                                    "extraroute", "l3_agent_scheduler",
-                                    "l3-ha", "router_availability_zone",
-                                    "l3-flavors", "qos-fip",
-                                    "fip-port-details"]
+    _supported_extension_aliases = [dvr.ALIAS, l3_apidef.ALIAS,
+                                    l3_ext_gw_mode.ALIAS,
+                                    extraroute.ALIAS, "l3_agent_scheduler",
+                                    l3_ext_ha_mode.ALIAS,
+                                    router_availability_zone.ALIAS,
+                                    l3_flavors.ALIAS, "qos-fip",
+                                    fip_port_details.ALIAS,
+                                    floatingip_pools.ALIAS,
+                                    qos_gateway_ip.ALIAS,
+                                    l3_port_ip_change_not_allowed.ALIAS]
 
     __native_pagination_support = True
     __native_sorting_support = True
     __filter_validation_support = True
+
+    IP_UPDATE_NOT_ALLOWED_LIST = [
+        n_const.DEVICE_OWNER_ROUTER_INTF,
+        n_const.DEVICE_OWNER_ROUTER_HA_INTF,
+        n_const.DEVICE_OWNER_HA_REPLICATED_INT,
+        n_const.DEVICE_OWNER_ROUTER_SNAT,
+        n_const.DEVICE_OWNER_DVR_INTERFACE]
 
     @resource_registry.tracked_resources(router=l3_models.Router,
                                          floatingip=l3_models.FloatingIP)
@@ -115,7 +139,8 @@ class L3RouterPlugin(service_base.ServicePluginBase,
         if not hasattr(self, '_aliases'):
             aliases = self._supported_extension_aliases[:]
             disable_dvr_extension_by_config(aliases)
-            disable_qos_fip_extension_by_plugins(aliases)
+            disable_l3_qos_extension_by_plugins('qos-fip', aliases)
+            disable_l3_qos_extension_by_plugins('qos-gateway-ip', aliases)
             self._aliases = aliases
         return self._aliases
 

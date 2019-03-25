@@ -22,13 +22,13 @@ from neutron_lib import constants as const
 from neutron_lib import context
 from neutron_lib.db import api as db_api
 from neutron_lib.db import constants as db_const
+from neutron_lib import exceptions
 from neutron_lib.plugins import directory
 from oslo_config import cfg
 import oslo_db.exception as exc
 import testtools
 import webob.exc
 
-from neutron.common import exceptions as n_exc
 from neutron.db import db_base_plugin_v2
 from neutron.db import securitygroups_db
 from neutron.extensions import securitygroup as ext_sg
@@ -128,6 +128,10 @@ class SecurityGroupsTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
             # create a specific auth context for this request
             security_group_rule_req.environ['neutron.context'] = (
                 context.Context('', kwargs['tenant_id']))
+        elif kwargs.get('admin_context'):
+            security_group_rule_req.environ['neutron.context'] = (
+                context.Context(user_id='admin', tenant_id='admin-tenant',
+                is_admin=True))
         return security_group_rule_req.get_response(self.ext_api)
 
     def _make_security_group(self, fmt, name, description, **kwargs):
@@ -296,14 +300,14 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
         self._assert_sg_rule_has_kvs(v6_rule, expected)
 
     def test_create_security_group_bulk(self):
-            rule1 = self._build_security_group("sg_1", "sec_grp_1")
-            rule2 = self._build_security_group("sg_2", "sec_grp_2")
-            rules = {'security_groups': [rule1['security_group'],
-                                         rule2['security_group']]}
-            res = self._create_security_group_response(self.fmt, rules)
-            ret = self.deserialize(self.fmt, res)
-            self.assertEqual(webob.exc.HTTPCreated.code, res.status_int)
-            self.assertEqual(2, len(ret['security_groups']))
+        rule1 = self._build_security_group("sg_1", "sec_grp_1")
+        rule2 = self._build_security_group("sg_2", "sec_grp_2")
+        rules = {'security_groups': [rule1['security_group'],
+                                     rule2['security_group']]}
+        res = self._create_security_group_response(self.fmt, rules)
+        ret = self.deserialize(self.fmt, res)
+        self.assertEqual(webob.exc.HTTPCreated.code, res.status_int)
+        self.assertEqual(2, len(ret['security_groups']))
 
     def test_skip_duplicate_default_sg_error(self):
         num_called = [0]
@@ -604,17 +608,18 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
             self.deserialize(self.fmt, res)
             self.assertEqual(webob.exc.HTTPCreated.code, res.status_int)
 
-    def test_create_security_group_rule_protocol_as_number_with_port(self):
+    def test_create_security_group_rule_protocol_as_number_with_port_bad(self):
+        # When specifying ports, neither can be None
         name = 'webservers'
         description = 'my webservers'
         with self.security_group(name, description) as sg:
             security_group_id = sg['security_group']['id']
-            protocol = 111
+            protocol = 6
             rule = self._build_security_group_rule(
-                security_group_id, 'ingress', protocol, '70')
+                security_group_id, 'ingress', protocol, '70', None)
             res = self._create_security_group_rule(self.fmt, rule)
             self.deserialize(self.fmt, res)
-            self.assertEqual(webob.exc.HTTPCreated.code, res.status_int)
+            self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
 
     def test_create_security_group_rule_protocol_as_number_range(self):
         # This is a SG rule with a port range, but treated as a single
@@ -623,22 +628,22 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
         description = 'my webservers'
         with self.security_group(name, description) as sg:
             security_group_id = sg['security_group']['id']
-            protocol = 111
+            protocol = 6
             rule = self._build_security_group_rule(
                 security_group_id, 'ingress', protocol, '70', '70')
             res = self._create_security_group_rule(self.fmt, rule)
             self.deserialize(self.fmt, res)
             self.assertEqual(webob.exc.HTTPCreated.code, res.status_int)
 
-    def test_create_security_group_rule_protocol_as_number_range_bad(self):
-        # Only certain protocols support a SG rule with a port range
+    def test_create_security_group_rule_protocol_as_number_port_bad(self):
+        # Only certain protocols support a SG rule with a port
         name = 'webservers'
         description = 'my webservers'
         with self.security_group(name, description) as sg:
             security_group_id = sg['security_group']['id']
             protocol = 111
             rule = self._build_security_group_rule(
-                security_group_id, 'ingress', protocol, '70', '71')
+                security_group_id, 'ingress', protocol, '70', '70')
             res = self._create_security_group_rule(self.fmt, rule)
             self.deserialize(self.fmt, res)
             self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
@@ -698,6 +703,87 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                 sg_rule = [r for r in sg_rule if r['direction'] == 'ingress']
                 for k, v, in keys:
                     self.assertEqual(sg_rule[0][k], v)
+
+    def test_get_security_group_empty_rules(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            remote_group_id = sg['security_group']['id']
+
+            self._delete_default_security_group_egress_rules(
+                remote_group_id)
+
+            res = self.new_show_request('security-groups', remote_group_id)
+            group = self.deserialize(
+                self.fmt, res.get_response(self.ext_api))
+
+            sg_rule = group['security_group']['security_group_rules']
+            self.assertEqual(group['security_group']['id'],
+                             remote_group_id)
+            self.assertEqual(0, len(sg_rule))
+
+    def test_get_security_group_empty_rules_id_only(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            remote_group_id = sg['security_group']['id']
+
+            self._delete_default_security_group_egress_rules(
+                remote_group_id)
+
+            res = self.new_show_request('security-groups', remote_group_id,
+                                        fields=['id'])
+            group = self.deserialize(
+                self.fmt, res.get_response(self.ext_api))
+
+            secgroup = group['security_group']
+            self.assertFalse('security_group_rules' in secgroup)
+            self.assertEqual(group['security_group']['id'],
+                             remote_group_id)
+
+    # This test case checks that admins from a different tenant can add rules
+    # as themselves. This is an odd behavior, with some weird GET semantics,
+    # but this test is checking that we don't break that old behavior, at least
+    # until we make a conscious choice to do so.
+    def test_create_security_group_rules_admin_tenant(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            # Add a couple normal rules
+            rule = self._build_security_group_rule(
+                sg['security_group']['id'], "ingress", const.PROTO_NAME_TCP,
+                port_range_min=22, port_range_max=22,
+                remote_ip_prefix="10.0.0.0/24",
+                ethertype=const.IPv4)
+            self._make_security_group_rule(self.fmt, rule)
+
+            rule = self._build_security_group_rule(
+                sg['security_group']['id'], "ingress", const.PROTO_NAME_TCP,
+                port_range_min=22, port_range_max=22,
+                remote_ip_prefix="10.0.1.0/24",
+                ethertype=const.IPv4)
+            self._make_security_group_rule(self.fmt, rule)
+
+            # Let's add a rule as admin, with a different tenant_id. The
+            # results of this call are arguably a bug, but it is past behavior.
+            rule = self._build_security_group_rule(
+                sg['security_group']['id'], "ingress", const.PROTO_NAME_TCP,
+                port_range_min=22, port_range_max=22,
+                remote_ip_prefix="10.0.2.0/24",
+                ethertype=const.IPv4,
+                tenant_id='admin-tenant')
+            self._make_security_group_rule(self.fmt, rule, admin_context=True)
+
+            # Now, let's make sure all the rules are there, with their odd
+            # tenant_id behavior.
+            res = self.new_list_request('security-groups')
+            sgs = self.deserialize(self.fmt, res.get_response(self.ext_api))
+            for sg in sgs['security_groups']:
+                if sg['name'] == "webservers":
+                    rules = sg['security_group_rules']
+                    self.assertEqual(len(rules), 5)
+                    self.assertNotEqual(rules[3]['tenant_id'], 'admin-tenant')
+                    self.assertEqual(rules[4]['tenant_id'], 'admin-tenant')
 
     def test_get_security_group_on_port_from_wrong_tenant(self):
         plugin = directory.get_plugin()
@@ -1812,7 +1898,7 @@ class TestConvertIPPrefixToCIDR(base.BaseTestCase):
 
     def test_convert_bad_ip_prefix_to_cidr(self):
         for val in ['bad_ip', 256, "2001:db8:a::123/129"]:
-            self.assertRaises(n_exc.InvalidCIDR,
+            self.assertRaises(exceptions.InvalidCIDR,
                               ext_sg.convert_ip_prefix_to_cidr, val)
         self.assertIsNone(ext_sg.convert_ip_prefix_to_cidr(None))
 

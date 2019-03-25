@@ -28,7 +28,9 @@ from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
+from neutron_lib.db import resource_extend
 from neutron_lib.exceptions import placement as placement_exc
+from neutron_lib.placement import client as placement_client
 from neutron_lib.plugins import directory
 from novaclient import client as nova_client
 from novaclient import exceptions as nova_exc
@@ -37,14 +39,13 @@ from oslo_log import log
 from oslo_utils import excutils
 
 from neutron._i18n import _
-from neutron.db import _resource_extend as resource_extend
 from neutron.extensions import segment
 from neutron.notifiers import batch_notifier
 from neutron.objects import network as net_obj
 from neutron.objects import subnet as subnet_obj
 from neutron.services.segments import db
 from neutron.services.segments import exceptions
-from neutron.services.segments import placement_client
+
 
 LOG = log.getLogger(__name__)
 
@@ -110,14 +111,13 @@ class Plugin(db.SegmentDbMixin, segment.SegmentPluginBase):
 
     @registry.receives(resources.SEGMENT, [events.BEFORE_DELETE])
     def _prevent_segment_delete_with_subnet_associated(
-            self, resource, event, trigger, context, segment,
-            for_net_delete=False):
+            self, resource, event, trigger, payload=None):
         """Raise exception if there are any subnets associated with segment."""
-        if for_net_delete:
+        if payload.metadata.get('for_net_delete'):
             # don't check if this is a part of a network delete operation
             return
-        segment_id = segment['id']
-        subnets = subnet_obj.Subnet.get_objects(context,
+        segment_id = payload.resource_id
+        subnets = subnet_obj.Subnet.get_objects(payload.context,
                                                 segment_id=segment_id)
         subnet_ids = [s.id for s in subnets]
 
@@ -152,7 +152,7 @@ class NovaSegmentNotifier(object):
             cfg.CONF.send_events_interval, self._send_notifications)
 
     def _get_clients(self):
-        p_client = placement_client.PlacementAPIClient()
+        p_client = placement_client.PlacementAPIClient(cfg.CONF)
 
         n_auth = ks_loading.load_auth_from_conf_options(cfg.CONF, 'nova')
         n_session = ks_loading.load_session_from_conf_options(
@@ -215,9 +215,8 @@ class NovaSegmentNotifier(object):
             if event.reserved:
                 ipv4_inventory['reserved'] += event.reserved
             try:
-                self.p_client.update_inventory(event.segment_id,
-                                               ipv4_inventory,
-                                               IPV4_RESOURCE_CLASS)
+                self.p_client.update_resource_provider_inventory(
+                    event.segment_id, ipv4_inventory, IPV4_RESOURCE_CLASS)
                 return
             except placement_exc.PlacementInventoryUpdateConflict:
                 LOG.debug('Re-trying to update Nova IPv4 inventory for '
@@ -250,7 +249,8 @@ class NovaSegmentNotifier(object):
                           'min_unit': 1, 'max_unit': 1, 'step_size': 1,
                           'allocation_ratio': 1.0,
                           'resource_class': IPV4_RESOURCE_CLASS}
-        self.p_client.create_inventory(segment_id, ipv4_inventory)
+        self.p_client.update_resource_provider_inventories(
+            segment_id, ipv4_inventory)
 
     def _calculate_inventory_total_and_reserved(self, subnet):
         total = 0
@@ -349,7 +349,7 @@ class NovaSegmentNotifier(object):
                                                 segment_id=current_segment_ids)
         segment_ids = {s.segment_id for s in subnets}
         self.batch_notifier.queue_event(Event(self._add_host_to_aggregate,
-            segment_ids, host=host))
+                                              segment_ids, host=host))
 
     def _add_host_to_aggregate(self, event):
         for segment_id in event.segment_ids:
@@ -379,8 +379,9 @@ class NovaSegmentNotifier(object):
         if segment_id:
             if event == events.AFTER_DELETE:
                 ipv4_subnets_number = -ipv4_subnets_number
-            self.batch_notifier.queue_event(Event(self._update_nova_inventory,
-                segment_id, reserved=ipv4_subnets_number))
+            self.batch_notifier.queue_event(
+                Event(self._update_nova_inventory,
+                      segment_id, reserved=ipv4_subnets_number))
 
     @registry.receives(resources.PORT, [events.AFTER_UPDATE])
     def _notify_port_updated(self, resource, event, trigger, context,
@@ -407,7 +408,7 @@ class NovaSegmentNotifier(object):
         update = port_ipv4_subnets_number - original_port_ipv4_subnets_number
         if update:
             self.batch_notifier.queue_event(Event(self._update_nova_inventory,
-                segment_id, reserved=update))
+                                                  segment_id, reserved=update))
 
     def _get_ipv4_subnets_number_and_segment_id(self, port, context):
         ipv4_subnet_ids = self._get_ipv4_subnet_ids(port)

@@ -17,6 +17,7 @@ import sys
 from neutron_lib.agent import topics
 from neutron_lib import constants
 from neutron_lib import context
+from neutron_lib import rpc as n_rpc
 from neutron_lib.utils import runtime
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -30,7 +31,6 @@ from neutron._i18n import _
 from neutron.agent import rpc as agent_rpc
 from neutron.common import config as common_config
 from neutron.common import constants as n_const
-from neutron.common import rpc as n_rpc
 from neutron.conf.agent import common as config
 from neutron.conf.services import metering_agent
 from neutron import manager
@@ -247,6 +247,7 @@ class MeteringAgentWithStateReport(MeteringAgent):
         super(MeteringAgentWithStateReport, self).__init__(host=host,
                                                            conf=conf)
         self.state_rpc = agent_rpc.PluginReportStateAPI(topics.REPORTS)
+        self.failed_report_state = False
         self.agent_state = {
             'binary': 'neutron-metering-agent',
             'host': host,
@@ -278,7 +279,12 @@ class MeteringAgentWithStateReport(MeteringAgent):
                         "State report for this agent will be disabled.")
             self.heartbeat.stop()
         except Exception:
+            self.failed_report_state = True
             LOG.exception("Failed reporting state!")
+            return
+        if self.failed_report_state:
+            self.failed_report_state = False
+            LOG.info("Successfully reported state after a previous failure.")
 
     def agent_updated(self, context, payload):
         LOG.info("agent_updated by server side %s!", payload)

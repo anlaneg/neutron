@@ -18,6 +18,7 @@ import time
 import mock
 from neutron_lib.agent import constants as agent_consts
 from neutron_lib import constants as n_const
+from neutron_lib import rpc as n_rpc
 from oslo_config import cfg
 from oslo_log import log
 import oslo_messaging
@@ -26,10 +27,10 @@ import testtools
 from neutron._i18n import _
 from neutron.agent.common import async_process
 from neutron.agent.common import ovs_lib
+from neutron.agent.common import polling
 from neutron.agent.common import utils
 from neutron.agent.linux import ip_lib
 from neutron.common import constants as c_const
-from neutron.common import rpc as n_rpc
 from neutron.plugins.ml2.drivers.l2pop import rpc as l2pop_rpc
 from neutron.plugins.ml2.drivers.openvswitch.agent.common import constants
 from neutron.plugins.ml2.drivers.openvswitch.agent import ovs_neutron_agent \
@@ -143,7 +144,9 @@ class TestOvsNeutronAgent(object):
                            new=MockFixedIntervalLoopingCall),\
                 mock.patch(
                     'neutron.agent.common.ovs_lib.OVSBridge.' 'get_vif_ports',
-                    return_value=[]):
+                    return_value=[]),\
+                mock.patch('neutron.agent.rpc.PluginReportStateAPI.'
+                           'has_alive_neutron_server'):
             ext_manager = mock.Mock()
             agent = self.mod_agent.OVSNeutronAgent(self._bridge_classes(),
                                                    ext_manager, cfg.CONF)
@@ -200,7 +203,9 @@ class TestOvsNeutronAgent(object):
                 return_value=[]), \
             mock.patch('neutron.agent.common.ovs_lib.BaseOVS.config',
                        new_callable=mock.PropertyMock,
-                       return_value={'datapath_types': ['netdev']}):
+                       return_value={'datapath_types': ['netdev']}),\
+            mock.patch('neutron.agent.rpc.PluginReportStateAPI.'
+                       'has_alive_neutron_server'):
             # validate setting non default datapath
             expected = constants.OVS_DATAPATH_NETDEV
             cfg.CONF.set_override('datapath_type',
@@ -245,7 +250,9 @@ class TestOvsNeutronAgent(object):
                        new=MockFixedIntervalLoopingCall), \
             mock.patch(
                 'neutron.agent.common.ovs_lib.OVSBridge.' 'get_vif_ports',
-                return_value=[]):
+                return_value=[]),\
+            mock.patch('neutron.agent.rpc.PluginReportStateAPI.'
+                       'has_alive_neutron_server'):
             # validate setting non default agent_type
             expected = 'alt agent type'
             cfg.CONF.set_override('agent_type',
@@ -1312,6 +1319,7 @@ class TestOvsNeutronAgent(object):
                 mock.patch.object(sys, "exit"),\
                 mock.patch.object(self.agent, 'br_phys_cls') as phys_br_cls,\
                 mock.patch.object(self.agent, 'int_br') as int_br,\
+                mock.patch.object(self.agent, '_check_bridge_datapath_id'),\
                 mock.patch.object(ovs_lib.BaseOVS, 'get_bridges'):
             devex_fn.return_value = True
             parent = mock.MagicMock()
@@ -1391,6 +1399,7 @@ class TestOvsNeutronAgent(object):
                 mock.patch.object(utils, "execute") as utilsexec_fn,\
                 mock.patch.object(self.agent, 'br_phys_cls') as phys_br_cls,\
                 mock.patch.object(self.agent, 'int_br') as int_br,\
+                mock.patch.object(self.agent, '_check_bridge_datapath_id'),\
                 mock.patch.object(ip_lib.IPWrapper, "add_veth") as addveth_fn,\
                 mock.patch.object(ip_lib.IpLinkCommand,
                                   "delete") as linkdel_fn,\
@@ -1429,7 +1438,8 @@ class TestOvsNeutronAgent(object):
                 mock.patch.object(self.agent, 'br_phys_cls') as phys_br_cls,\
                 mock.patch.object(self.agent, 'int_br') as int_br,\
                 mock.patch.object(self.agent.int_br, 'db_get_val',
-                                  return_value='veth'),\
+                                  return_value='veth'), \
+                mock.patch.object(self.agent, '_check_bridge_datapath_id'), \
                 mock.patch.object(ovs_lib.BaseOVS, 'get_bridges'):
             phys_br = phys_br_cls()
             parent = mock.MagicMock()
@@ -1768,52 +1778,39 @@ class TestOvsNeutronAgent(object):
                        mock.Mock(br_name='br-ex1')]
         phys_bridges = {'physnet0': ex_br_mocks[0],
                         'physnet1': ex_br_mocks[1]},
-        bm_mock = mock.Mock()
-        with mock.patch(
-            'neutron.agent.common.ovsdb_monitor.get_bridges_monitor',
-            return_value=bm_mock),\
-                mock.patch.object(
-                    self.agent,
-                    'check_ovs_status',
-                    return_value=constants.OVS_NORMAL),\
-                mock.patch.object(
-                    self.agent,
-                    '_agent_has_updates',
-                    side_effect=TypeError('loop exit')),\
-                mock.patch.dict(
-                    self.agent.bridge_mappings, bridge_mappings, clear=True),\
-                mock.patch.dict(
-                    self.agent.phys_brs, phys_bridges, clear=True),\
-                mock.patch.object(
-                    self.agent,
-                    'setup_physical_bridges') as setup_physical_bridges:
-            bm_mock.bridges_added = ['br-ex0']
+        with mock.patch.object(self.agent, 'check_ovs_status',
+                               return_value=constants.OVS_NORMAL), \
+                mock.patch.object(self.agent, '_agent_has_updates',
+                                  side_effect=TypeError('loop exit')), \
+                mock.patch.dict(self.agent.bridge_mappings, bridge_mappings,
+                                clear=True), \
+                mock.patch.dict(self.agent.phys_brs, phys_bridges,
+                                clear=True), \
+                mock.patch.object(self.agent, 'setup_physical_bridges') as \
+                setup_physical_bridges, \
+                mock.patch.object(self.agent.ovs.ovsdb, 'idl_monitor') as \
+                mock_idl_monitor:
+            mock_idl_monitor.bridges_added = ['br-ex0']
             try:
-                self.agent.rpc_loop(polling_manager=mock.Mock(),
-                                    bridges_monitor=bm_mock)
+                self.agent.rpc_loop(polling_manager=mock.Mock())
             except TypeError:
                 pass
-        setup_physical_bridges.assert_called_once_with(
-            {'physnet0': 'br-ex0'})
+        setup_physical_bridges.assert_called_once_with({'physnet0': 'br-ex0'})
 
     def test_daemon_loop_uses_polling_manager(self):
         ex_br_mock = mock.Mock(br_name="br-ex0")
-        with mock.patch(
-            'neutron.agent.common.polling.get_polling_manager'
-        ) as mock_get_pm, mock.patch(
-            'neutron.agent.common.ovsdb_monitor.get_bridges_monitor'
-        ) as mock_get_bm, mock.patch.object(
-            self.agent, 'rpc_loop'
-        ) as mock_loop, mock.patch.dict(
-            self.agent.phys_brs, {'physnet0': ex_br_mock}, clear=True):
-
+        with mock.patch.object(polling, 'get_polling_manager') as \
+                mock_get_pm, \
+                mock.patch.object(self.agent, 'rpc_loop') as mock_loop, \
+                mock.patch.dict(self.agent.phys_brs, {'physnet0': ex_br_mock},
+                                clear=True), \
+                mock.patch.object(self.agent.ovs.ovsdb, 'idl_monitor') as \
+                mock_idl_monitor:
             self.agent.daemon_loop()
         mock_get_pm.assert_called_with(True,
                                        constants.DEFAULT_OVSDBMON_RESPAWN)
-        mock_get_bm.assert_called_once_with(
-            ['br-ex0'], constants.DEFAULT_OVSDBMON_RESPAWN)
-        mock_loop.assert_called_once_with(
-            polling_manager=mock.ANY, bridges_monitor=mock.ANY)
+        mock_loop.assert_called_once_with(polling_manager=mock.ANY)
+        mock_idl_monitor.start_bridge_monitor.assert_called()
 
     def test_setup_tunnel_port_invalid_ofport(self):
         remote_ip = '1.2.3.4'
@@ -2054,7 +2051,10 @@ class TestOvsNeutronAgent(object):
                     'setup_tunnel_br_flows') as setup_tunnel_br_flows,\
                 mock.patch.object(
                     self.mod_agent.OVSNeutronAgent,
-                    '_reset_tunnel_ofports') as reset_tunnel_ofports:
+                    '_reset_tunnel_ofports') as reset_tunnel_ofports, \
+                mock.patch.object(self.agent.ovs.ovsdb, 'idl_monitor'),\
+                mock.patch.object(self.agent.state_rpc,
+                                  'report_state') as report_st:
             log_exception.side_effect = Exception(
                 'Fake exception to get out of the loop')
             devices_not_ready = set()
@@ -2068,6 +2068,10 @@ class TestOvsNeutronAgent(object):
                 failed_devices,
                 Exception('Fake exception to get out of the loop')]
             check_ovs_status.side_effect = args
+
+            if self.agent.enable_tunneling:
+                self.agent.agent_state.pop("start_flag")
+
             try:
                 self.agent.daemon_loop()
             except Exception:
@@ -2097,6 +2101,10 @@ class TestOvsNeutronAgent(object):
             self.assertTrue(reset_tunnel_ofports.called)
             self.assertTrue(setup_tunnel_br_flows.called)
             self.assertTrue(setup_tunnel_br.called)
+            if self.agent.enable_tunneling:
+                self.agent.agent_state['start_flag'] = True
+                report_st.assert_called_once_with(
+                    self.agent.context, self.agent.agent_state, True)
 
     def test_ovs_status(self):
         self._test_ovs_status(constants.OVS_NORMAL,
@@ -2125,7 +2133,8 @@ class TestOvsNeutronAgent(object):
                                   'cleanup_stale_flows') as cleanup,\
                 mock.patch.object(
                     self.mod_agent.OVSNeutronAgent,
-                    '_check_and_handle_signal') as check_and_handle_signal:
+                    '_check_and_handle_signal') as check_and_handle_signal, \
+                mock.patch.object(self.agent.ovs.ovsdb, 'idl_monitor'):
             process_network_ports.side_effect = Exception("Trigger resync")
             check_ovs_status.return_value = constants.OVS_NORMAL
             check_and_handle_signal.side_effect = [True, False]
@@ -2336,6 +2345,22 @@ class TestOvsNeutronAgent(object):
                               'OVS')
         self.assertRaises(ValueError, self._make_agent)
 
+    def test__check_bridge_datapath_id(self):
+        datapath_id = u'0000622486fa3f42'
+        datapath_ids_set = set()
+        for i in range(5):
+            dpid = format((i << 48) + int(datapath_id, 16), '0x').zfill(16)
+            bridge = mock.Mock()
+            bridge.br_name = 'bridge_%s' % i
+            bridge.get_datapath_id = mock.Mock(return_value=datapath_id)
+            self.agent._check_bridge_datapath_id(bridge, datapath_ids_set)
+            self.assertEqual(i + 1, len(datapath_ids_set))
+            self.assertIn(dpid, datapath_ids_set)
+            if i == 0:
+                bridge.set_datapath_id.assert_not_called()
+            else:
+                bridge.set_datapath_id.assert_called_once_with(dpid)
+
 
 class TestOvsNeutronAgentOFCtl(TestOvsNeutronAgent,
                                ovs_test_base.OVSOFCtlTestBase):
@@ -2360,8 +2385,8 @@ class TestOvsNeutronAgentOFCtl(TestOvsNeutronAgent,
             self.assertEqual(expected, del_flow.mock_calls)
 
 
-class TestOvsNeutronAgentRyu(TestOvsNeutronAgent,
-                             ovs_test_base.OVSRyuTestBase):
+class TestOvsNeutronAgentOSKen(TestOvsNeutronAgent,
+                             ovs_test_base.OVSOSKenTestBase):
     def test_cleanup_stale_flows(self):
         uint64_max = (1 << 64) - 1
         with mock.patch.object(self.agent.int_br,
@@ -2370,7 +2395,7 @@ class TestOvsNeutronAgentRyu(TestOvsNeutronAgent,
                                   'uninstall_flows') as uninstall_flows:
             self.agent.int_br.set_agent_uuid_stamp(1234)
             dump_flows.return_value = [
-                # mock ryu.ofproto.ofproto_v1_3_parser.OFPFlowStats
+                # mock os_ken.ofproto.ofproto_v1_3_parser.OFPFlowStats
                 mock.Mock(cookie=1234, table_id=0),
                 mock.Mock(cookie=17185, table_id=2),
                 mock.Mock(cookie=9029, table_id=2),
@@ -2410,7 +2435,7 @@ class AncillaryBridgesTest(object):
     def _test_ancillary_bridges(self, bridges, ancillary):
         device_ids = ancillary[:]
 
-        def pullup_side_effect(*args):
+        def pullup_side_effect(*args, **kwargs):
             # Check that the device_id exists, if it does return it
             # if it does not return None
             try:
@@ -2434,7 +2459,9 @@ class AncillaryBridgesTest(object):
                     return_value=[]),\
                 mock.patch(
                     'neutron.agent.common.ovs_lib.OVSBridge.' 'get_vif_ports',
-                    return_value=[]):
+                    return_value=[]),\
+                mock.patch('neutron.agent.rpc.PluginReportStateAPI.'
+                           'has_alive_neutron_server'):
             ext_manager = mock.Mock()
             self.agent = self.mod_agent.OVSNeutronAgent(self._bridge_classes(),
                                                         ext_manager, cfg.CONF)
@@ -2472,7 +2499,9 @@ class AncillaryBridgesTest(object):
                            side_effect=ancillary), \
                 mock.patch('neutron.agent.common.ovs_lib.OVSBridge.'
                            'get_vif_port_set',
-                           return_value=vif_port_set):
+                           return_value=vif_port_set),\
+                mock.patch('neutron.agent.rpc.PluginReportStateAPI.'
+                           'has_alive_neutron_server'):
             ext_manager = mock.Mock()
             self.agent = self.mod_agent.OVSNeutronAgent(self._bridge_classes(),
                                                         ext_manager, cfg.CONF)
@@ -2509,8 +2538,8 @@ class AncillaryBridgesTestOFCtl(AncillaryBridgesTest,
     pass
 
 
-class AncillaryBridgesTestRyu(AncillaryBridgesTest,
-                              ovs_test_base.OVSRyuTestBase):
+class AncillaryBridgesTestOSKen(AncillaryBridgesTest,
+                              ovs_test_base.OVSOSKenTestBase):
     pass
 
 
@@ -2549,7 +2578,9 @@ class TestOvsDvrNeutronAgent(object):
                     return_value=[]),\
                 mock.patch(
                     'neutron.agent.common.ovs_lib.OVSBridge.' 'get_vif_ports',
-                    return_value=[]):
+                    return_value=[]),\
+                mock.patch('neutron.agent.rpc.PluginReportStateAPI.'
+                           'has_alive_neutron_server'):
             ext_manager = mock.Mock()
             self.agent = self.mod_agent.OVSNeutronAgent(self._bridge_classes(),
                                                        ext_manager, cfg.CONF)
@@ -3473,7 +3504,8 @@ class TestOvsDvrNeutronAgent(object):
                 mock.patch.object(self.agent, 'setup_physical_bridges'),\
                 mock.patch.object(self.agent, 'setup_integration_br'),\
                 mock.patch.object(self.agent, 'setup_tunnel_br'),\
-                mock.patch.object(self.agent, 'state_rpc'):
+                mock.patch.object(self.agent, 'state_rpc'), \
+                mock.patch.object(self.agent.ovs.ovsdb, 'idl_monitor'):
             try:
                 self.agent.rpc_loop(polling_manager=mock.Mock())
             except TypeError:
@@ -3500,7 +3532,8 @@ class TestOvsDvrNeutronAgent(object):
                                   side_effect=[True, False]),\
                 mock.patch.object(self.agent, 'setup_physical_bridges'),\
                 mock.patch.object(self.agent, 'setup_integration_br'),\
-                mock.patch.object(self.agent, 'state_rpc'):
+                mock.patch.object(self.agent, 'state_rpc'), \
+                mock.patch.object(self.agent.ovs.ovsdb, 'idl_monitor'):
             # block RPC calls and bridge calls
             self.agent.rpc_loop(polling_manager=mock.Mock())
 
@@ -3519,8 +3552,8 @@ class TestOvsDvrNeutronAgentOFCtl(TestOvsDvrNeutronAgent,
     pass
 
 
-class TestOvsDvrNeutronAgentRyu(TestOvsDvrNeutronAgent,
-                                ovs_test_base.OVSRyuTestBase):
+class TestOvsDvrNeutronAgentOSKen(TestOvsDvrNeutronAgent,
+                                ovs_test_base.OVSOSKenTestBase):
     pass
 
 

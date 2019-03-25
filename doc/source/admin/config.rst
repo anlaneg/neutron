@@ -25,15 +25,18 @@ Configuration
    config-logging
    config-macvtap
    config-mtu
+   config-network-segment-ranges
    config-ovs-dpdk
    config-ovs-offload
    config-ovsfwdriver
    config-qos
+   config-qos-min-bw
    config-rbac
    config-routed-networks
    config-sfc
    config-sriov
    config-subnet-pools
+   config-subnet-onboard
    config-service-subnets
    config-trunking
    config-wsgi

@@ -18,13 +18,12 @@ import itertools
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
-from neutron_lib import exceptions as lib_exc
+from neutron_lib import exceptions
 from six import add_metaclass
 from six import with_metaclass
 from sqlalchemy import and_
 
 from neutron._i18n import _
-from neutron.common import exceptions as n_exc
 from neutron.db import _utils as db_utils
 from neutron.db import rbac_db_mixin
 from neutron.db import rbac_db_models as models
@@ -88,6 +87,35 @@ class RbacNeutronDbObjectMixin(rbac_db_mixin.RbacPluginMixin,
             RbacNeutronDbObjectMixin, cls).is_accessible(context, db_obj) or
                 cls.is_shared_with_tenant(context, db_obj.id,
                                           context.tenant_id))
+
+    @classmethod
+    def get_object(cls, context, **kwargs):
+        # We want to get the policy regardless of its tenant id. We'll make
+        # sure the tenant has permission to access the policy later on.
+        admin_context = context.elevated()
+        with cls.db_context_reader(admin_context):
+            obj = super(RbacNeutronDbObjectMixin,
+                        cls).get_object(admin_context, **kwargs)
+            if (not obj or not cls.is_accessible(context, obj)):
+                return
+            return obj
+
+    @classmethod
+    def get_objects(cls, context, _pager=None, validate_filters=True,
+                    **kwargs):
+        # We want to get the policy regardless of its tenant id. We'll make
+        # sure the tenant has permission to access the policy later on.
+        admin_context = context.elevated()
+        with cls.db_context_reader(admin_context):
+            objs = super(RbacNeutronDbObjectMixin,
+                         cls).get_objects(admin_context, _pager,
+                                          validate_filters, **kwargs)
+            result = []
+            for obj in objs:
+                if not cls.is_accessible(context, obj):
+                    continue
+                result.append(obj)
+            return result
 
     @classmethod
     def _get_db_obj_rbac_entries(cls, context, rbac_obj_id, rbac_action):
@@ -191,18 +219,18 @@ class RbacNeutronDbObjectMixin(rbac_db_mixin.RbacPluginMixin,
                     db_obj['tenant_id'] != context.tenant_id):
                 msg = _("Only admins can manipulate policies on objects "
                         "they do not own")
-                raise lib_exc.InvalidInput(error_message=msg)
+                raise exceptions.InvalidInput(error_message=msg)
         callback_map = {events.BEFORE_UPDATE: cls.validate_rbac_policy_update,
                         events.BEFORE_DELETE: cls.validate_rbac_policy_delete}
         if event in callback_map:
             return callback_map[event](resource, event, trigger, context,
                                        object_type, policy, **kwargs)
 
-    def attach_rbac(self, obj_id, tenant_id, target_tenant='*'):
+    def attach_rbac(self, obj_id, project_id, target_tenant='*'):
         obj_type = self.rbac_db_cls.db_model.object_type
         rbac_policy = {'rbac_policy': {'object_id': obj_id,
                                        'target_tenant': target_tenant,
-                                       'tenant_id': tenant_id,
+                                       'project_id': project_id,
                                        'object_type': obj_type,
                                        'action': models.ACCESS_SHARED}}
         return self.create_rbac_policy(self.obj_context, rbac_policy)
@@ -244,7 +272,7 @@ def _update_hook(self, update_orig):
 
 def _create_post(self):
     if self.shared:
-        self.attach_rbac(self.id, self.obj_context.tenant_id)
+        self.attach_rbac(self.id, self.project_id)
 
 
 def _create_hook(self, orig_create):
@@ -273,24 +301,24 @@ class RbacNeutronMetaclass(type):
     """
 
     @classmethod
-    def _get_attribute(mcs, attribute_name, bases):
+    def _get_attribute(cls, attribute_name, bases):
         for b in bases:
             attribute = getattr(b, attribute_name, None)
             if attribute:
                 return attribute
 
     @classmethod
-    def get_attribute(mcs, attribute_name, bases, dct):
+    def get_attribute(cls, attribute_name, bases, dct):
         return (dct.get(attribute_name, None) or
-                mcs._get_attribute(attribute_name, bases))
+                cls._get_attribute(attribute_name, bases))
 
     @classmethod
-    def update_synthetic_fields(mcs, bases, dct):
+    def update_synthetic_fields(cls, bases, dct):
         if not dct.get('synthetic_fields', None):
-            synthetic_attr = mcs.get_attribute('synthetic_fields', bases, dct)
+            synthetic_attr = cls.get_attribute('synthetic_fields', bases, dct)
             dct['synthetic_fields'] = synthetic_attr or []
         if 'shared' in dct['synthetic_fields']:
-            raise n_exc.ObjectActionError(
+            raise exceptions.ObjectActionError(
                 action=_('shared attribute switching to synthetic'),
                 reason=_('already a synthetic attribute'))
         dct['synthetic_fields'].append('shared')
@@ -316,25 +344,25 @@ class RbacNeutronMetaclass(type):
         return func
 
     @classmethod
-    def replace_class_methods_with_hooks(mcs, bases, dct):
+    def replace_class_methods_with_hooks(cls, bases, dct):
         methods_replacement_map = {'create': _create_hook,
                                    'update': _update_hook,
                                    'to_dict': _to_dict_hook}
         for orig_method_name, new_method in methods_replacement_map.items():
-            orig_method = mcs.get_attribute(orig_method_name, bases, dct)
-            hook_method = mcs.get_replaced_method(orig_method,
+            orig_method = cls.get_attribute(orig_method_name, bases, dct)
+            hook_method = cls.get_replaced_method(orig_method,
                                                   new_method)
             dct[orig_method_name] = hook_method
 
-    def __new__(mcs, name, bases, dct):
-        mcs.validate_existing_attrs(name, dct)
-        mcs.update_synthetic_fields(bases, dct)
-        mcs.replace_class_methods_with_hooks(bases, dct)
-        cls = type(name, (RbacNeutronDbObjectMixin,) + bases, dct)
-        cls.add_extra_filter_name('shared')
-        mcs.subscribe_to_rbac_events(cls)
+    def __new__(cls, name, bases, dct):
+        cls.validate_existing_attrs(name, dct)
+        cls.update_synthetic_fields(bases, dct)
+        cls.replace_class_methods_with_hooks(bases, dct)
+        klass = type(name, (RbacNeutronDbObjectMixin,) + bases, dct)
+        klass.add_extra_filter_name('shared')
+        cls.subscribe_to_rbac_events(klass)
 
-        return cls
+        return klass
 
 
 NeutronRbacObject = with_metaclass(RbacNeutronMetaclass, base.NeutronDbObject)

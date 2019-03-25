@@ -42,7 +42,6 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         super(DvrLocalRouter, self).__init__(host, *args, **kwargs)
 
         self.floating_ips_dict = {}
-        self.centralized_floatingips_set = set()
         # Linklocal subnet for router and floating IP namespace link
         self.rtr_fip_subnet = None
         self.rtr_fip_connect = False
@@ -50,15 +49,12 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         #缓存未下发的arp表项
         self._pending_arp_set = set()
 
-    def get_centralized_router_cidrs(self):
-        return self.centralized_floatingips_set
-
     def migrate_centralized_floating_ip(self, fip, interface_name, device):
         # Remove the centralized fip first and then add fip to the host
         ip_cidr = common_utils.ip_to_cidr(fip['floating_ip_address'])
         self.floating_ip_removed_dist(ip_cidr)
         # Now add the floating_ip to the current host
-        self.floating_ip_added_dist(fip, ip_cidr)
+        return self.floating_ip_added_dist(fip, ip_cidr)
 
     def floating_forward_rules(self, fip):
         """Override this function defined in router_info for dvr routers."""
@@ -116,10 +112,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
     def floating_ip_added_dist(self, fip, fip_cidr):
         """Add floating IP to respective namespace based on agent mode."""
         if fip.get(lib_constants.DVR_SNAT_BOUND):
-            floating_ip_status = self.add_centralized_floatingip(fip, fip_cidr)
-            if floating_ip_status == lib_constants.FLOATINGIP_STATUS_ACTIVE:
-                self.centralized_floatingips_set.add(fip_cidr)
-            return floating_ip_status
+            return self.add_centralized_floatingip(fip, fip_cidr)
         if not self._check_if_floatingip_bound_to_host(fip):
             # TODO(Swami): Need to figure out what status
             # should be returned when the floating IP is
@@ -160,29 +153,28 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
     def _add_floating_ip_rule(self, floating_ip, fixed_ip):
         rule_pr = self.fip_ns.allocate_rule_priority(floating_ip)
         self.floating_ips_dict[floating_ip] = (fixed_ip, rule_pr)
-        ip_rule = ip_lib.IPRule(namespace=self.ns_name)
+
         #指定源ip为fixed_ip的报文查找dvr_fip_ns.FIP_RT_TBL
         #优先级为rule_pr
-        ip_rule.rule.add(ip=fixed_ip,
-                         table=dvr_fip_ns.FIP_RT_TBL,
-                         priority=rule_pr)
+        ip_lib.add_ip_rule(namespace=self.ns_name, ip=fixed_ip,
+                           table=dvr_fip_ns.FIP_RT_TBL,
+                           priority=int(str(rule_pr)))
 
     def _remove_floating_ip_rule(self, floating_ip):
         if floating_ip in self.floating_ips_dict:
             fixed_ip, rule_pr = self.floating_ips_dict[floating_ip]
-            ip_rule = ip_lib.IPRule(namespace=self.ns_name)
             #移除策略
-            ip_rule.rule.delete(ip=fixed_ip,
-                                table=dvr_fip_ns.FIP_RT_TBL,
-                                priority=rule_pr)
+            ip_lib.delete_ip_rule(self.ns_name, ip=fixed_ip,
+                                  table=dvr_fip_ns.FIP_RT_TBL,
+                                  priority=int(str(rule_pr)))
             self.fip_ns.deallocate_rule_priority(floating_ip)
             # TODO(rajeev): Handle else case - exception/log?
 
     def floating_ip_removed_dist(self, fip_cidr):
         """Remove floating IP from FIP namespace."""
-        if fip_cidr in self.centralized_floatingips_set:
+        centralized_fip_cidrs = self.get_centralized_fip_cidr_set()
+        if fip_cidr in centralized_fip_cidrs:
             self.remove_centralized_floatingip(fip_cidr)
-            self.centralized_floatingips_set.remove(fip_cidr)
             return
         floating_ip = fip_cidr.split('/')[0]
         fip_2_rtr_name = self.fip_ns.get_int_device_name(self.router_id)
@@ -344,13 +336,12 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
     def _delete_gateway_device_if_exists(self, ns_ip_device, gw_ip_addr,
                                          snat_idx):
         try:
-            ns_ip_device.route.delete_gateway(gw_ip_addr,
-                                        table=snat_idx)
+            ns_ip_device.route.delete_gateway(gw_ip_addr, table=snat_idx)
         except exceptions.DeviceNotFoundError:
             pass
 
-    def _stale_ip_rule_cleanup(self, ns_ipr, ns_ipd, ip_version):
-        ip_rules_list = ns_ipr.rule.list_rules(ip_version)
+    def _stale_ip_rule_cleanup(self, namespace, ns_ipd, ip_version):
+        ip_rules_list = ip_lib.list_ip_rules(namespace, ip_version)
         snat_table_list = []
         for ip_rule in ip_rules_list:
             snat_table = ip_rule['table']
@@ -362,18 +353,18 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                                     dvr_fip_ns.FIP_PR_END)):
                 continue
             gateway_cidr = ip_rule['from']
-            ns_ipr.rule.delete(ip=gateway_cidr,
-                               table=snat_table,
-                               priority=priority)
+            ip_lib.delete_ip_rule(namespace, ip=gateway_cidr, table=snat_table,
+                                  priority=priority)
             snat_table_list.append(snat_table)
         for tb in snat_table_list:
             ns_ipd.route.flush(ip_version, table=tb)
 
     def gateway_redirect_cleanup(self, rtr_interface):
-        ns_ipr = ip_lib.IPRule(namespace=self.ns_name)
         ns_ipd = ip_lib.IPDevice(rtr_interface, namespace=self.ns_name)
-        self._stale_ip_rule_cleanup(ns_ipr, ns_ipd, lib_constants.IP_VERSION_4)
-        self._stale_ip_rule_cleanup(ns_ipr, ns_ipd, lib_constants.IP_VERSION_6)
+        self._stale_ip_rule_cleanup(self.ns_name, ns_ipd,
+                                    lib_constants.IP_VERSION_4)
+        self._stale_ip_rule_cleanup(self.ns_name, ns_ipd,
+                                    lib_constants.IP_VERSION_6)
 
     #gateway是网关接口，sn_port是报文源端口，sn_int是接口名称
     #完成dvr到snat路由器的路由添加(思考：之后路由也可放在此表，以实现dvr去snat前的处理）
@@ -381,7 +372,6 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         """Adds or removes rules and routes for SNAT redirection."""
         cmd = ['net.ipv4.conf.%s.send_redirects=0' % sn_int]
         try:
-            ns_ipr = ip_lib.IPRule(namespace=self.ns_name)
             ns_ipd = ip_lib.IPDevice(sn_int, namespace=self.ns_name)
             #遍历源端口上所有ip地址
             for port_fixed_ip in sn_port['fixed_ips']:
@@ -402,18 +392,20 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                             ns_ipd.route.add_gateway(gw_ip_addr,
                                                      table=snat_idx)
                             #指定源ip（如果源网段是来自于sn_port_cidr的，则跳到snat_idx表查路由表）
-                            ns_ipr.rule.add(ip=sn_port_cidr,
-                                            table=snat_idx,
-                                            priority=snat_idx)
+                            ip_lib.add_ip_rule(namespace=self.ns_name,
+                                               ip=sn_port_cidr,
+                                               table=snat_idx,
+                                               priority=snat_idx)
                             ip_lib.sysctl(cmd, namespace=self.ns_name)
                         else:
                             #删除规则，删除路由
                             self._delete_gateway_device_if_exists(ns_ipd,
                                                                   gw_ip_addr,
                                                                   snat_idx)
-                            ns_ipr.rule.delete(ip=sn_port_cidr,
-                                               table=snat_idx,
-                                               priority=snat_idx)
+                            ip_lib.delete_ip_rule(self.ns_name,
+                                                  ip=sn_port_cidr,
+                                                  table=snat_idx,
+                                                  priority=snat_idx)
         except Exception:
             if is_add:
                 exc = 'DVR: error adding redirection logic'
@@ -738,20 +730,18 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                 device.route.add_route(rtr_port_cidr, str(rtr_2_fip_ip))
 
     def _add_interface_routing_rule_to_router_ns(self, router_port):
-        ip_rule = ip_lib.IPRule(namespace=self.ns_name)
         for subnet in router_port['subnets']:
             rtr_port_cidr = subnet['cidr']
-            ip_rule.rule.add(ip=rtr_port_cidr,
-                             table=dvr_fip_ns.FIP_RT_TBL,
-                             priority=dvr_fip_ns.FAST_PATH_EXIT_PR)
+            ip_lib.add_ip_rule(namespace=self.ns_name, ip=rtr_port_cidr,
+                               table=dvr_fip_ns.FIP_RT_TBL,
+                               priority=dvr_fip_ns.FAST_PATH_EXIT_PR)
 
     def _delete_interface_routing_rule_in_router_ns(self, router_port):
-        ip_rule = ip_lib.IPRule(namespace=self.ns_name)
         for subnet in router_port['subnets']:
             rtr_port_cidr = subnet['cidr']
-            ip_rule.rule.delete(ip=rtr_port_cidr,
-                                table=dvr_fip_ns.FIP_RT_TBL,
-                                priority=dvr_fip_ns.FAST_PATH_EXIT_PR)
+            ip_lib.delete_ip_rule(self.ns_name, ip=rtr_port_cidr,
+                                  table=dvr_fip_ns.FIP_RT_TBL,
+                                  priority=dvr_fip_ns.FAST_PATH_EXIT_PR)
 
     def get_rtr_fip_ip_and_interface_name(self):
         """Function that returns the router to fip interface name and ip."""

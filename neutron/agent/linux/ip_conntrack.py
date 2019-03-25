@@ -15,12 +15,12 @@ import re
 
 import eventlet
 import netaddr
+from neutron_lib import exceptions
 from oslo_concurrency import lockutils
 from oslo_log import log as logging
 
 from neutron.agent.linux import utils as linux_utils
 from neutron.common import constants as n_const
-from neutron.common import exceptions as n_exc
 
 LOG = logging.getLogger(__name__)
 CONTRACK_MGRS = {}
@@ -185,8 +185,8 @@ class IpConntrackManager(object):
                              r'.* -j CT --zone (?P<zone>\d+).*', rule)
             if match:
                 # strip off any prefix that the interface is using
-                short_port_id = (match.group('dev')
-                    [n_const.LINUX_DEV_PREFIX_LEN:])
+                short_port_id = (
+                    match.group('dev')[n_const.LINUX_DEV_PREFIX_LEN:])
                 self._device_zone_map[short_port_id] = int(match.group('zone'))
         LOG.debug("Populated conntrack zone map: %s", self._device_zone_map)
 
@@ -225,7 +225,7 @@ class IpConntrackManager(object):
         """Generates a unique conntrack zone for the passed in ID."""
         try:
             zone = self._find_open_zone()
-        except n_exc.CTZoneExhaustedError:
+        except exceptions.CTZoneExhaustedError:
             # Free some zones and try again, repeat failure will not be caught
             self._free_zones_from_removed_ports()
             zone = self._find_open_zone()
@@ -250,4 +250,4 @@ class IpConntrackManager(object):
                 # gap found, let's use it!
                 return index + ZONE_START
         # conntrack zones exhausted :( :(
-        raise n_exc.CTZoneExhaustedError()
+        raise exceptions.CTZoneExhaustedError()

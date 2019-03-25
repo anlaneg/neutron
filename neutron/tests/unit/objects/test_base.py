@@ -21,6 +21,7 @@ import netaddr
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib.db import api as db_api
+from neutron_lib.db import model_query
 from neutron_lib import exceptions as n_exc
 from neutron_lib.objects import exceptions as o_exc
 from neutron_lib.objects import utils as obj_utils
@@ -31,9 +32,9 @@ from oslo_utils import uuidutils
 from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import exception
 from oslo_versionedobjects import fields as obj_fields
+from sqlalchemy import orm
 import testtools
 
-from neutron.db import _model_query as model_query
 from neutron import objects
 from neutron.objects import agent
 from neutron.objects import base
@@ -411,6 +412,13 @@ class FakeNeutronObject(base.NeutronObject):
             for i in range(count)
         ]
 
+    @classmethod
+    def get_values(cls, context, field, **kwargs):
+        return [
+            getattr(obj, field)
+            for obj in cls.get_objects(**kwargs)
+        ]
+
 
 @base.NeutronObjectRegistry.register_if(False)
 class FakeNeutronObjectDictOfMiscValues(base.NeutronDbObject):
@@ -510,6 +518,8 @@ FIELD_TYPE_VALUE_GENERATOR_MAP = {
     common_types.IpProtocolEnumField: tools.get_random_ip_protocol,
     common_types.ListOfIPNetworksField: get_list_of_random_networks,
     common_types.MACAddressField: tools.get_random_EUI,
+    common_types.NetworkSegmentRangeNetworkTypeEnumField:
+        tools.get_random_network_segment_range_network_type,
     common_types.PortBindingStatusEnumField:
         tools.get_random_port_binding_statuses,
     common_types.PortRangeField: tools.get_random_port,
@@ -585,10 +595,10 @@ class _BaseObjectTestCase(object):
         invalid_fields = (
             set(self._test_class.synthetic_fields).union(set(TIMESTAMP_FIELDS))
         )
-        valid_field = [f for f in self._test_class.fields
-                       if f not in invalid_fields][0]
-        self.valid_field_filter = {valid_field:
-                                   self.obj_fields[-1][valid_field]}
+        self.valid_field = [f for f in self._test_class.fields
+                            if f not in invalid_fields][0]
+        self.valid_field_filter = {self.valid_field:
+                                   self.obj_fields[-1].get(self.valid_field)}
         self.obj_registry = self.useFixture(
             NeutronObjectRegistryFixture())
         self.obj_registry.register(FakeSmallNeutronObject)
@@ -680,7 +690,7 @@ class _BaseObjectTestCase(object):
         return keys
 
     def get_updatable_fields(self, fields):
-        return base.get_updatable_fields(self._test_class, fields)
+        return obj_utils.get_updatable_fields(self._test_class, fields)
 
     @classmethod
     def _is_test_class(cls, obj):
@@ -688,6 +698,10 @@ class _BaseObjectTestCase(object):
 
     def fake_get_objects(self, obj_cls, context, **kwargs):
         return self.model_map[obj_cls.db_model]
+
+    def fake_get_values(self, obj_cls, context, field, **kwargs):
+        return [model.get(field)
+                for model in self.model_map[obj_cls.db_model]]
 
     def _get_object_synthetic_fields(self, objclass):
         return [field for field in objclass.synthetic_fields
@@ -742,7 +756,9 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
         return self.model_map[obj_cls.db_model]
 
     # TODO(ihrachys) document the intent of all common test cases in docstrings
-    def test_get_object(self):
+    def test_get_object(self, context=None):
+        if context is None:
+            context = self.context
         with mock.patch.object(
                 obj_db_api, 'get_object',
                 return_value=self.db_objs[0]) as get_object_mock:
@@ -753,7 +769,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                 self.assertTrue(self._is_test_class(obj))
                 self._check_equal(self.objs[0], obj)
                 get_object_mock.assert_called_once_with(
-                    self._test_class, self.context,
+                    self._test_class, context,
                     **self._test_class.modify_fields_to_db(obj_keys))
 
     def test_get_object_missing_object(self):
@@ -814,7 +830,9 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                             **filter_kwargs))
         return mock_calls
 
-    def test_get_objects(self):
+    def test_get_objects(self, context=None):
+        if context is None:
+            context = self.context
         '''Test that get_objects fetches data from database.'''
         with mock.patch.object(
                 obj_db_api, 'get_objects',
@@ -824,7 +842,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                 [get_obj_persistent_fields(obj) for obj in self.objs],
                 [get_obj_persistent_fields(obj) for obj in objs])
         get_objects_mock.assert_any_call(
-            self._test_class, self.context,
+            self._test_class, context,
             _pager=self.pager_map[self._test_class.obj_name()]
         )
 
@@ -888,6 +906,60 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                 [get_obj_persistent_fields(obj) for obj in self.objs],
                 [get_obj_persistent_fields(obj) for obj in objs])
 
+    def test_get_values(self):
+        field = self.valid_field
+        db_field = self._test_class.fields_need_translation.get(field, field)
+        with mock.patch.object(
+                obj_db_api, 'get_values',
+                side_effect=self.fake_get_values) as get_values_mock:
+            values = self._test_class.get_values(self.context, field)
+            self.assertItemsEqual(
+                [getattr(obj, field) for obj in self.objs], values)
+        get_values_mock.assert_any_call(
+            self._test_class, self.context, db_field
+        )
+
+    def test_get_values_with_validate_filters(self):
+        field = self.valid_field
+        with mock.patch.object(
+                obj_db_api, 'get_values', side_effect=self.fake_get_values):
+            self._test_class.get_values(self.context, field,
+                                        **self.valid_field_filter)
+
+    def test_get_values_without_validate_filters(self):
+        field = self.valid_field
+        with mock.patch.object(
+                obj_db_api, 'get_values',
+                side_effect=self.fake_get_values):
+            values = self._test_class.get_values(self.context, field,
+                                                 validate_filters=False,
+                                                 unknown_filter='value')
+            self.assertItemsEqual(
+                [getattr(obj, field) for obj in self.objs], values)
+
+    def test_get_values_mixed_field(self):
+        synthetic_fields = (
+            set(self._test_class.synthetic_fields) -
+            self._test_class.extra_filter_names
+        )
+        if not synthetic_fields:
+            self.skipTest('No synthetic fields that are not extra filters '
+                          'found in test class %r' %
+                          self._test_class)
+
+        field = synthetic_fields.pop()
+        with mock.patch.object(obj_db_api, 'get_values',
+                               side_effect=self.fake_get_values):
+            self.assertRaises(n_exc.InvalidInput,
+                              self._test_class.get_values, self.context, field)
+
+    def test_get_values_invalid_field(self):
+        field = 'fake_field'
+        with mock.patch.object(obj_db_api, 'get_values',
+                               side_effect=self.fake_get_values):
+            self.assertRaises(n_exc.InvalidInput,
+                              self._test_class.get_values, self.context, field)
+
     @mock.patch.object(obj_db_api, 'update_object', return_value={})
     @mock.patch.object(obj_db_api, 'update_objects', return_value=0)
     def test_update_objects_valid_fields(self, *mocks):
@@ -905,9 +977,9 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
     @mock.patch.object(obj_db_api, 'update_objects')
     @mock.patch.object(obj_db_api, 'update_object', return_value={})
     def test_update_objects_without_validate_filters(self, *mocks):
-            self._test_class.update_objects(
-                self.context, {'unknown_filter': 'new_value'},
-                validate_filters=False, unknown_filter='value')
+        self._test_class.update_objects(
+            self.context, {'unknown_filter': 'new_value'},
+            validate_filters=False, unknown_filter='value')
 
     def _prep_string_field(self):
         self.filter_string_field = None
@@ -1001,9 +1073,9 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
             self.assertEqual(expected, self._test_class.count(self.context))
 
     def test_count_invalid_fields(self):
-            self.assertRaises(n_exc.InvalidInput,
-                              self._test_class.count, self.context,
-                              fake_field='xxx')
+        self.assertRaises(n_exc.InvalidInput,
+                          self._test_class.count, self.context,
+                          fake_field='xxx')
 
     def _check_equal(self, expected, observed):
         self.assertItemsEqual(get_obj_persistent_fields(expected),
@@ -1542,10 +1614,12 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         segment.create()
         return segment.id
 
-    def _create_test_router_id(self):
+    def _create_test_router_id(self, router_id=None):
         attrs = {
             'name': 'test_router',
         }
+        if router_id:
+            attrs['id'] = router_id
         self._router = router.Router(self.context, **attrs)
         self._router.create()
         return self._router['id']
@@ -2053,7 +2127,11 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
             obj.update()
             self.assertIsNotNone(obj.db_obj)
             for k, v in obj.modify_fields_to_db(fields_to_update).items():
-                self.assertEqual(v, obj.db_obj[k], '%s attribute differs' % k)
+                if isinstance(obj.db_obj[k], orm.dynamic.AppenderQuery):
+                    self.assertIsInstance(v, list)
+                else:
+                    self.assertEqual(v, obj.db_obj[k],
+                                     '%s attribute differs' % k)
 
         obj.delete()
         self.assertIsNone(obj.db_obj)

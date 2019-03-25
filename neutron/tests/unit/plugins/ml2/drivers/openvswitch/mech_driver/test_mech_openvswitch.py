@@ -166,7 +166,27 @@ class OpenvswitchMechanismHybridPlugTestCase(OpenvswitchMechanismBaseTestCase):
 
 class OpenvswitchMechanismGenericTestCase(OpenvswitchMechanismBaseTestCase,
                                           base.AgentMechanismGenericTestCase):
-    pass
+    def test_driver_responsible_for_ports_allocation(self):
+        agents = [
+            {'agent_type': 'Open vSwitch agent',
+             'configurations': {'resource_provider_bandwidths': {'eth0': {}}},
+             'id': '1',
+             'host': 'host'}
+        ]
+        segments = []
+        # uuid -v5 87ee7d5c-73bb-11e8-9008-c4d987b2a692 host:eth0
+        profile = {'allocation': '13cc0ed9-e802-5eaa-b4c7-3441855e31f2'}
+
+        port_ctx = base.FakePortContext(
+            self.AGENT_TYPE,
+            agents,
+            segments,
+            vnic_type=portbindings.VNIC_NORMAL,
+            profile=profile)
+        with mock.patch.object(self.driver, '_possible_agents_for_port',
+                               return_value=agents):
+            self.assertTrue(
+                self.driver.responsible_for_ports_allocation(port_ctx))
 
 
 class OpenvswitchMechanismLocalTestCase(OpenvswitchMechanismBaseTestCase,
@@ -355,3 +375,21 @@ class OpenvswitchMechVnicTypesTestCase(OpenvswitchMechanismBaseTestCase):
 
         self.assertRaises(ValueError,
                           mech_openvswitch.OpenvswitchMechanismDriver)
+
+
+class OpenvswitchMechDeviceMappingsTestCase(OpenvswitchMechanismBaseTestCase):
+
+    def test_standard_device_mappings(self):
+        mappings = self.driver.get_standard_device_mappings(self.AGENTS[0])
+        self.assertEqual(
+            len(self.GOOD_CONFIGS['bridge_mappings']),
+            len(mappings))
+        for ph_orig, br_orig in self.GOOD_CONFIGS['bridge_mappings'].items():
+            self.assertIn(ph_orig, mappings)
+            self.assertEqual([br_orig], mappings[ph_orig])
+
+    def test_standard_device_mappings_negative(self):
+        fake_agent = {'agent_type': constants.AGENT_TYPE_OVS,
+                      'configurations': {}}
+        self.assertRaises(ValueError, self.driver.get_standard_device_mappings,
+                          fake_agent)

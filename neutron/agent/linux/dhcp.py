@@ -130,7 +130,8 @@ class DhcpBase(object):
                  version=None, plugin=None):
         self.conf = conf
         self.network = network
-        self.dns_domain = self.network.get('dns_domain', self.conf.dns_domain)
+        self.dns_domain = (self.network.get('dns_domain') or
+                           self.conf.dns_domain)
         self.process_monitor = process_monitor
         self.device_manager = DeviceManager(self.conf, plugin)
         self.version = version
@@ -140,13 +141,13 @@ class DhcpBase(object):
         """Enables DHCP for this network."""
 
     @abc.abstractmethod
-    def disable(self, retain_port=False):
+    def disable(self, retain_port=False, block=False):
         """Disable dhcp for this network."""
 
     def restart(self):
         """Restart the dhcp service for the network."""
         #杀掉进程，但保持port不删除
-        self.disable(retain_port=True)
+        self.disable(retain_port=True, block=True)
         self.enable()
 
     @abc.abstractproperty
@@ -242,10 +243,13 @@ class DhcpLocalProcess(DhcpBase):
             pid_file=self.get_conf_file_name('pid'),
             run_as_root=True)
 
-    def disable(self, retain_port=False):
+    def disable(self, retain_port=False, block=False):
         """Disable DHCP for this network by killing the local process."""
         self.process_monitor.unregister(self.network.id, DNSMASQ_SERVICE_NAME)
-        self._get_process_manager().disable() #杀掉进程
+        pm = self._get_process_manager()
+        pm.disable()#杀掉进程
+        if block:
+            common_utils.wait_until_true(lambda: not pm.active)
         if not retain_port:
             self._destroy_namespace_and_port()
         self._remove_config_files()
@@ -345,24 +349,22 @@ class Dnsmasq(DhcpLocalProcess):
             'dnsmasq',
             '--no-hosts',
             _no_resolv,
-            '--except-interface=lo',
             '--pid-file=%s' % pid_file,
             '--dhcp-hostsfile=%s' % self.get_conf_file_name('host'),
             '--addn-hosts=%s' % self.get_conf_file_name('addn_hosts'),
             '--dhcp-optsfile=%s' % self.get_conf_file_name('opts'),
             '--dhcp-leasefile=%s' % self.get_conf_file_name('leases'),
             '--dhcp-match=set:ipxe,175',
+            '--dhcp-userclass=set:ipxe6,iPXE',
+            '--local-service',
         ]
         if self.device_manager.driver.bridged:
             cmd += [
                 '--bind-interfaces',
-                '--interface=%s' % self.interface_name,
             ]
         else:
             cmd += [
                 '--bind-dynamic',
-                '--interface=%s' % self.interface_name,
-                '--interface=tap*',
                 '--bridge-interface=%s,tap*' % self.interface_name,
             ]
 
@@ -656,21 +658,20 @@ class Dnsmasq(DhcpLocalProcess):
             timestamp = 0
         else:
             timestamp = int(time.time()) + self.conf.dhcp_lease_duration
-        dhcp_enabled_subnet_ids = [s.id for s in
-                                   self._get_all_subnets(self.network)
-                                   if s.enable_dhcp]
+        dhcpv4_enabled_subnet_ids = [
+            s.id for s in self._get_all_subnets(self.network)
+            if s.enable_dhcp and s.ip_version == constants.IP_VERSION_4]
         for host_tuple in self._iter_hosts():
             port, alloc, hostname, name, no_dhcp, no_opts = host_tuple
             # don't write ip address which belongs to a dhcp disabled subnet
-            # or an IPv6 SLAAC/stateless subnet
-            if no_dhcp or alloc.subnet_id not in dhcp_enabled_subnet_ids:
+            # or an IPv6 subnet.
+            if no_dhcp or alloc.subnet_id not in dhcpv4_enabled_subnet_ids:
                 continue
 
-            ip_address = self._format_address_for_dnsmasq(alloc.ip_address)
             # all that matters is the mac address and IP. the hostname and
             # client ID will be overwritten on the next renewal.
             buf.write('%s %s %s * *\n' %
-                      (timestamp, port.mac_address, ip_address))
+                      (timestamp, port.mac_address, alloc.ip_address))
         contents = buf.getvalue()
         file_utils.replace_file(filename, contents)
         LOG.debug('Done building initial lease file %s with contents:\n%s',
@@ -733,8 +734,8 @@ class Dnsmasq(DhcpLocalProcess):
                                ip_address, 'set:', port.id))
                 elif client_id and len(port.extra_dhcp_opts) == 1:
                     buf.write('%s,%s%s,%s,%s\n' %
-                          (port.mac_address, self._ID, client_id, name,
-                           ip_address))
+                              (port.mac_address, self._ID, client_id, name,
+                               ip_address))
                 else:
                     buf.write('%s,%s,%s,%s%s\n' %
                               (port.mac_address, name, ip_address,
@@ -874,6 +875,19 @@ class Dnsmasq(DhcpLocalProcess):
         entries_to_release = (v4_leases | old_leases) - new_leases
         if not entries_to_release:
             return
+
+        # If the VM advertises a client ID in its lease, but its not set in
+        # the port's Extra DHCP Opts, the lease will not be filtered above.
+        # Release the lease only if client ID is set in port DB and a mismatch
+        # Otherwise the lease is released when other ports are deleted/updated
+        entries_with_no_client_id = set()
+        for ip, mac, client_id in entries_to_release:
+            if client_id:
+                entry_no_client_id = (ip, mac, None)
+                if (entry_no_client_id in old_leases and
+                        entry_no_client_id in new_leases):
+                    entries_with_no_client_id.add((ip, mac, client_id))
+        entries_to_release -= entries_with_no_client_id
 
         # Try DHCP_RELEASE_TRIES times to release a lease, re-reading the
         # file each time to see if it's still there.  We loop +1 times to
@@ -1085,9 +1099,6 @@ class Dnsmasq(DhcpLocalProcess):
         return options
 
     def _make_subnet_interface_ip_map(self):
-        ip_dev = ip_lib.IPDevice(self.interface_name,
-                                 namespace=self.network.namespace)
-
         subnet_lookup = dict(
             (netaddr.IPNetwork(subnet.cidr), subnet.id)
             for subnet in self.network.subnets
@@ -1095,7 +1106,8 @@ class Dnsmasq(DhcpLocalProcess):
 
         retval = {}
 
-        for addr in ip_dev.addr.list():
+        for addr in ip_lib.get_devices_with_ip(self.network.namespace,
+                                               name=self.interface_name):
             ip_net = netaddr.IPNetwork(addr['cidr'])
 
             if ip_net in subnet_lookup:
@@ -1114,11 +1126,15 @@ class Dnsmasq(DhcpLocalProcess):
         if isinstance(tag, int):
             tag = self._TAG_PREFIX % tag
 
-        if not option.isdigit():
-            if ip_version == 4:
-                option = 'option:%s' % option
-            else:
-                option = 'option6:%s' % option
+        # NOTE(TheJulia): prepending option6 to any DHCPv6 option is
+        # indicated as required in the dnsmasq man page for version 2.79.
+        # Testing reveals that the man page is correct, option is not
+        # honored if not in the format "option6:$NUM".  For IPv4 we
+        # only apply if the option is non-numeric.
+        if ip_version == constants.IP_VERSION_6:
+            option = 'option6:%s' % option
+        elif not option.isdigit():
+            option = 'option:%s' % option
         if extra_tag:
             tags = ('tag:' + tag, extra_tag[:-1], '%s' % option)
         else:
@@ -1517,6 +1533,8 @@ class DeviceManager(object):
         # and added back statically in the call to init_l3() below.
         if network.namespace:
             ip_lib.IPWrapper().ensure_namespace(network.namespace)
+            ip_lib.set_ip_nonlocal_bind_for_namespace(network.namespace, 1,
+                                                      root_namespace=True)
         if ipv6_utils.is_enabled_and_bind_by_default():
             self.driver.configure_ipv6_ra(network.namespace, 'default',
                                           n_const.ACCEPT_RA_DISABLED)
@@ -1597,9 +1615,12 @@ class DeviceManager(object):
     def fill_dhcp_udp_checksums(self, namespace):
         """Ensure DHCP reply packets always have correct UDP checksums."""
         #计算checksum
-        iptables_mgr = iptables_manager.IptablesManager(use_ipv6=False,
+        iptables_mgr = iptables_manager.IptablesManager(use_ipv6=True,
                                                         namespace=namespace)
         ipv4_rule = ('-p udp -m udp --dport %d -j CHECKSUM --checksum-fill'
                      % constants.DHCP_RESPONSE_PORT)
+        ipv6_rule = ('-p udp -m udp --dport %d -j CHECKSUM --checksum-fill'
+                     % constants.DHCPV6_CLIENT_PORT)
         iptables_mgr.ipv4['mangle'].add_rule('POSTROUTING', ipv4_rule)
+        iptables_mgr.ipv6['mangle'].add_rule('POSTROUTING', ipv6_rule)
         iptables_mgr.apply()

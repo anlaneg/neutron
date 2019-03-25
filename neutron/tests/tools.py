@@ -15,7 +15,6 @@
 
 import datetime
 import os
-import platform
 import random
 import time
 import warnings
@@ -205,19 +204,6 @@ def fail(msg=None):
     raise unittest2.TestCase.failureException(msg)
 
 
-class UnorderedList(list):
-    """A list that is equals to any permutation of itself."""
-
-    def __eq__(self, other):
-        if not isinstance(other, list):
-            return False
-        return (sorted(self, key=helpers.safe_sort_key) ==
-                sorted(other, key=helpers.safe_sort_key))
-
-    def __neq__(self, other):
-        return not self == other
-
-
 def get_random_string_list(i=3, n=5):
     return [helpers.get_random_string(n) for _ in range(0, i)]
 
@@ -327,15 +313,11 @@ def get_random_port_binding_statuses():
     return random.choice(n_const.PORT_BINDING_STATUSES)
 
 
-def is_bsd():
-    """Return True on BSD-based systems."""
-
-    system = platform.system()
-    if system == 'Darwin':
-        return True
-    if 'bsd' in system.lower():
-        return True
-    return False
+def get_random_network_segment_range_network_type():
+    return random.choice([constants.TYPE_VLAN,
+                          constants.TYPE_VXLAN,
+                          constants.TYPE_GRE,
+                          constants.TYPE_GENEVE])
 
 
 def reset_random_seed():

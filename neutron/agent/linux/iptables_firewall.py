@@ -63,7 +63,8 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
     CONNTRACK_ZONE_PER_PORT = False
 
     def __init__(self, namespace=None):
-        self.iptables = iptables_manager.IptablesManager(state_less=True,
+        self.iptables = iptables_manager.IptablesManager(
+            state_less=True,
             use_ipv6=ipv6_utils.is_enabled_and_bind_by_default(),
             namespace=namespace)
         # TODO(majopela, shihanzhang): refactor out ipset to a separate
@@ -713,8 +714,9 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
 
             if (is_port and rule_protocol in constants.IPTABLES_PROTOCOL_MAP):
                 # iptables adds '-m protocol' when the port number is specified
-                iptables_rule += ['-m',
-                    constants.IPTABLES_PROTOCOL_MAP[rule_protocol]]
+                iptables_rule += [
+                    '-m', constants.IPTABLES_PROTOCOL_MAP[rule_protocol]
+                ]
         return iptables_rule
 
     def _port_arg(self, direction, protocol, port_range_min, port_range_max):
@@ -731,11 +733,18 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
             # icmp code can be 0 so we cannot use "if port_range_max" here
             if port_range_max is not None:
                 args[-1] += '/%s' % port_range_max
-        elif port_range_min == port_range_max:
-            args += ['--%s' % direction, '%s' % (port_range_min,)]
-        else:
-            args += ['-m', 'multiport', '--%ss' % direction,
-                     '%s:%s' % (port_range_min, port_range_max)]
+        elif protocol in n_const.SG_PORT_PROTO_NAMES:
+            # iptables protocols that support --dport, --sport and -m multiport
+            if port_range_min == port_range_max:
+                if protocol in n_const.IPTABLES_MULTIPORT_ONLY_PROTOCOLS:
+                    # use -m multiport, but without a port range
+                    args += ['-m', 'multiport', '--%ss' % direction,
+                             '%s' % port_range_min]
+                else:
+                    args += ['--%s' % direction, '%s' % port_range_min]
+            else:
+                args += ['-m', 'multiport', '--%ss' % direction,
+                         '%s:%s' % (port_range_min, port_range_max)]
         return args
 
     def _ip_prefix_arg(self, direction, ip_prefix):

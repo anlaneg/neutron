@@ -32,8 +32,8 @@ class L2AgentExtensionsManager(agent_ext_manager.AgentExtensionsManager):
     """
 
     def __init__(self, conf):
-        super(L2AgentExtensionsManager, self).__init__(conf,
-                L2_AGENT_EXT_MANAGER_NAMESPACE)
+        super(L2AgentExtensionsManager,
+              self).__init__(conf, L2_AGENT_EXT_MANAGER_NAMESPACE)
 
     #知会所有agent 扩展执行handle_port
     def handle_port(self, context, data):

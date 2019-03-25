@@ -33,6 +33,7 @@ from neutron.tests.common import net_helpers
 from neutron.tests.fullstack import base as fullstack_base
 
 LOG = logging.getLogger(__name__)
+CMD_FOLDER = 'agents'
 
 
 class ProcessFixture(fixtures.Fixture):
@@ -75,7 +76,9 @@ class ProcessFixture(fixtures.Fixture):
     def stop(self, kill_signal=None):
         kill_signal = kill_signal or self.kill_signal
         try:
-            self.process.stop(block=True, kill_signal=kill_signal)
+            self.process.stop(
+                block=True, kill_signal=kill_signal,
+                kill_timeout=15)
         except async_process.AsyncProcessException as e:
             if "Process is not running" not in str(e):
                 raise
@@ -205,7 +208,33 @@ class OVSAgentFixture(ServiceFixture):
             process_name=self.NEUTRON_OVS_AGENT,
             exec_name=spawn.find_executable(
                 'ovs_agent.py',
-                path=os.path.join(fullstack_base.ROOTDIR, 'cmd')),
+                path=os.path.join(fullstack_base.ROOTDIR, CMD_FOLDER)),
+            config_filenames=config_filenames,
+            kill_signal=signal.SIGTERM))
+
+
+class SRIOVAgentFixture(ServiceFixture):
+
+    NEUTRON_SRIOV_AGENT = "neutron-sriov-nic-agent"
+
+    def __init__(self, env_desc, host_desc,
+                 test_name, neutron_cfg_fixture, agent_cfg_fixture):
+        super(SRIOVAgentFixture, self).__init__()
+        self.env_desc = env_desc
+        self.host_desc = host_desc
+        self.test_name = test_name
+        self.neutron_cfg_fixture = neutron_cfg_fixture
+        self.neutron_config = self.neutron_cfg_fixture.config
+        self.agent_cfg_fixture = agent_cfg_fixture
+        self.agent_config = agent_cfg_fixture.config
+
+    def _setUp(self):
+        config_filenames = [self.neutron_cfg_fixture.filename,
+                            self.agent_cfg_fixture.filename]
+        self.process_fixture = self.useFixture(ProcessFixture(
+            test_name=self.test_name,
+            process_name=self.NEUTRON_SRIOV_AGENT,
+            exec_name=self.NEUTRON_SRIOV_AGENT,
             config_filenames=config_filenames,
             kill_signal=signal.SIGTERM))
 
@@ -270,7 +299,7 @@ class L3AgentFixture(ServiceFixture):
         else:
             exec_name = spawn.find_executable(
                 'l3_agent.py',
-                path=os.path.join(fullstack_base.ROOTDIR, 'cmd'))
+                path=os.path.join(fullstack_base.ROOTDIR, CMD_FOLDER))
 
         self.process_fixture = self.useFixture(
             ProcessFixture(
@@ -313,7 +342,7 @@ class DhcpAgentFixture(fixtures.Fixture):
         else:
             exec_name = spawn.find_executable(
                 'dhcp_agent.py',
-                path=os.path.join(fullstack_base.ROOTDIR, 'cmd'))
+                path=os.path.join(fullstack_base.ROOTDIR, CMD_FOLDER))
 
         self.process_fixture = self.useFixture(
             ProcessFixture(

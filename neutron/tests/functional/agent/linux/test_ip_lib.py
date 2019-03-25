@@ -26,6 +26,7 @@ import testtools
 from neutron.agent.linux import ip_lib
 from neutron.common import utils
 from neutron.conf.agent import common as config
+from neutron.privileged.agent.linux import ip_lib as priv_ip_lib
 from neutron.tests.common import net_helpers
 from neutron.tests.functional import base as functional_base
 
@@ -158,19 +159,20 @@ class IpLibTestCase(IpLibTestFramework):
             ]
         }
 
-        ip_rule = ip_lib.IPRule(namespace=device.namespace)
         for ip_version, test_case in test_cases.items():
             for rule in test_case:
-                ip_rule.rule.add(table=TABLE, priority=PRIORITY, **rule)
+                ip_lib.add_ip_rule(namespace=device.namespace, table=TABLE,
+                                   priority=PRIORITY, **rule)
 
-            rules = ip_rule.rule.list_rules(ip_version)
+            rules = ip_lib.list_ip_rules(device.namespace, ip_version)
             for expected_rule in expected_rules[ip_version]:
                 self.assertIn(expected_rule, rules)
 
             for rule in test_case:
-                ip_rule.rule.delete(table=TABLE, priority=PRIORITY, **rule)
+                ip_lib.delete_ip_rule(device.namespace, table=TABLE,
+                                      priority=PRIORITY, **rule)
 
-            rules = ip_rule.rule.list_rules(ip_version)
+            rules = priv_ip_lib.list_ip_rules(device.namespace, ip_version)
             for expected_rule in expected_rules[ip_version]:
                 self.assertNotIn(expected_rule, rules)
 
@@ -199,6 +201,18 @@ class IpLibTestCase(IpLibTestFramework):
         self.assertTrue(device.exists())
         device.link.delete()
         self.assertFalse(device.exists())
+
+    def test_vlan_exists(self):
+        attr = self.generate_device_details()
+        ip = ip_lib.IPWrapper(namespace=attr.namespace)
+        ip.netns.add(attr.namespace)
+        self.addCleanup(ip.netns.delete, attr.namespace)
+        priv_ip_lib.create_interface(attr.name, attr.namespace, 'dummy')
+        self.assertFalse(ip_lib.vlan_in_use(1999, namespace=attr.namespace))
+        device = ip.add_vlan('vlan1999', attr.name, 1999)
+        self.assertTrue(ip_lib.vlan_in_use(1999, namespace=attr.namespace))
+        device.link.delete()
+        self.assertFalse(ip_lib.vlan_in_use(1999, namespace=attr.namespace))
 
     def test_vxlan_exists(self):
         attr = self.generate_device_details()

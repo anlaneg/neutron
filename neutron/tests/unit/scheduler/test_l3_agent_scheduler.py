@@ -24,6 +24,7 @@ from neutron_lib import context as n_context
 from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
+from neutron_lib import rpc as n_rpc
 from oslo_config import cfg
 from oslo_utils import importutils
 from oslo_utils import timeutils
@@ -32,7 +33,6 @@ from sqlalchemy import orm
 import testscenarios
 import testtools
 
-from neutron.common import rpc as n_rpc
 from neutron.db import db_base_plugin_v2 as db_v2
 from neutron.db import l3_db
 from neutron.db import l3_dvr_db
@@ -882,6 +882,36 @@ class L3DvrSchedulerTestCase(L3SchedulerBaseMixin,
         self.assertTrue(
             l3plugin.update_arp_entry_for_dvr_service_port.called)
 
+    def test__notify_l3_agent_when_unbound_port_migrates_to_bound_host(self):
+        port_id = 'fake-port'
+        kwargs = {
+            'context': self.adminContext,
+            'original_port': {
+                'id': port_id,
+                portbindings.HOST_ID: '',
+                'device_owner': '',
+                'admin_state_up': True,
+            },
+            'port': {
+                'id': port_id,
+                portbindings.HOST_ID: 'vm-host',
+                'device_owner': DEVICE_OWNER_COMPUTE,
+                'mac_address': '02:04:05:17:18:19'
+            },
+        }
+        port = kwargs.get('port')
+        plugin = directory.get_plugin()
+        l3plugin = mock.Mock()
+        l3plugin.supported_extension_aliases = [
+            'router', constants.L3_AGENT_SCHEDULER_EXT_ALIAS,
+            constants.L3_DISTRIBUTED_EXT_ALIAS
+        ]
+        directory.add_plugin(plugin_constants.L3, l3plugin)
+        l3_dvrscheduler_db._notify_l3_agent_port_update(
+            'port', 'after_update', plugin, **kwargs)
+        l3plugin.dvr_handle_new_service_port.assert_called_once_with(
+            self.adminContext, port, unbound_migrate=True)
+
     def test__notify_l3_agent_update_port_no_removing_routers(self):
         port_id = 'fake-port'
         kwargs = {
@@ -1283,16 +1313,24 @@ class L3DvrSchedulerTestCase(L3SchedulerBaseMixin,
                            '.L3AgentNotifyAPI'),\
                 mock.patch.object(
                         self.dut, 'get_l3_agents',
-                        return_value=[agent_on_host]) as get_l3_agents:
+                        return_value=[agent_on_host]) as get_l3_agents,\
+                mock.patch.object(
+                        self.dut, 'get_hosts_to_notify',
+                        return_value=['other_host']),\
+                mock.patch.object(
+                        self.dut, '_check_for_rtr_serviceable_ports',
+                        return_value=True):
+
             self.dut.dvr_handle_new_service_port(
                 self.adminContext, port)
 
             get_l3_agents.assert_called_once_with(
                 self.adminContext,
                 filters={'host': [port[portbindings.HOST_ID]]})
-            (self.dut.l3_rpc_notifier.routers_updated_on_host.
-                assert_called_once_with(
-                    self.adminContext, {'r1', 'r2'}, 'host1'))
+            self.dut.l3_rpc_notifier.routers_updated_on_host.assert_has_calls(
+                [mock.call(self.adminContext, {'r1', 'r2'}, 'host1'),
+                 mock.call(self.adminContext, {'r1', 'r2'}, 'other_host')],
+                any_order=True)
             self.assertFalse(self.dut.l3_rpc_notifier.routers_updated.called)
 
     def test_get_dvr_routers_by_subnet_ids(self):

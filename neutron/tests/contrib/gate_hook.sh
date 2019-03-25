@@ -2,7 +2,7 @@
 
 set -ex
 
-VENV=${1:-"dsvm-functional"}
+VENV=${1:-"api"}
 FLAVOR=${2:-"all"}
 
 GATE_DEST=$BASE/new
@@ -55,77 +55,30 @@ function load_rc_for_rally {
 
 
 case $VENV in
-"dsvm-functional"|"dsvm-fullstack"|"dsvm-functional-python35"|"dsvm-fullstack-python35")
-    # The following need to be set before sourcing
-    # configure_for_func_testing.
-    GATE_STACK_USER=stack
-    PROJECT_NAME=neutron
-    IS_GATE=True
-    LOCAL_CONF=$DEVSTACK_PATH/local.conf
-
-    source $DEVSTACK_PATH/functions
-    source $NEUTRON_PATH/devstack/lib/ovs
-
-    source $NEUTRON_PATH/tools/configure_for_func_testing.sh
-
-    configure_host_for_func_testing
-
-    # Because of bug present in current Ubuntu Xenial kernel version
-    # we need a fix for VXLAN local tunneling.
-    if [[ "$VENV" =~ "dsvm-fullstack" ]]; then
-        # The OVS_BRANCH variable is used by git checkout. In the case below,
-        # we use openvswitch commit 138df3e563de9da0e5a4155b3534a69621495742
-        # that contains a fix for usage of VXLAN tunnels on a single node
-        # (commit 741f47cf35df2bfc7811b2cff75c9bb8d05fd26f) and is compatible
-        # with kernel 4.4.119
-        # NOTE(slaweq): Replace with a release tag when one is available.
-        # See commit 138df3e563de9da0e5a4155b3534a69621495742 (on the ovs repo).
-        OVS_BRANCH="138df3e563de9da0e5a4155b3534a69621495742"
-        compile_ovs_kernel_module
-    fi
-
-    # prepare base environment for ./stack.sh
-    load_rc_hook stack_base
-
-    # enable monitoring
-    load_rc_hook dstat
-    ;;
-
-"api"|"api-pecan"|"full-iptables_hybrid"|"full-pecan"|"dsvm-scenario-ovs"|"dsvm-scenario-linuxbridge")
+"api"|"api-pecan"|"full-pecan"|"dsvm-scenario-ovs")
     # TODO(ihrachys) consider feeding result of ext-list into tempest.conf
     load_rc_hook api_all_extensions
     if [ "${FLAVOR}" = "dvrskip" ]; then
         load_rc_hook disable_dvr_tests
     fi
     load_conf_hook quotas
+    load_rc_hook uplink_status_propagation
     load_rc_hook dns
     load_rc_hook qos
     load_rc_hook segments
     load_rc_hook trunk
+    load_rc_hook network_segment_range
     load_conf_hook vlan_provider
     load_conf_hook osprofiler
     load_conf_hook availability_zone
+    load_conf_hook tunnel_types
+    load_rc_hook log  # bug 1743463
+    load_conf_hook openvswitch_type_drivers
     if [[ "$VENV" =~ "dsvm-scenario" ]]; then
         load_rc_hook ubuntu_image
     fi
-    if [[ "$VENV" =~ "dsvm-scenario-linuxbridge" ]]; then
-        load_conf_hook iptables_verify
-    fi
     if [[ "$VENV" =~ "pecan" ]]; then
         load_conf_hook pecan
-    fi
-    if [[ "$VENV" =~ "iptables_hybrid" ]]; then
-        load_conf_hook iptables_hybrid
-    fi
-    if [[ "$VENV" != "dsvm-scenario-linuxbridge" ]]; then
-        load_conf_hook tunnel_types
-        load_rc_hook log  # bug 1743463
-    fi
-    if [[ "$VENV" =~ "dsvm-scenario-linuxbridge" ]]; then
-        # linuxbridge doesn't support gre
-        load_conf_hook linuxbridge_type_drivers
-    else
-        load_conf_hook openvswitch_type_drivers
     fi
     if [[ "$FLAVOR" = "dvrskip" ]]; then
         load_conf_hook disable_dvr

@@ -16,10 +16,12 @@
 from neutron_lib.agent import topics
 from neutron_lib.api.definitions import port_security as psec
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.api.definitions import uplink_status_propagation as usp
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as n_const
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api
+from neutron_lib import rpc as n_rpc
 from neutron_lib.services.qos import constants as qos_consts
 from oslo_log import log
 import oslo_messaging
@@ -29,7 +31,6 @@ from neutron.agent import _topics as n_topics
 from neutron.api.rpc.handlers import dvr_rpc
 from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
 from neutron.common import constants as c_const
-from neutron.common import rpc as n_rpc
 from neutron.db import l3_hamode_db
 from neutron.db import provisioning_blocks
 from neutron.plugins.ml2 import db as ml2_db
@@ -66,11 +67,16 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
             if port['status'] != new_status:
                 return new_status
 
+    @staticmethod
+    def _get_request_details(kwargs):
+        return (kwargs.get('agent_id'),
+                kwargs.get('host'),
+                kwargs.get('device'))
+
     def get_device_details(self, rpc_context, **kwargs):
         """Agent requests device details."""
-        agent_id = kwargs.get('agent_id')
-        device = kwargs.get('device')
-        host = kwargs.get('host')
+        agent_id, host, device = self._get_request_details(kwargs)
+
         # cached networks used for reducing number of network db calls
         # for server internal usage only
         cached_networks = kwargs.get('cached_networks')
@@ -151,7 +157,9 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
                  'port_security_enabled': port.get(psec.PORTSECURITY, True),
                  'qos_policy_id': port.get(qos_consts.QOS_POLICY_ID),
                  'network_qos_policy_id': network_qos_policy_id,
-                 'profile': port[portbindings.PROFILE]}
+                 'profile': port[portbindings.PROFILE],
+                 'propagate_uplink_status': port.get(
+                     usp.PROPAGATE_UPLINK_STATUS, False)}
         LOG.debug("Returning: %s", entry)
         return entry
 
@@ -223,9 +231,7 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
     def update_device_down(self, rpc_context, **kwargs):
         """Device no longer exists on agent."""
         # TODO(garyk) - live migration and port status
-        agent_id = kwargs.get('agent_id')
-        device = kwargs.get('device')
-        host = kwargs.get('host')
+        agent_id, host, device = self._get_request_details(kwargs)
         LOG.debug("Device %(device)s no longer exists at agent "
                   "%(agent_id)s",
                   {'device': device, 'agent_id': agent_id})
@@ -255,9 +261,7 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
 
     def update_device_up(self, rpc_context, **kwargs):
         """Device is up on agent."""
-        agent_id = kwargs.get('agent_id')
-        device = kwargs.get('device')
-        host = kwargs.get('host')
+        agent_id, host, device = self._get_request_details(kwargs)
         LOG.debug("Device %(device)s up at agent %(agent_id)s",
                   {'device': device, 'agent_id': agent_id})
         plugin = directory.get_plugin()
@@ -340,15 +344,15 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
             return
         port = port_context.current
         if (port['device_owner'] != n_const.DEVICE_OWNER_DVR_INTERFACE and
-            status == n_const.PORT_STATUS_ACTIVE and
-            port[portbindings.HOST_ID] != host and
-            not l3_hamode_db.is_ha_router_port(rpc_context,
-                                               port['device_owner'],
-                                               port['device_id'])):
-                # don't setup ACTIVE forwarding entries unless bound to this
-                # host or if it's an HA or DVR port (which is special-cased in
-                # the mech driver)
-                return
+                status == n_const.PORT_STATUS_ACTIVE and
+                port[portbindings.HOST_ID] != host and
+                not l3_hamode_db.is_ha_router_port(rpc_context,
+                                                   port['device_owner'],
+                                                   port['device_id'])):
+            # don't setup ACTIVE forwarding entries unless bound to this
+            # host or if it's an HA or DVR port (which is special-cased in
+            # the mech driver)
+            return
         port_context.current['status'] = status
         port_context.current[portbindings.HOST_ID] = host
         if status == n_const.PORT_STATUS_ACTIVE:

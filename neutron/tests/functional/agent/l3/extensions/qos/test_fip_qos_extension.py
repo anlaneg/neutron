@@ -15,12 +15,12 @@
 
 import mock
 from neutron_lib import constants
+from neutron_lib import exceptions
 from oslo_utils import uuidutils
 
 from neutron.agent.l3 import agent as neutron_l3_agent
 from neutron.agent.l3.extensions.qos import fip as fip_qos
 from neutron.agent.linux import ip_lib
-from neutron.common import exceptions
 from neutron.common import utils as common_utils
 from neutron.objects.qos import policy
 from neutron.objects.qos import rule
@@ -173,6 +173,23 @@ class TestL3AgentFipQosExtension(L3AgentFipQoSExtensionTestFramework):
     def test_ha_router_fip_qos_egress(self):
         self._test_centralized_routers(enable_ha=True,
                                        ingress=False, egress=True)
+
+    def _test_router_with_pf_fips_qos(self, enable_ha):
+        router_info = self.generate_router_info(
+            enable_ha=enable_ha,
+            enable_pf_floating_ip=True,
+            qos_policy_id=TEST_POLICY_ID1)
+        ri = self.manage_router(self.agent, router_info)
+        self._assert_bandwidth_limit_rule_is_set(
+            ri, '19.4.4.4', self.test_bw_limit_rule_1)
+        self._assert_bandwidth_limit_rule_is_set(
+            ri, '19.4.4.4', self.test_bw_limit_rule_2)
+
+    def test_ha_router_with_pf_fips_qos(self):
+        self._test_router_with_pf_fips_qos(enable_ha=True)
+
+    def test_legacy_router_with_pf_fips_qos(self):
+        self._test_router_with_pf_fips_qos(enable_ha=False)
 
 
 class TestL3AgentFipQosExtensionDVR(

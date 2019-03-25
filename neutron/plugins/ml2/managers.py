@@ -23,6 +23,7 @@ from neutron_lib import constants
 from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as exc
 from neutron_lib.exceptions import multiprovidernet as mpnet_exc
+from neutron_lib.exceptions import placement as place_exc
 from neutron_lib.exceptions import vlantransparent as vlan_exc
 from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
@@ -197,6 +198,13 @@ class TypeManager(stevedore.named.NamedExtensionManager):
             LOG.info("Initializing driver for type '%s'", network_type)
             driver.obj.initialize()
 
+    def initialize_network_segment_range_support(self):
+        for network_type, driver in self.drivers.items():
+            if network_type in constants.NETWORK_SEGMENT_RANGE_TYPES:
+                LOG.info("Initializing driver network segment range support "
+                         "for type '%s'", network_type)
+                driver.obj.initialize_network_segment_range_support()
+
     def _add_network_segment(self, context, network_id, segment,
                              segment_index=0):
         #保存申请好的网络段
@@ -207,6 +215,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
         """Call type drivers to create network segments."""
         #分配一个网络段
         segments = self._process_provider_create(network)
+        filters = {'project_id': tenant_id}
         with db_api.CONTEXT_WRITER.using(context):
             network_id = network['id']
             if segments:
@@ -214,17 +223,19 @@ class TypeManager(stevedore.named.NamedExtensionManager):
                 for segment_index, segment in enumerate(segments):
                     #尝试预留
                     segment = self.reserve_provider_segment(
-                        context, segment)
+                        context, segment, filters=filters)
                     self._add_network_segment(context, network_id, segment,
                                               segment_index)
             elif (cfg.CONF.ml2.external_network_type and
                   self._get_attribute(network, extnet_apidef.EXTERNAL)):
                 #配置了external_network_type且当前当前network为external
-                segment = self._allocate_ext_net_segment(context)
+                segment = self._allocate_ext_net_segment(
+                    context, filters=filters)
                 self._add_network_segment(context, network_id, segment)
             else:
                 #未指定segments,需要为租户自动申请
-                segment = self._allocate_tenant_net_segment(context)
+                segment = self._allocate_tenant_net_segment(
+                    context, filters=filters)
                 self._add_network_segment(context, network_id, segment)
 
     def reserve_network_segment(self, context, segment_data):
@@ -265,36 +276,36 @@ class TypeManager(stevedore.named.NamedExtensionManager):
             msg = _("network_type value '%s' not supported") % network_type
             raise exc.InvalidInput(error_message=msg)
 
-    def reserve_provider_segment(self, context, segment):
+    def reserve_provider_segment(self, context, segment, filters=None):
         network_type = segment.get(api.NETWORK_TYPE)
         driver = self.drivers.get(network_type)
         if isinstance(driver.obj, api.TypeDriver):
             return driver.obj.reserve_provider_segment(context.session,
-                                                       segment)
+                                                       segment, filters)
         else:
             return driver.obj.reserve_provider_segment(context,
-                                                       segment)
+                                                       segment, filters)
 
-    def _allocate_segment(self, context, network_type):
+    def _allocate_segment(self, context, network_type, filters=None):
         #分配网络segment
         driver = self.drivers.get(network_type)
         if isinstance(driver.obj, api.TypeDriver):
-            return driver.obj.allocate_tenant_segment(context.session)
+            return driver.obj.allocate_tenant_segment(context.session, filters)
         else:
-            return driver.obj.allocate_tenant_segment(context)
+            return driver.obj.allocate_tenant_segment(context, filters)
 
-    def _allocate_tenant_net_segment(self, context):
+    def _allocate_tenant_net_segment(self, context, filters=None):
         #尝试配置的所有租户网络类型，如果有一个可以分配成功，则返回
         for network_type in self.tenant_network_types:
-            segment = self._allocate_segment(context, network_type)
+            segment = self._allocate_segment(context, network_type, filters)
             if segment:
                 return segment
         raise exc.NoNetworkAvailable()
 
-    def _allocate_ext_net_segment(self, context):
+    def _allocate_ext_net_segment(self, context, filters=None):
         #申请外部网络段
         network_type = cfg.CONF.ml2.external_network_type
-        segment = self._allocate_segment(context, network_type)
+        segment = self._allocate_segment(context, network_type, filters)
         if segment:
             return segment
         raise exc.NoNetworkAvailable()
@@ -354,6 +365,13 @@ class TypeManager(stevedore.named.NamedExtensionManager):
                           "network type is not supported.", segment)
         else:
             LOG.debug("No segment found with id %(segment_id)s", segment_id)
+
+    def update_network_segment_range_allocations(self, network_type):
+        driver = self.drivers.get(network_type)
+        driver.obj.update_network_segment_range_allocations()
+
+    def network_type_supported(self, network_type):
+        return bool(network_type in self.drivers)
 
 
 class MechanismManager(stevedore.named.NamedExtensionManager):
@@ -778,12 +796,18 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                        'vnic_type': binding.vnic_type,
                        'segments': context.network.network_segments})
 
-    def _bind_port_level(self, context, level, segments_to_bind):
+    def _bind_port_level(self, context, level, segments_to_bind,
+                         drivers=None, redoing_bottom=False):
+        if drivers is None:
+            drivers = self.ordered_mech_drivers
+
         binding = context._binding
         port_id = context.current['id']
-        LOG.debug("Attempting to bind port %(port)s on host %(host)s "
-                  "at level %(level)s using segments %(segments)s",
+        LOG.debug("Attempting to bind port %(port)s by drivers %(drivers)s "
+                  "on host %(host)s at level %(level)s using "
+                  "segments %(segments)s",
                   {'port': port_id,
+                   'drivers': ','.join([driver.name for driver in drivers]),
                    'host': context.host,
                    'level': level,
                    'segments': segments_to_bind})
@@ -796,7 +820,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                        'host': context.host})
             return False
 
-        for driver in self.ordered_mech_drivers:
+        for driver in drivers:
             #检查注册的机制类驱动能不能绑定
             if not self._check_driver_to_bind(driver, segments_to_bind,
                                               context._binding_levels):
@@ -833,6 +857,61 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                             #丢弃掉对相应驱动的binding尝试，尝试下一个驱动
                             context._pop_binding_level()
                     else:
+                        # NOTE(bence romsics): Consider: "In case of
+                        # hierarchical port binding binding_profile.allocation
+                        # [decided and sent by Placement and Nova]
+                        # is meant to drive the binding only on the binding
+                        # level that represents the closest physical interface
+                        # to the nova server." Link to spec:
+                        #
+                        # https://review.openstack.org/#/c/508149/14/specs\
+                        #        /rocky/minimum-bandwidth-\
+                        #        allocation-placement-api.rst@582
+                        #
+                        # But we cannot tell if a binding level is
+                        # the bottom binding level before set_binding()
+                        # gets called, and that's already too late. So we
+                        # must undo the last binding after set_binding()
+                        # was called and redo the last level trying to
+                        # bind only with one driver as inferred from
+                        # the allocation. In order to undo the binding
+                        # here we must also assume that each driver's
+                        # bind_port() implementation is side effect free
+                        # beyond calling set_binding().
+                        #
+                        # Also please note that technically we allow for
+                        # a redo to call continue_binding() instead of
+                        # set_binding() and by that turn what was supposed
+                        # to be the bottom level into a non-bottom binding
+                        # level. A thorough discussion is recommended if
+                        # you think of taking advantage of this.
+                        #
+                        # Also if we find use cases requiring
+                        # diamond-shaped selections of drivers on different
+                        # levels (eg. driverA and driverB can be both
+                        # a valid choice on level 0, but on level 1 both
+                        # previous choice leads to driverC) then we need
+                        # to restrict segment selection too based on
+                        # traits of the allocated resource provider on
+                        # the top binding_level (==0).
+                        if (context.current['binding:profile'] is not None and
+                                'allocation' in context.current[
+                                    'binding:profile'] and
+                                not redoing_bottom):
+                            LOG.debug(
+                                "Undo bottom bound level and redo it "
+                                "according to binding_profile.allocation, "
+                                "resource provider uuid: %s",
+                                context.current[
+                                    'binding:profile']['allocation'])
+                            context._pop_binding_level()
+                            context._unset_binding()
+                            return self._bind_port_level(
+                                context, level, segments_to_bind,
+                                drivers=[self._infer_driver_from_allocation(
+                                    context)],
+                                redoing_bottom=True)
+
                         # Binding complete.
                         # 绑定成功
                         LOG.debug("Bound port: %(port)s, "
@@ -850,6 +929,59 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                 LOG.exception("Mechanism driver %s failed in "
                               "bind_port",
                               driver.name)
+
+    def _infer_driver_from_allocation(self, context):
+        """Choose mechanism driver as implied by allocation in placement.
+
+        :param context: PortContext instance describing the port
+        :returns: a single MechanismDriver instance
+
+        Ports allocated to a resource provider (ie. a physical network
+        interface) in Placement have the UUID of the provider in their
+        binding:profile.allocation. The choice of a physical network
+        interface (as recorded in the allocation) implies a choice of
+        mechanism driver too. When an allocation was received we expect
+        exactly one mechanism driver to be responsible for that physical
+        network interface resource provider.
+        """
+
+        drivers = []
+        for driver in self.ordered_mech_drivers:
+            if driver.obj.responsible_for_ports_allocation(context):
+                drivers.append(driver)
+
+        if len(drivers) == 0:
+            LOG.error("Failed to bind port %(port)s on host "
+                      "%(host)s allocated on resource provider "
+                      "%(rsc_provider)s, because no mechanism driver "
+                      "reports being responsible",
+                      {'port': context.current['id'],
+                       'host': context.host,
+                       'rsc_provider': context.current[
+                           'binding:profile']['allocation']})
+            raise place_exc.UnknownResourceProvider(
+                rsc_provider=context.current['binding:profile']['allocation'])
+
+        if len(drivers) >= 2:
+            raise place_exc.AmbiguousResponsibilityForResourceProvider(
+                rsc_provider=context.current['binding:profile']['allocation'],
+                drivers=','.join([driver.name for driver in drivers]))
+
+        # NOTE(bence romsics): The error conditions for raising either
+        # UnknownResourceProvider or AmbiguousResponsibilityForResourceProvider
+        # are pretty static therefore the usual 10-times-retry of a binding
+        # failure could easily be unnecessary in those cases. However at this
+        # point special handling of these exceptions in the binding retry loop
+        # seems like premature optimization to me since these exceptions are
+        # always a sign of a misconfigured neutron deployment.
+
+        LOG.debug("Restricting possible bindings of port %(port)s "
+                  "(as inferred from placement allocation) to "
+                  "mechanism driver '%(driver)s'",
+                  {'port': context.current['id'],
+                   'driver': drivers[0].name})
+
+        return drivers[0]
 
     def is_host_filtering_supported(self):
         #所有driver支持过滤时返回True

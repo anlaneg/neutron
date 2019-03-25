@@ -27,7 +27,10 @@ from neutron.agent.l3 import router_info as router
 from neutron.agent.linux import external_process
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import keepalived
+from neutron.common import constants as const
 from neutron.common import utils as common_utils
+from neutron.extensions import revisions
+from neutron.extensions import timestamp
 
 LOG = logging.getLogger(__name__)
 HA_DEV_PREFIX = 'ha-'
@@ -54,7 +57,7 @@ class HaRouterNamespace(namespaces.RouterNamespace):
     def create(self):
         super(HaRouterNamespace, self).create(ipv6_forwarding=False)
         # HA router namespaces should not have ip_nonlocal_bind enabled
-        ip_lib.set_ip_nonlocal_bind_for_namespace(self.name)
+        ip_lib.set_ip_nonlocal_bind_for_namespace(self.name, 0)
 
 
 class HaRouter(router.RouterInfo):
@@ -292,7 +295,12 @@ class HaRouter(router.RouterInfo):
         ipv6_lladdr = ip_lib.get_ipv6_lladdr(device.link.address)
 
         if self._should_delete_ipv6_lladdr(ipv6_lladdr):
+            self.driver.configure_ipv6_ra(self.ha_namespace, interface_name,
+                                          const.ACCEPT_RA_DISABLED)
             device.addr.flush(n_consts.IP_VERSION_6)
+        else:
+            self.driver.configure_ipv6_ra(self.ha_namespace, interface_name,
+                                          const.ACCEPT_RA_WITHOUT_FORWARDING)
 
         self._remove_vip(ipv6_lladdr)
         self._add_vip(ipv6_lladdr, interface_name, scope='link')
@@ -368,7 +376,10 @@ class HaRouter(router.RouterInfo):
                 '--pid_file=%s' % pid_file,
                 '--state_path=%s' % self.agent_conf.state_path,
                 '--user=%s' % os.geteuid(),
-                '--group=%s' % os.getegid()]
+                '--group=%s' % os.getegid(),
+                '--AGENT-root_helper=%s' % self.agent_conf.AGENT.root_helper,
+                '--AGENT-root_helper_daemon=%s' %
+                self.agent_conf.AGENT.root_helper_daemon]
             return cmd
 
         return callback
@@ -395,10 +406,8 @@ class HaRouter(router.RouterInfo):
             pm.disable(sig=str(int(signal.SIGKILL)))
 
     def update_initial_state(self, callback):
-        ha_device = ip_lib.IPDevice(
-            self.get_ha_device_name(),
-            self.ha_namespace)
-        addresses = ha_device.addr.list()
+        addresses = ip_lib.get_devices_with_ip(self.ha_namespace,
+                                               name=self.get_ha_device_name())
         cidrs = (address['cidr'] for address in addresses)
         ha_cidr = self._get_primary_vip()
         state = 'master' if ha_cidr in cidrs else 'backup'
@@ -410,7 +419,8 @@ class HaRouter(router.RouterInfo):
         def _get_filtered_dict(d, ignore):
             return {k: v for k, v in d.items() if k not in ignore}
 
-        keys_to_ignore = set([portbindings.HOST_ID])
+        keys_to_ignore = set([portbindings.HOST_ID, timestamp.UPDATED,
+                              revisions.REVISION])
         port1_filtered = _get_filtered_dict(port1, keys_to_ignore)
         port2_filtered = _get_filtered_dict(port2, keys_to_ignore)
         return port1_filtered == port2_filtered
@@ -444,7 +454,6 @@ class HaRouter(router.RouterInfo):
         else:
             # We are not the master node, so no need to delete ip addresses.
             self.driver.unplug(interface_name,
-                               bridge=self.agent_conf.external_network_bridge,
                                namespace=self.ns_name,
                                prefix=router.EXTERNAL_DEV_PREFIX)
 

@@ -67,27 +67,25 @@ The following are the current Neutron Lieutenants.
 +========================+===========================+======================+
 | API                    | Akihiro Motoki            | amotoki              |
 +------------------------+---------------------------+----------------------+
-| DB                     | Ann Taraday               | ataraday             |
+| DB                     | Nate Johnston             | njohnston            |
 +------------------------+---------------------------+----------------------+
 | Built-In Control Plane | Miguel Lavalle            | mlavalle             |
 +------------------------+---------------------------+----------------------+
 | Client                 | Akihiro Motoki            | amotoki              |
-|                        +---------------------------+----------------------+
-|                        | Abhishek Raut             | abhiraut             |
 +------------------------+---------------------------+----------------------+
 | Docs                   | Boden Russell             | boden                |
 +------------------------+---------------------------+----------------------+
-| Infra                  | Ihar Hrachyshka           | ihrachys             |
-|                        +---------------------------+----------------------+
-|                        | Armando Migliaccio        | armax                |
+| Infra                  | Slawek Kaplonski          | slawek               |
 |                        +---------------------------+----------------------+
 |                        | YAMAMOTO Takashi          | yamamoto             |
 +------------------------+---------------------------+----------------------+
 | L3                     | Brian Haley               | haleyb               |
-+                        +---------------------------+----------------------+
+|                        +---------------------------+----------------------+
 |                        | Miguel Lavalle            | mlavalle             |
+|                        +---------------------------+----------------------+
+|                        | Yulong Liu                | liuyulong            |
 +------------------------+---------------------------+----------------------+
-| Testing                | Jakub Libosvar            | jlibosva             |
+| Testing                | Hongbin Lu                | hongbin              |
 +------------------------+---------------------------+----------------------+
 
 Some notes on the above:
@@ -259,7 +257,7 @@ have.
 Adding or Removing Core Reviewers
 ---------------------------------
 
-A new Neutron core reviewer may be proposed at anytime on the openstack-dev
+A new Neutron core reviewer may be proposed at anytime on the openstack-discuss
 mailing list. Typically, the Lieutenant for a given area will propose a new
 core reviewer for their specific area of coverage, though the Neutron PTL may
 propose new core reviewers as well. The proposal is typically made after

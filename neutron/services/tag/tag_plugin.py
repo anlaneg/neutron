@@ -13,13 +13,13 @@
 #
 
 from neutron_lib.db import api as db_api
+from neutron_lib.db import model_query
+from neutron_lib.db import resource_extend
 from neutron_lib.objects import exceptions as obj_exc
 from neutron_lib.plugins import directory
 from oslo_log import helpers as log_helpers
 from sqlalchemy.orm import exc
 
-from neutron.db import _model_query as model_query
-from neutron.db import _resource_extend as resource_extend
 from neutron.db import common_db_mixin
 from neutron.db import standard_attr
 from neutron.extensions import tagging
@@ -103,7 +103,7 @@ class TagPlugin(common_db_mixin.CommonDbMixin, tagging.TagPluginBase):
             return
         try:
             tag_obj.Tag(context, standard_attr_id=res.standard_attr_id,
-                tag=tag).create()
+                        tag=tag).create()
         except obj_exc.NeutronDbObjectDuplicateEntry:
             pass
 
@@ -116,6 +116,6 @@ class TagPlugin(common_db_mixin.CommonDbMixin, tagging.TagPluginBase):
     @log_helpers.log_method_call
     def delete_tag(self, context, resource, resource_id, tag):
         res = self._get_resource(context, resource, resource_id)
-        if not tag_obj.Tag.delete_objects(context,
-            tag=tag, standard_attr_id=res.standard_attr_id):
+        if not tag_obj.Tag.delete_objects(
+            context, tag=tag, standard_attr_id=res.standard_attr_id):
             raise tagging.TagNotFound(tag=tag)

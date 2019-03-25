@@ -116,6 +116,8 @@ class Host(fixtures.Fixture):
 
         if self.host_desc.l2_agent_type == constants.AGENT_TYPE_OVS:
             self.setup_host_with_ovs_agent()
+        elif self.host_desc.l2_agent_type == constants.AGENT_TYPE_NIC_SWITCH:
+            self.setup_host_with_sriov_agent()
         elif self.host_desc.l2_agent_type == constants.AGENT_TYPE_LINUXBRIDGE:
             self.setup_host_with_linuxbridge_agent()
         if self.host_desc.l3_agent:
@@ -141,15 +143,15 @@ class Host(fixtures.Fixture):
             self.local_ip, test_name=self.test_name)
         self.useFixture(agent_cfg_fixture)
 
+        self.br_phys = self.useFixture(
+            net_helpers.OVSBridgeFixture(
+                agent_cfg_fixture.get_br_phys_name())).bridge
         if self.env_desc.tunneling_enabled:
             self.useFixture(
                 net_helpers.OVSBridgeFixture(
                     agent_cfg_fixture.get_br_tun_name())).bridge
             self.connect_to_central_network_via_tunneling()
         else:
-            self.br_phys = self.useFixture(
-                net_helpers.OVSBridgeFixture(
-                    agent_cfg_fixture.get_br_phys_name())).bridge
             self.connect_to_central_network_via_vlans(self.br_phys)
 
         self.ovs_agent = self.useFixture(
@@ -163,10 +165,6 @@ class Host(fixtures.Fixture):
                     self.env_desc, self.host_desc,
                     self.neutron_config.temp_dir,
                     self.ovs_agent.agent_cfg_fixture.get_br_int_name()))
-            br_ex = self.useFixture(
-                net_helpers.OVSBridgeFixture(
-                    self.l3_agent_cfg_fixture.get_external_bridge())).bridge
-            self.connect_to_central_network_via_vlans(br_ex)
 
         if self.host_desc.dhcp_agent:
             self.dhcp_agent_cfg_fixture = self.useFixture(
@@ -174,6 +172,16 @@ class Host(fixtures.Fixture):
                     self.env_desc, self.host_desc,
                     self.neutron_config.temp_dir,
                     self.ovs_agent.agent_cfg_fixture.get_br_int_name()))
+
+    def setup_host_with_sriov_agent(self):
+        agent_cfg_fixture = config.SRIOVConfigFixture(
+            self.env_desc, self.host_desc, self.neutron_config.temp_dir,
+            self.local_ip)
+        self.useFixture(agent_cfg_fixture)
+        self.sriov_agent = self.useFixture(
+            process.SRIOVAgentFixture(
+                self.env_desc, self.host_desc,
+                self.test_name, self.neutron_config, agent_cfg_fixture))
 
     def setup_host_with_linuxbridge_agent(self):
         # First we need to provide connectivity for agent to prepare proper
@@ -300,6 +308,14 @@ class Host(fixtures.Fixture):
         self.agents['ovs'] = agent
 
     @property
+    def sriov_agent(self):
+        return self.agents['sriov']
+
+    @sriov_agent.setter
+    def sriov_agent(self, agent):
+        self.agents['sriov'] = agent
+
+    @property
     def linuxbridge_agent(self):
         return self.agents['linuxbridge']
 
@@ -313,6 +329,8 @@ class Host(fixtures.Fixture):
             return self.linuxbridge_agent
         elif self.host_desc.l2_agent_type == constants.AGENT_TYPE_OVS:
             return self.ovs_agent
+        elif self.host_desc.l2_agent_type == constants.AGENT_TYPE_NIC_SWITCH:
+            return self.sriov_agent
 
 
 class Environment(fixtures.Fixture):

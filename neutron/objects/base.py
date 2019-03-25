@@ -42,14 +42,6 @@ LOG = logging.getLogger(__name__)
 _NO_DB_MODEL = object()
 
 
-def get_updatable_fields(cls, fields):
-    fields = fields.copy()
-    for field in cls.fields_no_update:
-        if field in fields:
-            del fields[field]
-    return fields
-
-
 def get_object_class_by_model(model):
     for obj_class in NeutronObjectRegistry.obj_classes().values():
         obj_class = obj_class[0]
@@ -61,6 +53,25 @@ def get_object_class_by_model(model):
 def register_filter_hook_on_model(model, filter_name):
     obj_class = get_object_class_by_model(model)
     obj_class.add_extra_filter_name(filter_name)
+
+
+class LazyQueryIterator(six.Iterator):
+    def __init__(self, obj_class, lazy_query):
+        self.obj_class = obj_class
+        self.context = None
+        self.query = lazy_query
+
+    def __iter__(self):
+        self.results = self.query.all()
+        self.i = 0
+        return self
+
+    def __next__(self):
+        if self.i >= len(self.results):
+            raise StopIteration()
+        item = self.obj_class._load_object(self.context, self.results[self.i])
+        self.i += 1
+        return item
 
 
 class Pager(object):
@@ -139,8 +150,14 @@ class NeutronObject(obj_base.VersionedObject,
     synthetic_fields = []
     extra_filter_names = set()
 
+    # To use lazy queries for child objects, you must set the ORM
+    # relationship in the db model to 'dynamic'. By default, all
+    # children are eager loaded.
+    lazy_fields = set()
+
     def __init__(self, context=None, **kwargs):
         super(NeutronObject, self).__init__(context, **kwargs)
+        self._load_synthetic_fields = True
         self.obj_set_defaults()
 
     def _synthetic_fields_items(self):
@@ -229,7 +246,7 @@ class NeutronObject(obj_base.VersionedObject,
         return obj
 
     @classmethod
-    def get_object(cls, context, **kwargs):
+    def get_object(cls, context, fields=None, **kwargs):
         raise NotImplementedError()
 
     @classmethod
@@ -258,7 +275,11 @@ class NeutronObject(obj_base.VersionedObject,
     @classmethod
     @abc.abstractmethod
     def get_objects(cls, context, _pager=None, validate_filters=True,
-                    **kwargs):
+                    fields=None, **kwargs):
+        raise NotImplementedError()
+
+    @classmethod
+    def get_values(cls, context, field, validate_filters=True, **kwargs):
         raise NotImplementedError()
 
     @classmethod
@@ -433,12 +454,20 @@ class NeutronDbObject(NeutronObject):
         '''Return a database model that persists object data.'''
         return self._captured_db_model
 
+    def _set_lazy_contexts(self, fields, context):
+        for field in self.lazy_fields.intersection(fields):
+            if isinstance(fields[field], LazyQueryIterator):
+                fields[field].context = context
+
     def from_db_object(self, db_obj):
         fields = self.modify_fields_from_db(db_obj)
+        if self.lazy_fields:
+            self._set_lazy_contexts(fields, self.obj_context)
         for field in self.fields:
             if field in fields and not self.is_synthetic(field):
                 setattr(self, field, fields[field])
-        self.load_synthetic_db_fields(db_obj)
+        if self._load_synthetic_fields:
+            self.load_synthetic_db_fields(db_obj)
         self._captured_db_model = db_obj
         self.obj_reset_changes()
 
@@ -463,11 +492,22 @@ class NeutronDbObject(NeutronObject):
         :param fields: dict of fields from NeutronDbObject
         :return: modified dict of fields
         """
+        for k, v in fields.items():
+            if isinstance(v, LazyQueryIterator):
+                fields[k] = list(v)
         result = copy.deepcopy(dict(fields))
         for field, field_db in cls.fields_need_translation.items():
             if field in result:
                 result[field_db] = result.pop(field)
         return result
+
+    @classmethod
+    def _get_lazy_iterator(cls, field, appender_query):
+        if field not in cls.lazy_fields:
+            raise KeyError(_('Field %s is not a lazy query field') % field)
+        n_obj_classes = NeutronObjectRegistry.obj_classes()
+        n_obj = n_obj_classes.get(cls.fields[field].objname)
+        return LazyQueryIterator(n_obj[0], appender_query)
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
@@ -494,11 +534,18 @@ class NeutronDbObject(NeutronObject):
             # don't allow sqlalchemy lists to propagate outside
             if isinstance(v, orm.collections.InstrumentedList):
                 result[k] = list(v)
+            if isinstance(v, orm.dynamic.AppenderQuery):
+                result[k] = cls._get_lazy_iterator(k, v)
         return result
 
     @classmethod
-    def _load_object(cls, context, db_obj):
+    def _load_object(cls, context, db_obj, fields=None):
         obj = cls(context)
+
+        if fields is not None and len(fields) != 0:
+            if len(set(fields).intersection(set(cls.synthetic_fields))) == 0:
+                obj._load_synthetic_fields = False
+
         obj.from_db_object(db_obj)
         return obj
 
@@ -540,13 +587,18 @@ class NeutronDbObject(NeutronObject):
         return db_api.autonested_transaction(context.session)
 
     @classmethod
-    def get_object(cls, context, **kwargs):
+    def get_object(cls, context, fields=None, **kwargs):
         """Fetch a single object
 
         Return the first result of given context or None if the result doesn't
         contain any row. Next, convert it to a versioned object.
 
         :param context:
+        :param fields: indicate which fields the caller is interested in
+                       using. Note that currently this is limited to
+                       avoid loading synthetic fields when possible, and
+                       does not affect db queries. Default is None, which
+                       is the same as []. Example: ['id', 'name']
         :param kwargs: multiple keys defined by key=value pairs
         :return: single object of NeutronDbObject class or None
         """
@@ -561,11 +613,11 @@ class NeutronDbObject(NeutronObject):
             db_obj = obj_db_api.get_object(
                 cls, context, **cls.modify_fields_to_db(kwargs))
             if db_obj:
-                return cls._load_object(context, db_obj)
+                return cls._load_object(context, db_obj, fields=fields)
 
     @classmethod
     def get_objects(cls, context, _pager=None, validate_filters=True,
-                    **kwargs):
+                    fields=None, **kwargs):
         """Fetch a list of objects
 
         Fetch all results from DB and convert them to versioned objects.
@@ -575,6 +627,11 @@ class NeutronDbObject(NeutronObject):
                        criteria
         :param validate_filters: Raises an error in case of passing an unknown
                                  filter
+        :param fields: indicate which fields the caller is interested in
+                       using. Note that currently this is limited to
+                       avoid loading synthetic fields when possible, and
+                       does not affect db queries. Default is None, which
+                       is the same as []. Example: ['id', 'name']
         :param kwargs: multiple keys defined by key=value pairs
         :return: list of objects of NeutronDbObject class or empty list
         """
@@ -583,7 +640,46 @@ class NeutronDbObject(NeutronObject):
         with cls.db_context_reader(context):
             db_objs = obj_db_api.get_objects(
                 cls, context, _pager=_pager, **cls.modify_fields_to_db(kwargs))
-            return [cls._load_object(context, db_obj) for db_obj in db_objs]
+
+            return [cls._load_object(context, db_obj, fields=fields)
+                    for db_obj in db_objs]
+
+    @classmethod
+    def get_values(cls, context, field, validate_filters=True, **kwargs):
+        """Fetch a list of values of a specific object's field
+
+        Fetch a specific column from DB.
+
+        :param context:
+        :param field: a specific field of the object
+        :param validate_filters: Raises an error in case of passing an unknown
+                                 filter
+        :param kwargs: multiple keys defined by key=value pairs
+        :return: list of objects of NeutronDbObject class or empty list
+        """
+        cls._validate_field(field)
+        db_field = cls.fields_need_translation.get(field, field)
+        if validate_filters:
+            cls.validate_filters(**kwargs)
+        with cls.db_context_reader(context):
+            db_values = obj_db_api.get_values(
+                cls, context, db_field, **cls.modify_fields_to_db(kwargs))
+            obj = cls(context)
+            values = []
+            for db_value in db_values:
+                value = cls.modify_fields_from_db({
+                    db_field: db_value}).get(field)
+                value = cls.fields[field].coerce(obj, field, value)
+                values.append(value)
+
+            return values
+
+    @classmethod
+    def _validate_field(cls, field):
+        if field not in cls.fields or cls.is_synthetic(field):
+            msg = _("Get value of field '%(field)s' is not supported by "
+                    "object '%(object)s'.") % {'field': field, 'object': cls}
+            raise n_exc.InvalidInput(error_message=msg)
 
     @classmethod
     def update_object(cls, context, values, validate_filters=True, **kwargs):
@@ -847,6 +943,6 @@ class NeutronDbObject(NeutronObject):
         if validate_filters:
             cls.validate_filters(**kwargs)
         # Succeed if at least a single object matches; no need to fetch more
-        return bool(obj_db_api.get_object(
+        return bool(obj_db_api.count(
             cls, context, **cls.modify_fields_to_db(kwargs))
         )

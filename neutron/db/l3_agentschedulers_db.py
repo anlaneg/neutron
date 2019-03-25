@@ -121,7 +121,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         router_id = router['id']
         agent_id = agent['id']
         bindings = rb_obj.RouterL3AgentBinding.get_objects(context,
-                          router_id=router_id)
+                                                           router_id=router_id)
         if not bindings:
             return True
         for binding in bindings:
@@ -213,7 +213,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         # the routers should be retained. This flag will be used
         # to check if there are valid routers in this agent.
         retain_router = self._check_router_retain_needed(context, router,
-            agent.host)
+                                                         agent.host)
         if retain_router:
             l3_notifier.routers_updated_on_host(
                 context, [router_id], agent.host)
@@ -262,8 +262,8 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         new_hosts = [agent['host'] for agent in new_agents]
         router = self.get_router(context, router_id)
         for host in set(old_hosts) - set(new_hosts):
-            retain_router = self._check_router_retain_needed(context,
-                router, host)
+            retain_router = self._check_router_retain_needed(
+                context, router, host)
             if retain_router:
                 l3_notifier.routers_updated_on_host(
                     context, [router_id], host)
@@ -313,6 +313,13 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
             return []
         return self._get_router_ids_for_agent(context, agent, router_ids)
 
+    def get_host_ha_router_count(self, context, host):
+        router_ids = self.list_router_ids_on_host(context, host)
+        up_routers = l3_objs.Router.get_objects(context, id=router_ids,
+                                                admin_state_up=True)
+        return len(l3_objs.RouterExtraAttributes.get_objects(
+            context, router_id=[obj.id for obj in up_routers], ha=True))
+
     def _get_router_ids_for_agent(self, context, agent, router_ids):
         """Get IDs of routers that the agent should host
 
@@ -355,9 +362,10 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         record_objs = rb_obj.RouterL3AgentBinding.get_objects(
                 context, router_id=router_ids)
         if admin_state_up is not None:
-            l3_agents = ag_obj.Agent.get_objects(context,
-                     id=[obj.l3_agent_id for obj in record_objs],
-                     admin_state_up=admin_state_up)
+            l3_agents = ag_obj.Agent.get_objects(
+                context,
+                id=[obj.l3_agent_id for obj in record_objs],
+                admin_state_up=admin_state_up)
         else:
             l3_agents = [
                 ag_obj.Agent.get_object(context, id=obj.l3_agent_id)

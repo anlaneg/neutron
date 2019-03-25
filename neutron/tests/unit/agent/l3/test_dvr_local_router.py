@@ -100,9 +100,8 @@ class TestDvrRouterOperations(base.BaseTestCase):
         self.mock_ip = mock.MagicMock()
         ip_cls.return_value = self.mock_ip
 
-        ip_rule = mock.patch('neutron.agent.linux.ip_lib.IPRule').start()
-        self.mock_rule = mock.MagicMock()
-        ip_rule.return_value = self.mock_rule
+        self.mock_delete_ip_rule = mock.patch.object(ip_lib,
+                                                     'delete_ip_rule').start()
 
         ip_dev = mock.patch('neutron.agent.linux.ip_lib.IPDevice').start()
         self.mock_ip_dev = mock.MagicMock()
@@ -304,8 +303,9 @@ class TestDvrRouterOperations(base.BaseTestCase):
 
     @mock.patch.object(ip_lib, 'send_ip_addr_adv_notif')
     @mock.patch.object(ip_lib, 'IPDevice')
-    @mock.patch.object(ip_lib, 'IPRule')
-    def test_floating_ip_added_dist(self, mIPRule, mIPDevice, mock_adv_notif):
+    @mock.patch.object(ip_lib, 'add_ip_rule')
+    def test_floating_ip_added_dist(self, mock_add_ip_rule, mIPDevice,
+                                    mock_adv_notif):
         router = mock.MagicMock()
         ri = self._create_router(router)
         ri.ex_gw_port = ri.router['gw_port']
@@ -340,25 +340,24 @@ class TestDvrRouterOperations(base.BaseTestCase):
         ri.fip_ns.local_subnets.allocate.return_value = subnet
         ip_cidr = common_utils.ip_to_cidr(fip['floating_ip_address'])
         ri.floating_ip_added_dist(fip, ip_cidr)
-        mIPRule().rule.add.assert_called_with(ip='192.168.0.1',
-                                              table=16,
-                                              priority=FIP_PRI)
+        mock_add_ip_rule.assert_called_with(
+            namespace=ri.router_namespace.name, ip='192.168.0.1',
+            table=16, priority=FIP_PRI)
         ri.fip_ns.local_subnets.allocate.assert_not_called()
 
         # Validate that fip_ns.local_subnets is called when
         # ri.rtr_fip_subnet is None
         ri.rtr_fip_subnet = None
         ri.floating_ip_added_dist(fip, ip_cidr)
-        mIPRule().rule.add.assert_called_with(ip='192.168.0.1',
-                                              table=16,
-                                              priority=FIP_PRI)
+        mock_add_ip_rule.assert_called_with(
+            namespace=ri.router_namespace.name, ip='192.168.0.1',
+            table=16, priority=FIP_PRI)
         ri.fip_ns.local_subnets.allocate.assert_called_once_with(ri.router_id)
         # TODO(mrsmith): add more asserts
 
     @mock.patch.object(ip_lib, 'IPWrapper')
     @mock.patch.object(ip_lib, 'IPDevice')
-    @mock.patch.object(ip_lib, 'IPRule')
-    def test_floating_ip_removed_dist(self, mIPRule, mIPDevice, mIPWrapper):
+    def test_floating_ip_removed_dist(self, mIPDevice, mIPWrapper):
         router = mock.MagicMock()
         ri = self._create_router(router)
         ri.ex_gw_port = ri.router['gw_port']
@@ -384,13 +383,13 @@ class TestDvrRouterOperations(base.BaseTestCase):
         ri.rtr_fip_subnet = s
         ri.fip_ns.local_subnets = mock.Mock()
         ri.floating_ip_removed_dist(fip_cidr)
-        mIPRule().rule.delete.assert_called_with(
-            ip=fixed_ip, table=16, priority=FIP_PRI)
+        self.mock_delete_ip_rule.assert_called_with(
+            ri.router_namespace.name, ip=fixed_ip, table=16, priority=FIP_PRI)
         mIPDevice().route.delete_route.assert_called_with(fip_cidr, str(s.ip))
         ri.fip_ns.local_subnets.allocate.assert_not_called()
 
-    @mock.patch.object(ip_lib, 'IPRule')
-    def test_floating_ip_moved_dist(self, mIPRule):
+    @mock.patch.object(ip_lib, 'add_ip_rule')
+    def test_floating_ip_moved_dist(self, mock_add_ip_rule):
         router = mock.MagicMock()
         ri = self._create_router(router)
         floating_ip_address = '15.1.2.3'
@@ -402,15 +401,15 @@ class TestDvrRouterOperations(base.BaseTestCase):
         ri.fip_ns.allocate_rule_priority.return_value = FIP_PRI
         ri.floating_ip_moved_dist(fip)
 
-        mIPRule().rule.delete.assert_called_once_with(
-            ip=fixed_ip, table=16, priority=FIP_PRI)
+        self.mock_delete_ip_rule.assert_called_once_with(
+            ri.router_namespace.name, ip=fixed_ip, table=16, priority=FIP_PRI)
         ri.fip_ns.deallocate_rule_priority.assert_called_once_with(
             floating_ip_address)
         ri.fip_ns.allocate_rule_priority.assert_called_once_with(
             floating_ip_address)
-        mIPRule().rule.add.assert_called_with(ip=fixed_ip,
-                                              table=16,
-                                              priority=FIP_PRI)
+        mock_add_ip_rule.assert_called_with(
+            namespace=ri.router_namespace.name, ip=fixed_ip,
+            table=16, priority=FIP_PRI)
 
     def _test_add_floating_ip(self, ri, fip, is_failure=False):
         if not is_failure:
@@ -565,9 +564,9 @@ class TestDvrRouterOperations(base.BaseTestCase):
                             'foo_router_id',
                             {'distributed': True, 'gw_port_host': HOSTNAME})
         ri = dvr_router.DvrLocalRouter(HOSTNAME, **self.ri_kwargs)
-        with mock.patch.object(l3_agent.ip_lib, 'IPDevice') as f:
-            ri._update_arp_entry(mock.ANY, mock.ANY, 'foo_subnet_id', 'add')
-        self.assertFalse(f.call_count)
+        ri.get_internal_device_name = mock.Mock()
+        ri._update_arp_entry(mock.ANY, mock.ANY, 'foo_subnet_id', 'add')
+        self.assertFalse(ri.get_internal_device_name.call_count)
 
     def _setup_test_for_arp_entry_cache(self):
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
@@ -582,11 +581,11 @@ class TestDvrRouterOperations(base.BaseTestCase):
     def test__update_arp_entry_calls_arp_cache_with_no_device(self):
         ri, subnet_id = self._setup_test_for_arp_entry_cache()
         state = True
-        with mock.patch.object(l3_agent.ip_lib, 'IPDevice') as rtrdev,\
+        with mock.patch('neutron.agent.linux.ip_lib.IPDevice') as rtrdev,\
                 mock.patch.object(ri, '_cache_arp_entry') as arp_cache:
-                rtrdev.return_value.exists.return_value = False
-                state = ri._update_arp_entry(
-                    mock.ANY, mock.ANY, subnet_id, 'add')
+            rtrdev.return_value.exists.return_value = False
+            state = ri._update_arp_entry(
+                mock.ANY, mock.ANY, subnet_id, 'add')
         self.assertFalse(state)
         self.assertTrue(arp_cache.called)
         arp_cache.assert_called_once_with(mock.ANY, mock.ANY,

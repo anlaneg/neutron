@@ -18,6 +18,7 @@ import time
 
 import netaddr
 from neutron_lib import constants
+from neutron_lib import exceptions
 from oslo_log import log as logging
 from oslo_utils import excutils
 import six
@@ -25,7 +26,7 @@ import six
 from neutron.agent.common import ovs_lib
 from neutron.agent.linux import ip_lib
 from neutron.common import constants as n_const
-from neutron.common import exceptions
+from neutron.common import utils
 
 LOG = logging.getLogger(__name__)
 
@@ -170,23 +171,35 @@ class LinuxInterfaceDriver(object):
                      namespace=namespace,
                      preserve_ips=preserve_ips or [],
                      clean_connections=clean_connections)
+        self.set_onlink_routes(device_name, namespace, extra_subnets,
+                               preserve_ips)
 
+    def set_onlink_routes(self, device_name, namespace, extra_subnets,
+                          preserve_ips=None, is_ipv6=True):
+        """Manage on-link routes (routes without an associate address)
+
+        :param device_name: interface name
+        :param namespace: namespace name
+        :param extra_subnets: subnets attached to this interface without an IP
+                              address set in this interface
+        :param preserve_ips: IPs or CIDRs not to be deleted from the device
+                             on-link route list
+        """
         device = ip_lib.IPDevice(device_name, namespace=namespace)
-
-        # Manage on-link routes (routes without an associated address)
         new_onlink_cidrs = set(s['cidr'] for s in extra_subnets or [])
+        preserve_ips = set(preserve_ips if preserve_ips else [])
 
-        v4_onlink = device.route.list_onlink_routes(constants.IP_VERSION_4)
-        v6_onlink = device.route.list_onlink_routes(constants.IP_VERSION_6)
-        existing_onlink_cidrs = set(r['cidr'] for r in v4_onlink + v6_onlink)
+        onlink = device.route.list_onlink_routes(constants.IP_VERSION_4)
+        if is_ipv6:
+            onlink += device.route.list_onlink_routes(constants.IP_VERSION_6)
+        existing_onlink_cidrs = set(r['cidr'] for r in onlink)
 
         #加路由
         for route in new_onlink_cidrs - existing_onlink_cidrs:
-            LOG.debug("adding onlink route(%s)", route)
+            LOG.debug('Adding onlink route (%s)', route)
             device.route.add_onlink_route(route)
-        for route in (existing_onlink_cidrs - new_onlink_cidrs -
-                      set(preserve_ips or [])):
-            LOG.debug("deleting onlink route(%s)", route)
+        for route in existing_onlink_cidrs - new_onlink_cidrs - preserve_ips:
+            LOG.debug('Deleting onlink route (%s)', route)
             device.route.delete_onlink_route(route)
 
     #加ipv6地址
@@ -214,10 +227,11 @@ class LinuxInterfaceDriver(object):
                 break
 
     def get_ipv6_llas(self, device_name, namespace):
-        device = ip_lib.IPDevice(device_name,
-                                 namespace=namespace)
-
-        return device.addr.list(scope='link', ip_version=6)
+        kwargs = {'family': utils.get_socket_address_family(
+                                constants.IP_VERSION_6),
+                  'scope': 'link'}
+        return ip_lib.get_devices_with_ip(namespace, name=device_name,
+                                          **kwargs)
 
     #如果bridge不存在，则扔出异常
     def check_bridge_exists(self, bridge):
@@ -226,17 +240,6 @@ class LinuxInterfaceDriver(object):
 
     def get_device_name(self, port):
         return (self.DEV_NAME_PREFIX + port.id)[:self.DEV_NAME_LEN]
-
-    def remove_vlan_tag(self, bridge, interface_name):
-        """Remove vlan tag from given interface.
-
-        This method is necessary only for the case when deprecated
-        option 'external_network_bridge' is used in L3 agent as
-        external gateway port is then created in this external bridge
-        directly and it will have DEAD_VLAN_TAG added by default.
-        """
-        # TODO(slaweq): remove it when external_network_bridge option will be
-        # removed
 
     @staticmethod
     def configure_ipv6_ra(namespace, dev_name, value):
@@ -340,10 +343,6 @@ class OVSInterfaceDriver(LinuxInterfaceDriver):
 
         ovs = ovs_lib.OVSBridge(bridge)
         ovs.replace_port(device_name, *attrs)
-
-    def remove_vlan_tag(self, bridge, interface):
-        ovs = ovs_lib.OVSBridge(bridge)
-        ovs.clear_db_attribute("Port", interface, "tag")
 
     def plug_new(self, network_id, port_id, device_name, mac_address,
                  bridge=None, namespace=None, prefix=None, mtu=None):

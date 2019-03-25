@@ -16,6 +16,7 @@ import contextlib
 import os
 
 from neutron_lib import constants as lib_constants
+from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.utils import runtime
 from oslo_concurrency import lockutils
 from oslo_log import log as logging
@@ -29,7 +30,6 @@ from neutron.agent.l3 import router_info
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_manager
 from neutron.common import constants
-from neutron.common import exceptions as n_exc
 from neutron.common import utils as common_utils
 from neutron.ipam import utils as ipam_utils
 
@@ -173,19 +173,9 @@ class FipNamespace(namespaces.Namespace):
                          ex_gw_port['id'],
                          interface_name,
                          ex_gw_port['mac_address'],
-                         bridge=self.agent_conf.external_network_bridge,
                          namespace=ns_name,
                          prefix=FIP_EXT_DEV_PREFIX,
                          mtu=ex_gw_port.get('mtu'))
-        if self.agent_conf.external_network_bridge:
-            # NOTE(Swami): for OVS implementations remove the DEAD VLAN tag
-            # on ports. DEAD VLAN tag is added to each newly created port
-            # and should be removed by L2 agent but if
-            # external_network_bridge is set than external gateway port is
-            # created in this bridge and will not be touched by L2 agent.
-            # This is related to lp#1767422
-            self.driver.remove_vlan_tag(
-                self.agent_conf.external_network_bridge, interface_name)
         # Remove stale fg devices
         # 移除掉错误的fg设备
         ip_wrapper = ip_lib.IPWrapper(namespace=ns_name)
@@ -194,9 +184,7 @@ class FipNamespace(namespaces.Namespace):
             name = device.name
             if name.startswith(FIP_EXT_DEV_PREFIX) and name != interface_name:
                 LOG.debug('DVR: unplug: %s', name)
-                ext_net_bridge = self.agent_conf.external_network_bridge
                 self.driver.unplug(name,
-                                   bridge=ext_net_bridge,
                                    namespace=ns_name,
                                    prefix=FIP_EXT_DEV_PREFIX)
 
@@ -204,6 +192,12 @@ class FipNamespace(namespaces.Namespace):
         ip_cidrs = common_utils.fixed_ip_cidrs(ex_gw_port['fixed_ips'])
         self.driver.init_l3(interface_name, ip_cidrs, namespace=ns_name,
                             clean_connections=True)
+
+        gw_cidrs = [sn['cidr'] for sn in ex_gw_port['subnets']
+                    if sn.get('cidr')]
+        self.driver.set_onlink_routes(
+            interface_name, ns_name, ex_gw_port.get('extra_subnets', []),
+            preserve_ips=gw_cidrs, is_ipv6=False)
 
         #整个agent这么一个口
         self.agent_gateway_port = ex_gw_port
@@ -217,16 +211,8 @@ class FipNamespace(namespaces.Namespace):
         LOG.debug("DVR: add fip namespace: %s", self.name)
         # parent class will ensure the namespace exists and turn-on forwarding
         super(FipNamespace, self).create()
-        # Somewhere in the 3.19 kernel timeframe ip_nonlocal_bind was
-        # changed to be a per-namespace attribute.  To be backwards
-        # compatible we need to try both if at first we fail.
-        failed = ip_lib.set_ip_nonlocal_bind(
-                value=1, namespace=self.name, log_fail_as_error=False)
-        if failed:
-            LOG.debug('DVR: fip namespace (%s) does not support setting '
-                      'net.ipv4.ip_nonlocal_bind, trying in root namespace',
-                      self.name)
-            ip_lib.set_ip_nonlocal_bind(value=1)
+        ip_lib.set_ip_nonlocal_bind_for_namespace(self.name, 1,
+                                                  root_namespace=True)
 
         # no connection tracking needed in fip namespace
         self._iptables_manager.ipv4['raw'].add_rule('PREROUTING',
@@ -249,9 +235,7 @@ class FipNamespace(namespaces.Namespace):
                 # single port from FIP NS to br-ext
                 # TODO(carl) Where does the port get deleted?
                 LOG.debug('DVR: unplug: %s', d.name)
-                ext_net_bridge = self.agent_conf.external_network_bridge
                 self.driver.unplug(d.name,
-                                   bridge=ext_net_bridge,
                                    namespace=self.name,
                                    prefix=FIP_EXT_DEV_PREFIX)
 
@@ -279,8 +263,7 @@ class FipNamespace(namespaces.Namespace):
         return new_gw_ips != old_gw_ips
 
     def get_fip_table_indexes(self, ip_version):
-        ns_ipr = ip_lib.IPRule(namespace=self.get_name())
-        ip_rules_list = ns_ipr.rule.list_rules(ip_version)
+        ip_rules_list = ip_lib.list_ip_rules(self.get_name(), ip_version)
         tbl_index_list = []
         for ip_rule in ip_rules_list:
             tbl_index = ip_rule['table']
@@ -329,29 +312,33 @@ class FipNamespace(namespaces.Namespace):
                               'failed')
 
         # Now add the filter match rule for the table.
-        ip_rule = ip_lib.IPRule(namespace=self.get_name())
         #自接口fip_2_rtr口进来的包，均查询表rt_tbl_index(相当于每个租户在fip中用一张路由表）
-        ip_rule.rule.add(ip=str(fip_2_rtr.ip),
-                         iif=fip_2_rtr_name,
-                         table=rt_tbl_index,
-                         priority=rt_tbl_index)
+        ip_lib.add_ip_rule(namespace=self.get_name(), ip=str(fip_2_rtr.ip),
+                           iif=fip_2_rtr_name, table=rt_tbl_index,
+                           priority=rt_tbl_index)
 
     def _update_gateway_port(self, agent_gateway_port, interface_name):
         #agent_gateway_port存在，且ip没有发生变化，则不处理
-        if (self.agent_gateway_port and
-                not self._check_for_gateway_ip_change(agent_gateway_port)):
-            return
-        # Caller already holding lock
-        self._update_gateway_route(
-            agent_gateway_port, interface_name, tbl_index=None)
+        if (not self.agent_gateway_port or
+                self._check_for_gateway_ip_change(agent_gateway_port)):
+            # Caller already holding lock
+            self._update_gateway_route(
+                agent_gateway_port, interface_name, tbl_index=None)
 
-        # Cache the agent gateway port after successfully updating
-        # the gateway route, so that checking on self.agent_gateway_port
-        # will be a valid check
-        self.agent_gateway_port = agent_gateway_port
+            # Cache the agent gateway port after successfully updating
+            # the gateway route, so that checking on self.agent_gateway_port
+            # will be a valid check
+            self.agent_gateway_port = agent_gateway_port
+
+        gw_cidrs = [sn['cidr'] for sn in agent_gateway_port['subnets']
+                    if sn.get('cidr')]
+        self.driver.set_onlink_routes(
+            interface_name, self.get_name(),
+            agent_gateway_port.get('extra_subnets', []), preserve_ips=gw_cidrs,
+            is_ipv6=False)
 
     def _update_gateway_route(self, agent_gateway_port,
-                             interface_name, tbl_index):
+                              interface_name, tbl_index):
         ns_name = self.get_name()
         ipd = ip_lib.IPDevice(interface_name, namespace=ns_name)
         # If the 'fg-' device doesn't exist in the namespace then trying
@@ -366,7 +353,7 @@ class FipNamespace(namespaces.Namespace):
                                               'ns': ns_name})
             msg = _('DVR: Gateway update route in FIP namespace failed, retry '
                     'should be attempted on next call')
-            raise n_exc.FloatingIpSetupException(msg)
+            raise l3_exc.FloatingIpSetupException(msg)
 
         #发送arp
         for fixed_ip in agent_gateway_port['fixed_ips']:
@@ -423,7 +410,6 @@ class FipNamespace(namespaces.Namespace):
                     # Remove the fip namespace rules and routes associated to
                     # fpr interface route table.
                     tbl_index = ri._get_snat_idx(fip_2_rtr)
-                    fip_rt_rule = ip_lib.IPRule(namespace=fip_ns_name)
                     # Flush the table
                     fg_device.route.flush(lib_constants.IP_VERSION_4,
                                           table=tbl_index)
@@ -435,10 +421,9 @@ class FipNamespace(namespaces.Namespace):
                     # link-local address IP version. Using any of those
                     # is equivalent to using 'from all' for iproute2.
                     rule_ip = lib_constants.IP_ANY[fip_2_rtr.ip.version]
-                    fip_rt_rule.rule.delete(ip=rule_ip,
-                                            iif=fip_2_rtr_name,
-                                            table=tbl_index,
-                                            priority=tbl_index)
+                    ip_lib.delete_ip_rule(fip_ns_name, ip=rule_ip,
+                                          iif=fip_2_rtr_name, table=tbl_index,
+                                          priority=tbl_index)
             self.local_subnets.release(ri.router_id)
             ri.rtr_fip_subnet = None
 

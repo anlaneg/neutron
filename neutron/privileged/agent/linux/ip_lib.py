@@ -14,7 +14,10 @@ import errno
 import socket
 
 from neutron_lib import constants
+from oslo_concurrency import lockutils
 import pyroute2
+from pyroute2 import netlink
+from pyroute2.netlink import exceptions as netlink_exceptions
 from pyroute2.netlink import rtnl
 from pyroute2.netlink.rtnl import ifinfmsg
 from pyroute2.netlink.rtnl import ndmsg
@@ -90,6 +93,19 @@ class IpAddressAlreadyExists(RuntimeError):
         super(IpAddressAlreadyExists, self).__init__(message)
 
 
+class InterfaceAlreadyExists(RuntimeError):
+    message = _("Interface %(device)s already exists.")
+
+    def __init__(self, message=None, device=None):
+        # NOTE(slaweq): 'message' can be passed as an optional argument
+        # because of how privsep daemon works. If exception is raised in
+        # function called by privsep daemon, it will then try to reraise it
+        # and will call it always with passing only message from originally
+        # raised exception.
+        message = message or self.message % {'device': device}
+        super(InterfaceAlreadyExists, self).__init__(message)
+
+
 def _make_route_dict(destination, nexthop, device, scope):
     return {'destination': destination,
             'nexthop': nexthop,
@@ -98,6 +114,10 @@ def _make_route_dict(destination, nexthop, device, scope):
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def get_routing_table(ip_version, namespace=None):
     """Return a list of dictionaries, each representing a route.
 
@@ -145,7 +165,7 @@ def get_routing_table(ip_version, namespace=None):
     return routes
 
 
-def _get_iproute(namespace):
+def get_iproute(namespace):
     # From iproute.py:
     # `IPRoute` -- RTNL API to the current network namespace
     # `NetNS` -- RTNL API to another network namespace
@@ -164,9 +184,9 @@ def _translate_ip_device_exception(e, device=None, namespace=None):
                                              namespace=namespace)
 
 
-def _get_link_id(device, namespace):
+def get_link_id(device, namespace):
     try:
-        with _get_iproute(namespace) as ip:
+        with get_iproute(namespace) as ip:
             return ip.link_lookup(ifname=device)[0]
     except IndexError:
         raise NetworkInterfaceNotFound(device=device, namespace=namespace)
@@ -174,8 +194,8 @@ def _get_link_id(device, namespace):
 
 def _run_iproute_link(command, device, namespace=None, **kwargs):
     try:
-        with _get_iproute(namespace) as ip:
-            idx = _get_link_id(device, namespace)
+        with get_iproute(namespace) as ip:
+            idx = get_link_id(device, namespace)
             return ip.link(command, index=idx, **kwargs)
     except NetlinkError as e:
         _translate_ip_device_exception(e, device, namespace)
@@ -188,8 +208,8 @@ def _run_iproute_link(command, device, namespace=None, **kwargs):
 
 def _run_iproute_neigh(command, device, namespace, **kwargs):
     try:
-        with _get_iproute(namespace) as ip:
-            idx = _get_link_id(device, namespace)
+        with get_iproute(namespace) as ip:
+            idx = get_link_id(device, namespace)
             return ip.neigh(command, ifindex=idx, **kwargs)
     except NetlinkError as e:
         _translate_ip_device_exception(e, device, namespace)
@@ -202,8 +222,8 @@ def _run_iproute_neigh(command, device, namespace, **kwargs):
 
 def _run_iproute_addr(command, device, namespace, **kwargs):
     try:
-        with _get_iproute(namespace) as ip:
-            idx = _get_link_id(device, namespace)
+        with get_iproute(namespace) as ip:
+            idx = get_link_id(device, namespace)
             return ip.addr(command, index=idx, **kwargs)
     except NetlinkError as e:
         _translate_ip_device_exception(e, device, namespace)
@@ -215,6 +235,10 @@ def _run_iproute_addr(command, device, namespace, **kwargs):
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def add_ip_address(ip_version, ip, prefixlen, device, namespace, scope,
                    broadcast=None):
     family = _IP_VERSION_FAMILY_MAP[ip_version]
@@ -234,6 +258,10 @@ def add_ip_address(ip_version, ip, prefixlen, device, namespace, scope,
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def delete_ip_address(ip_version, ip, prefixlen, device, namespace):
     family = _IP_VERSION_FAMILY_MAP[ip_version]
     try:
@@ -254,11 +282,15 @@ def delete_ip_address(ip_version, ip, prefixlen, device, namespace):
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def flush_ip_addresses(ip_version, device, namespace):
     family = _IP_VERSION_FAMILY_MAP[ip_version]
     try:
-        with _get_iproute(namespace) as ip:
-            idx = _get_link_id(device, namespace)
+        with get_iproute(namespace) as ip:
+            idx = get_link_id(device, namespace)
             ip.flush_addr(index=idx, family=family)
     except OSError as e:
         if e.errno == errno.ENOENT:
@@ -267,15 +299,23 @@ def flush_ip_addresses(ip_version, device, namespace):
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def create_interface(ifname, namespace, kind, **kwargs):
     ifname = ifname[:constants.DEVICE_NAME_MAX_LEN]
     try:
-        with _get_iproute(namespace) as ip:
+        with get_iproute(namespace) as ip:
             physical_interface = kwargs.pop("physical_interface", None)
             if physical_interface:
                 link_key = "vxlan_link" if kind == "vxlan" else "link"
-                kwargs[link_key] = _get_link_id(physical_interface, namespace)
+                kwargs[link_key] = get_link_id(physical_interface, namespace)
             return ip.link("add", ifname=ifname, kind=kind, **kwargs)
+    except NetlinkError as e:
+        if e.code == errno.EEXIST:
+            raise InterfaceAlreadyExists(device=ifname)
+        raise
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise NetworkNamespaceNotFound(netns_name=namespace)
@@ -283,14 +323,22 @@ def create_interface(ifname, namespace, kind, **kwargs):
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def delete_interface(ifname, namespace, **kwargs):
     _run_iproute_link("del", ifname, namespace, **kwargs)
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def interface_exists(ifname, namespace):
     try:
-        idx = _get_link_id(ifname, namespace)
+        idx = get_link_id(ifname, namespace)
         return bool(idx)
     except NetworkInterfaceNotFound:
         return False
@@ -301,6 +349,10 @@ def interface_exists(ifname, namespace):
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def set_link_flags(device, namespace, flags):
     link = _run_iproute_link("get", device, namespace)[0]
     new_flags = flags | link['flags']
@@ -308,11 +360,19 @@ def set_link_flags(device, namespace, flags):
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def set_link_attribute(device, namespace, **attributes):
     return _run_iproute_link("set", device, namespace, **attributes)
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def get_link_attributes(device, namespace):
     link = _run_iproute_link("get", device, namespace)[0]
     return {
@@ -328,6 +388,10 @@ def get_link_attributes(device, namespace):
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def add_neigh_entry(ip_version, ip_address, mac_address, device, namespace,
                     **kwargs):
     """Add a neighbour entry.
@@ -349,6 +413,10 @@ def add_neigh_entry(ip_version, ip_address, mac_address, device, namespace,
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def delete_neigh_entry(ip_version, ip_address, mac_address, device, namespace,
                        **kwargs):
     """Delete a neighbour entry.
@@ -375,6 +443,10 @@ def delete_neigh_entry(ip_version, ip_address, mac_address, device, namespace,
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def dump_neigh_entries(ip_version, device, namespace, **kwargs):
     """Dump all neighbour entries.
 
@@ -404,6 +476,10 @@ def dump_neigh_entries(ip_version, device, namespace, **kwargs):
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def create_netns(name, **kwargs):
     """Create a network namespace.
 
@@ -417,6 +493,10 @@ def create_netns(name, **kwargs):
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def remove_netns(name, **kwargs):
     """Remove a network namespace.
 
@@ -430,9 +510,142 @@ def remove_netns(name, **kwargs):
 
 
 @privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
 def list_netns(**kwargs):
     """List network namespaces.
 
     Caller requires raised priveleges to list namespaces
     """
     return netns.listnetns(**kwargs)
+
+
+def make_serializable(value):
+    """Make a pyroute2 object serializable
+
+    This function converts 'netlink.nla_slot' object (key, value) in a list
+    of two elements.
+    """
+    if isinstance(value, list):
+        return [make_serializable(item) for item in value]
+    elif isinstance(value, dict):
+        return {key: make_serializable(data) for key, data in value.items()}
+    elif isinstance(value, netlink.nla_slot):
+        return [value[0], make_serializable(value[1])]
+    elif isinstance(value, tuple):
+        return tuple(make_serializable(item) for item in value)
+    return value
+
+
+@privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
+def get_link_devices(namespace, **kwargs):
+    """List interfaces in a namespace
+
+    :return: (list) interfaces in a namespace
+    """
+    try:
+        with get_iproute(namespace) as ip:
+            return make_serializable(ip.get_links(**kwargs))
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            raise NetworkNamespaceNotFound(netns_name=namespace)
+        raise
+
+
+def get_device_names(namespace, **kwargs):
+    """List interface names in a namespace
+
+    :return: a list of strings with the names of the interfaces in a namespace
+    """
+    devices_attrs = [link['attrs'] for link
+                     in get_link_devices(namespace, **kwargs)]
+    device_names = []
+    for device_attrs in devices_attrs:
+        for link_name in (link_attr[1] for link_attr in device_attrs
+                          if link_attr[0] == 'IFLA_IFNAME'):
+            device_names.append(link_name)
+    return device_names
+
+
+@privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
+def get_ip_addresses(namespace, **kwargs):
+    """List of IP addresses in a namespace
+
+    :return: (tuple) IP addresses in a namespace
+    """
+    try:
+        with get_iproute(namespace) as ip:
+            return make_serializable(ip.get_addr(**kwargs))
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            raise NetworkNamespaceNotFound(netns_name=namespace)
+        raise
+
+
+@privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
+def list_ip_rules(namespace, ip_version, match=None, **kwargs):
+    """List all IP rules"""
+    try:
+        with get_iproute(namespace) as ip:
+            rules = ip.get_rules(family=_IP_VERSION_FAMILY_MAP[ip_version],
+                                 match=match, **kwargs)
+            for rule in rules:
+                rule['attrs'] = {
+                    key: value for key, value
+                    in ((item[0], item[1]) for item in rule['attrs'])}
+            return rules
+
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            raise NetworkNamespaceNotFound(netns_name=namespace)
+        raise
+
+
+@privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
+def add_ip_rule(namespace, **kwargs):
+    """Add a new IP rule"""
+    try:
+        with get_iproute(namespace) as ip:
+            ip.rule('add', **kwargs)
+    except netlink_exceptions.NetlinkError as e:
+        if e.code == errno.EEXIST:
+            return
+        raise
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            raise NetworkNamespaceNotFound(netns_name=namespace)
+        raise
+
+
+@privileged.default.entrypoint
+# NOTE(slaweq): Because of issue with pyroute2.NetNS objects running in threads
+# we need to lock this function to workaround this issue.
+# For details please check https://bugs.launchpad.net/neutron/+bug/1811515
+@lockutils.synchronized("privileged-ip-lib")
+def delete_ip_rule(namespace, **kwargs):
+    """Delete an IP rule"""
+    try:
+        with get_iproute(namespace) as ip:
+            ip.rule('del', **kwargs)
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            raise NetworkNamespaceNotFound(netns_name=namespace)
+        raise

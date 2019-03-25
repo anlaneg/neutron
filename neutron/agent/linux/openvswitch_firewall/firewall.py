@@ -18,6 +18,9 @@ import contextlib
 import copy
 
 import netaddr
+from neutron_lib.callbacks import events as callbacks_events
+from neutron_lib.callbacks import registry as callbacks_registry
+from neutron_lib.callbacks import resources as callbacks_resources
 from neutron_lib import constants as lib_const
 from oslo_log import log as logging
 from oslo_utils import netutils
@@ -323,7 +326,8 @@ class ConjIPFlowManager(object):
             # no address overlaps.
             addr_to_conj = self._build_addr_conj_id_map(
                 ethertype, sg_conj_id_map)
-            self._update_flows_for_vlan_subr(direction, ethertype, vlan_tag,
+            self._update_flows_for_vlan_subr(
+                direction, ethertype, vlan_tag,
                 self.flow_state[vlan_tag][(direction, ethertype)],
                 addr_to_conj)
             self.flow_state[vlan_tag][(direction, ethertype)] = addr_to_conj
@@ -393,17 +397,28 @@ class OVSFirewallDriver(firewall.FirewallDriver):
 
         """
         self.int_br = self.initialize_bridge(integration_bridge)
-        self._update_cookie = None
         self.sg_port_map = SGPortMap()
+        self.conj_ip_manager = ConjIPFlowManager(self)
         self.sg_to_delete = set()
+        self._update_cookie = None
         self._deferred = False
+        self.iptables_helper = iptables.Helper(self.int_br.br)
+        self.iptables_helper.load_driver_if_needed()
+        self._initialize_firewall()
+
+        callbacks_registry.subscribe(
+            self._init_firewall_callback,
+            callbacks_resources.AGENT,
+            callbacks_events.OVS_RESTARTED)
+
+    def _init_firewall_callback(self, resource, event, trigger, **kwargs):
+        LOG.info("Reinitialize Openvswitch firewall after OVS restart.")
+        self._initialize_firewall()
+
+    def _initialize_firewall(self):
         self._drop_all_unmatched_flows()
         self._initialize_common_flows()
         self._initialize_third_party_tables()
-        self.conj_ip_manager = ConjIPFlowManager(self)
-
-        self.iptables_helper = iptables.Helper(self.int_br.br)
-        self.iptables_helper.load_driver_if_needed()
 
     @contextlib.contextmanager
     def update_cookie_context(self):
@@ -574,6 +589,10 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             LOG.info("port %(port_id)s does not exist in ovsdb: %(err)s.",
                      {'port_id': port['device'],
                       'err': not_found_error})
+        except exceptions.OVSFWTagNotFound as tag_not_found:
+            LOG.info("Tag was not found for port %(port_id)s: %(err)s.",
+                     {'port_id': port['device'],
+                      'err': tag_not_found})
 
     def _set_port_filters(self, of_port):
         self.initialize_port_flows(of_port)

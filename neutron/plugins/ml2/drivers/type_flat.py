@@ -22,7 +22,6 @@ from oslo_config import cfg
 from oslo_log import log
 
 from neutron._i18n import _
-from neutron.common import exceptions as n_exc
 from neutron.conf.plugins.ml2.drivers import driver_type
 from neutron.objects.plugins.ml2 import flatallocation as flat_obj
 from neutron.plugins.ml2.drivers import helpers
@@ -64,6 +63,15 @@ class FlatTypeDriver(helpers.BaseTypeDriver):
     def initialize(self):
         LOG.info("ML2 FlatTypeDriver initialization complete")
 
+    def initialize_network_segment_range_support(self):
+        pass
+
+    def update_network_segment_range_allocations(self):
+        pass
+
+    def get_network_segment_ranges(self):
+        pass
+
     def is_partial_segment(self, segment):
         return False
 
@@ -86,7 +94,7 @@ class FlatTypeDriver(helpers.BaseTypeDriver):
                 msg = _("%s prohibited for flat provider network") % key
                 raise exc.InvalidInput(error_message=msg)
 
-    def reserve_provider_segment(self, context, segment):
+    def reserve_provider_segment(self, context, segment, filters=None):
         physical_network = segment[api.PHYSICAL_NETWORK]
         try:
             LOG.debug("Reserving flat network on physical "
@@ -96,12 +104,12 @@ class FlatTypeDriver(helpers.BaseTypeDriver):
                 physical_network=physical_network)
             alloc.create()
         except obj_base.NeutronDbObjectDuplicateEntry:
-            raise n_exc.FlatNetworkInUse(
+            raise exc.FlatNetworkInUse(
                 physical_network=physical_network)
         segment[api.MTU] = self.get_mtu(alloc.physical_network)
         return segment
 
-    def allocate_tenant_segment(self, context):
+    def allocate_tenant_segment(self, context, filters=None):
         # Tenant flat networks are not supported.
         return
 

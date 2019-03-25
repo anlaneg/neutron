@@ -47,7 +47,8 @@ class L3RpcCallback(object):
     # 1.8 Added address scope information
     # 1.9 Added get_router_ids
     # 1.10 Added update_all_ha_network_port_statuses
-    target = oslo_messaging.Target(version='1.10')
+    # 1.11 Added get_host_ha_router_count
+    target = oslo_messaging.Target(version='1.11')
 
     @property
     def plugin(self):
@@ -229,11 +230,10 @@ class L3RpcCallback(object):
             # of hosts on which DVR router interfaces are spawned). Such
             # bindings are created/updated here by invoking
             # update_distributed_port_binding
-            self.plugin.update_distributed_port_binding(context, port['id'],
-                                                {'port':
-                                                 {portbindings.HOST_ID: host,
-                                                  'device_id': router_id}
-                                                 })
+            self.plugin.update_distributed_port_binding(
+                context, port['id'],
+                {'port': {portbindings.HOST_ID: host,
+                          'device_id': router_id}})
 
     def get_external_network_id(self, context, **kwargs):
         """Get one external network id for l3 agent.
@@ -249,6 +249,9 @@ class L3RpcCallback(object):
 
     def get_service_plugin_list(self, context, **kwargs):
         return directory.get_plugins().keys()
+
+    def get_host_ha_router_count(self, context, host):
+        return self.l3plugin.get_host_ha_router_count(context, host)
 
     @db_api.retry_db_errors
     def update_floatingip_statuses(self, context, router_id, fip_statuses):
@@ -301,8 +304,9 @@ class L3RpcCallback(object):
             admin_ctx, network_id, host)
         self._ensure_host_set_on_port(admin_ctx, host, agent_port)
         LOG.debug('Agent Gateway port returned : %(agent_port)s with '
-                  'host %(host)s', {'agent_port': agent_port,
-                  'host': host})
+                  'host %(host)s',
+                  {'agent_port': agent_port,
+                   'host': host})
         return agent_port
 
     @db_api.retry_db_errors

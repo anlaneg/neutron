@@ -13,23 +13,27 @@
 import threading
 
 import mock
-import netaddr
 from neutron_lib.api.definitions import floating_ip_port_forwarding as apidef
 from neutron_lib.callbacks import exceptions as c_exc
 from neutron_lib import exceptions as lib_exc
 from neutron_lib.exceptions import l3 as lib_l3_exc
+from neutron_lib.plugins import constants as plugin_constants
+from neutron_lib.plugins import directory
 from oslo_utils import uuidutils
 from six.moves import queue
 
 from neutron.services.portforwarding.common import exceptions as pf_exc
 from neutron.services.portforwarding import pf_plugin
+from neutron.tests.functional import base as functional_base
 from neutron.tests.unit.plugins.ml2 import base as ml2_test_base
 
 
-class PortForwardingTestCaseBase(ml2_test_base.ML2TestFramework):
+class PortForwardingTestCaseBase(ml2_test_base.ML2TestFramework,
+                                 functional_base.BaseLoggingTestCase):
     def setUp(self):
         super(PortForwardingTestCaseBase, self).setUp()
         self.pf_plugin = pf_plugin.PortForwardingPlugin()
+        directory.add_plugin(plugin_constants.PORTFORWARDING, self.pf_plugin)
 
     def _create_floatingip(self, network_id, port_id=None,
                            fixed_ip_address=None):
@@ -65,6 +69,11 @@ class PortForwardingTestCaseBase(ml2_test_base.ML2TestFramework):
         self.l3_plugin.add_router_interface(
             self.context, router_id, interface_info=interface_info)
 
+    def _remove_router_interface(self, router_id, subnet_id):
+        interface_info = {"subnet_id": subnet_id}
+        self.l3_plugin.remove_router_interface(
+            self.context, router_id, interface_info=interface_info)
+
     def _set_router_gw(self, router_id, ext_net_id):
         body = {
             'router':
@@ -78,7 +87,7 @@ class PortForwardingTestCase(PortForwardingTestCaseBase):
         self._prepare_env()
 
     def _prepare_env(self):
-        self.router = self._create_router()
+        self.router = self._create_router(distributed=True)
         self.ext_net = self._create_network(
             self.fmt, 'ext-net', True, arg_list=("router:external",),
             **{"router:external": True}).json['network']
@@ -86,12 +95,15 @@ class PortForwardingTestCase(PortForwardingTestCaseBase):
             self.fmt, self.ext_net['id'], '172.24.2.0/24').json['subnet']
         self.net = self._create_network(self.fmt, 'private', True).json[
             'network']
-        self.subnet = self._create_subnet(self.fmt, self.net['id'],
-                                          '10.0.0.0/24').json['subnet']
+        self.subnet = self._create_subnet(
+            self.fmt, self.net['id'], '10.0.0.0/24',
+            enable_dhcp=False).json['subnet']
         self._set_router_gw(self.router['id'], self.ext_net['id'])
         self._add_router_interface(self.router['id'], self.subnet['id'])
         self.fip = self._create_floatingip(self.ext_net['id'])
-        self.port = self._create_port(self.fmt, self.net['id']).json['port']
+        self.port = self._create_port(
+            self.fmt, self.net['id'],
+            fixed_ips=[{'subnet_id': self.subnet['id']}]).json['port']
         self.port_forwarding = {
             apidef.RESOURCE_NAME:
                 {apidef.EXTERNAL_PORT: 2225,
@@ -101,7 +113,14 @@ class PortForwardingTestCase(PortForwardingTestCaseBase):
                  apidef.INTERNAL_IP_ADDRESS:
                      self.port['fixed_ips'][0]['ip_address']}}
 
-    def test_create_floatingip_port_forwarding(self):
+    def test_create_floatingip_port_forwarding_and_remove_subnets(self):
+        subnet_2 = self._create_subnet(self.fmt, self.net['id'],
+                                       '10.0.2.0/24').json['subnet']
+        self._add_router_interface(self.router['id'], subnet_2['id'])
+        subnet_3 = self._create_subnet(self.fmt, self.net['id'],
+                                       '10.0.3.0/24').json['subnet']
+        self._add_router_interface(self.router['id'], subnet_3['id'])
+
         res = self.pf_plugin.create_floatingip_port_forwarding(
             self.context, self.fip['id'], self.port_forwarding)
         expect = {
@@ -116,6 +135,27 @@ class PortForwardingTestCase(PortForwardingTestCaseBase):
             'floatingip_id': self.fip['id']}
         self.assertEqual(expect, res)
 
+        self.assertRaises(lib_l3_exc.RouterInterfaceInUseByFloatingIP,
+                          self._remove_router_interface,
+                          self.router['id'], self.subnet['id'])
+
+        self._remove_router_interface(self.router['id'], subnet_2['id'])
+        self._remove_router_interface(self.router['id'], subnet_3['id'])
+
+    def test_create_floatingip_port_forwarding_external_port_0(self):
+        self.port_forwarding[apidef.RESOURCE_NAME][apidef.EXTERNAL_PORT] = 0
+
+        self.assertRaises(ValueError,
+                          self.pf_plugin.create_floatingip_port_forwarding,
+                          self.context, self.fip['id'], self.port_forwarding)
+
+    def test_create_floatingip_port_forwarding_internal_port_0(self):
+        self.port_forwarding[apidef.RESOURCE_NAME][apidef.INTERNAL_PORT] = 0
+
+        self.assertRaises(ValueError,
+                          self.pf_plugin.create_floatingip_port_forwarding,
+                          self.context, self.fip['id'], self.port_forwarding)
+
     def test_negative_create_floatingip_port_forwarding(self):
         self.pf_plugin.create_floatingip_port_forwarding(
             self.context, self.fip['id'], self.port_forwarding)
@@ -124,6 +164,46 @@ class PortForwardingTestCase(PortForwardingTestCaseBase):
         self.assertRaises(lib_exc.BadRequest,
                           self.pf_plugin.create_floatingip_port_forwarding,
                           self.context, self.fip['id'], self.port_forwarding)
+
+    def test_create_port_forwarding_port_in_used_by_fip(self):
+        normal_fip = self._create_floatingip(self.ext_net['id'])
+        self._update_floatingip(normal_fip['id'], {'port_id': self.port['id']})
+        self.assertRaises(
+            pf_exc.PortHasBindingFloatingIP,
+            self.pf_plugin.create_floatingip_port_forwarding,
+            self.context, self.fip['id'], self.port_forwarding)
+
+    def test_update_port_forwarding_port_in_used_by_fip(self):
+        normal_fip = self._create_floatingip(self.ext_net['id'])
+        normal_port = self._create_port(
+            self.fmt, self.net['id']).json['port']
+        self._update_floatingip(
+            normal_fip['id'], {'port_id': normal_port['id']})
+
+        res = self.pf_plugin.create_floatingip_port_forwarding(
+            self.context, self.fip['id'], self.port_forwarding)
+        expect = {
+            "external_port": 2225,
+            "internal_port": 25,
+            "internal_port_id": self.port['id'],
+            "protocol": "tcp",
+            "internal_ip_address": self.port['fixed_ips'][0]['ip_address'],
+            'id': mock.ANY,
+            'router_id': self.router['id'],
+            'floating_ip_address': self.fip['floating_ip_address'],
+            'floatingip_id': self.fip['id']}
+        self.assertEqual(expect, res)
+
+        # Directly update port forwarding to a port which already has
+        # bound floating IP.
+        self.port_forwarding[apidef.RESOURCE_NAME].update(
+            {apidef.INTERNAL_PORT_ID: normal_port['id'],
+             apidef.INTERNAL_IP_ADDRESS:
+                 normal_port['fixed_ips'][0]['ip_address']})
+        self.assertRaises(
+            pf_exc.PortHasBindingFloatingIP,
+            self.pf_plugin.update_floatingip_port_forwarding,
+            self.context, res['id'], self.fip['id'], self.port_forwarding)
 
     def test_update_floatingip_port_forwarding(self):
         # create a test port forwarding
@@ -365,8 +445,7 @@ class PortForwardingTestCase(PortForwardingTestCaseBase):
                           funcs, args_list)
 
     def test_concurrent_create_port_forwarding_update_port(self):
-        new_ip = str(
-            netaddr.IPAddress(self.port['fixed_ips'][0]['ip_address']) + 2)
+        new_ip = self._find_ip_address(self.subnet)
         funcs = [self.pf_plugin.create_floatingip_port_forwarding,
                  self._update_port]
         args_list = [(self.context, self.fip['id'], self.port_forwarding),
@@ -385,3 +464,24 @@ class PortForwardingTestCase(PortForwardingTestCaseBase):
         self._simulate_concurrent_requests_process_and_raise(funcs, args_list)
         self.assertEqual([], self.pf_plugin.get_floatingip_port_forwardings(
             self.context, floatingip_id=self.fip['id']))
+
+    def test_create_floatingip_port_forwarding_port_in_use(self):
+        res = self.pf_plugin.create_floatingip_port_forwarding(
+            self.context, self.fip['id'], self.port_forwarding)
+        expected = {
+            "external_port": 2225,
+            "internal_port": 25,
+            "internal_port_id": self.port['id'],
+            "protocol": "tcp",
+            "internal_ip_address": self.port['fixed_ips'][0]['ip_address'],
+            'id': mock.ANY,
+            'router_id': self.router['id'],
+            'floating_ip_address': self.fip['floating_ip_address'],
+            'floatingip_id': self.fip['id']}
+        self.assertEqual(expected, res)
+
+        fip_2 = self._create_floatingip(self.ext_net['id'])
+        self.assertRaises(
+            pf_exc.PortHasPortForwarding,
+            self._update_floatingip,
+            fip_2['id'], {'port_id': self.port['id']})

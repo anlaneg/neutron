@@ -89,7 +89,7 @@ class ExclusiveResourceProcessor(object):
 
         if id not in self._masters:
             self._masters[id] = self
-            self._queue = []
+            self._queue = Queue.PriorityQueue(-1)
 
         #self._master 用来指当前路由器(router_id)的master
         self._master = self._masters[id]
@@ -121,7 +121,7 @@ class ExclusiveResourceProcessor(object):
         resource is being processed.  These updates have already bubbled to
         the front of the ResourceProcessingQueue.
         """
-        self._master._queue.append(update)
+        self._master._queue.put(update)
 
     def updates(self):
         """Processes the resource until updates stop coming
@@ -131,14 +131,15 @@ class ExclusiveResourceProcessor(object):
         loops until they stop coming.
         """
         #当前自已是master,则处理自已的_queue中的rotuer
-        if self._i_am_master():
-            while self._queue:
-                # Remove the update from the queue even if it is old.
-                update = self._queue.pop(0)
-                # Process the update only if it is fresh.
-                # 确保只处理最新的
-                if self._get_resource_data_timestamp() < update.timestamp:
-                    yield update
+        while self._i_am_master():
+            if self._queue.empty():
+                return
+            # Get the update from the queue even if it is old.
+            update = self._queue.get()
+            # Process the update only if it is fresh.
+	    # 确保只处理最新的
+            if self._get_resource_data_timestamp() < update.timestamp:
+                yield update
 
 
 class ResourceProcessingQueue(object):

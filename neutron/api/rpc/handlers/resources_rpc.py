@@ -17,6 +17,7 @@ import collections
 
 from neutron_lib.agent import topics
 from neutron_lib import exceptions
+from neutron_lib import rpc as n_rpc
 from oslo_log import helpers as log_helpers
 from oslo_log import log as logging
 import oslo_messaging
@@ -28,7 +29,6 @@ from neutron.api.rpc.callbacks.producer import registry as prod_registry
 from neutron.api.rpc.callbacks import resources
 from neutron.api.rpc.callbacks import version_manager
 from neutron.common import constants
-from neutron.common import rpc as n_rpc
 from neutron.objects import base as obj_base
 
 LOG = logging.getLogger(__name__)
@@ -94,7 +94,8 @@ class ResourcesPullRpcApi(object):
     def pull(self, context, resource_type, resource_id):
         resource_type_cls = _resource_to_class(resource_type)
         cctxt = self.client.prepare()
-        primitive = cctxt.call(context, 'pull',
+        primitive = cctxt.call(
+            context, 'pull',
             resource_type=resource_type,
             version=resource_type_cls.VERSION, resource_id=resource_id)
 
@@ -107,7 +108,8 @@ class ResourcesPullRpcApi(object):
     def bulk_pull(self, context, resource_type, filter_kwargs=None):
         resource_type_cls = _resource_to_class(resource_type)
         cctxt = self.client.prepare()
-        primitives = cctxt.call(context, 'bulk_pull',
+        primitives = cctxt.call(
+            context, 'bulk_pull',
             resource_type=resource_type,
             version=resource_type_cls.VERSION, filter_kwargs=filter_kwargs)
         return [resource_type_cls.clean_obj_from_primitive(primitive)

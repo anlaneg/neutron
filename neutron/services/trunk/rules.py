@@ -40,14 +40,14 @@ def trunk_can_be_managed(context, trunk):
         raise trunk_exc.TrunkDisabled(trunk_id=trunk.id)
 
 
-def enforce_port_deletion_rules(resource, event, trigger, **kwargs):
+def enforce_port_deletion_rules(resource, event, trigger, payload=None):
     """Prohibit the deletion of a port that's used in a trunk."""
     # NOTE: the ML2 plugin properly catches these exceptions when raised, but
     # non-ML2 plugins might not. To address this we should move the callback
     # registry notification emitted in the ML2 plugin's delete_port() higher
     # up in the plugin hierarchy.
-    context = kwargs['context']
-    port_id = kwargs['port_id']
+    context = payload.context
+    port_id = payload.resource_id
     subport_obj = trunk_objects.SubPort.get_object(context, port_id=port_id)
     if subport_obj:
         raise trunk_exc.PortInUseAsSubPort(port_id=port_id,
@@ -91,7 +91,7 @@ class TrunkPortValidator(object):
             # resources (namely it is bound). Bound ports may be used as
             # trunk parents, but that depends on the underlying driver in
             # charge.
-            if not self.can_be_trunked(context):
+            if not self.can_be_trunked_or_untrunked(context):
                 raise trunk_exc.ParentPortInUse(port_id=self.port_id)
         else:
             # if the port is being used as subport in a trunk, check if it is a
@@ -110,7 +110,7 @@ class TrunkPortValidator(object):
         self._port = core_plugin.get_port(context, self.port_id)
         return bool(self._port.get(portbindings.HOST_ID))
 
-    def can_be_trunked(self, context):
+    def can_be_trunked_or_untrunked(self, context):
         """"Return true if a port can be trunked."""
         if not self.is_bound(context):
             # An unbound port can be trunked, always.

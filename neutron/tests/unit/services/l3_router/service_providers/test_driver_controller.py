@@ -129,9 +129,9 @@ class TestDriverController(testlib_api.SqlTestCase):
                             None, None, None,
                             payload=events.DBEventPayload(
                                 None, request_body={'name': 'testname',
-                                    'distributed': False},
+                                                    'distributed': False},
                                 states=({'flavor_id': None,
-                                    'distributed': True, 'ha': False},)))
+                                         'distributed': True, 'ha': False},)))
                         # To validate that the 'ha' attribute of the router
                         # stays unchanged from the previous state while
                         # updating 'distributed' from True to False.
@@ -162,7 +162,7 @@ class TestDriverController(testlib_api.SqlTestCase):
             ('ha', dict(id=router_id5, ha=True,
                         distributed=constants.ATTR_NOT_SPECIFIED)),
             ('dvr', dict(id=router_id6, distributed=True,
-                        ha=constants.ATTR_NOT_SPECIFIED)),
+                         ha=constants.ATTR_NOT_SPECIFIED)),
             ('single_node', dict(id=router_id7, ha=False,
                                  distributed=constants.ATTR_NOT_SPECIFIED)),
             ('single_node', dict(id=router_id8, distributed=False,
@@ -224,5 +224,5 @@ class Test_LegacyPlusProviderConfiguration(base.BaseTestCase):
     @mock.patch.object(provider_configuration.ProviderConfiguration,
                        "add_provider")
     def test__update_router_provider_invalid(self, mock_method):
-            mock_method.side_effect = lib_exc.Invalid(message='message')
-            driver_controller._LegacyPlusProviderConfiguration()
+        mock_method.side_effect = lib_exc.Invalid(message='message')
+        driver_controller._LegacyPlusProviderConfiguration()

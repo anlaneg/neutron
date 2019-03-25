@@ -20,6 +20,7 @@ from neutron.agent.l3 import dvr_snat_ns
 from neutron.agent.l3 import router_info as router
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_manager
+from neutron.common import utils as common_utils
 
 LOG = logging.getLogger(__name__)
 
@@ -54,6 +55,15 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
                       "current dvr_snat host.", self.snat_namespace.name)
             self.external_gateway_removed(ex_gw_port, interface_name)
 
+    def _list_centralized_floating_ip_cidrs(self):
+        # Compute a list of addresses this gw is supposed to have.
+        # This avoids unnecessarily removing those addresses and
+        # causing a momentarily network outage.
+        floating_ips = self.get_floating_ips()
+        return [common_utils.ip_to_cidr(ip['floating_ip_address'])
+                for ip in floating_ips
+                if ip.get(lib_constants.DVR_SNAT_BOUND)]
+
     def external_gateway_updated(self, ex_gw_port, interface_name):
         if not self._is_this_snat_host():
             # no centralized SNAT gateway for this node/agent
@@ -70,10 +80,11 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
             # newly created gateway
             return self.external_gateway_added(ex_gw_port, interface_name)
         else:
+            preserve_ips = self._list_centralized_floating_ip_cidrs()
             self._external_gateway_added(ex_gw_port,
-                                        interface_name,
-                                        self.snat_namespace.name,
-                                        preserve_ips=[])
+                                         interface_name,
+                                         self.snat_namespace.name,
+                                         preserve_ips)
 
     def _external_gateway_removed(self, ex_gw_port, interface_name):
         super(DvrEdgeRouter, self).external_gateway_removed(ex_gw_port,
@@ -84,7 +95,6 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
             return
 
         self.driver.unplug(interface_name,
-                           bridge=self.agent_conf.external_network_bridge,
                            namespace=self.snat_namespace.name,
                            prefix=router.EXTERNAL_DEV_PREFIX)
 
@@ -259,7 +269,6 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
                 LOG.debug('Deleting stale external router device: %s', d.name)
                 self.driver.unplug(
                     d.name,
-                    bridge=self.agent_conf.external_network_bridge,
                     namespace=self.snat_namespace.name,
                     prefix=router.EXTERNAL_DEV_PREFIX)
 
@@ -268,13 +277,19 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
         long_name = router.EXTERNAL_DEV_PREFIX + ex_gw_port['id']
         return long_name[:self.driver.DEV_NAME_LEN]
 
-    def _get_centralized_fip_cidr_set(self):
+    def get_centralized_fip_cidr_set(self):
         """Returns the fip_cidr set for centralized floatingips."""
+        ex_gw_port = self.get_ex_gw_port()
+        # Don't look for centralized FIP cidrs if gw_port not exists or
+        # this is not snat host
+        if (not ex_gw_port or not self._is_this_snat_host() or
+                not self.snat_namespace.exists()):
+            return set()
         interface_name = self.get_snat_external_device_interface_name(
-                self.get_ex_gw_port())
-        device = ip_lib.IPDevice(
-            interface_name, namespace=self.snat_namespace.name)
-        return set([addr['cidr'] for addr in device.addr.list()])
+                ex_gw_port)
+        return set([addr['cidr'] for addr in ip_lib.get_devices_with_ip(
+                                                 self.snat_namespace.name,
+                                                 name=interface_name)])
 
     def get_router_cidrs(self, device):
         """Over-ride the get_router_cidrs function to return the list.
@@ -285,12 +300,8 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
         regular floatingip cidr list that are bound to fip namespace.
         """
         fip_cidrs = super(DvrEdgeRouter, self).get_router_cidrs(device)
-        centralized_cidrs = set()
-        # Call _get_centralized_fip_cidr only when snat_namespace exists
-        if self.get_ex_gw_port() and self.snat_namespace.exists():
-            centralized_cidrs = self._get_centralized_fip_cidr_set()
-        existing_centralized_cidrs = self.centralized_floatingips_set
-        return fip_cidrs | centralized_cidrs | existing_centralized_cidrs
+        centralized_cidrs = self.get_centralized_fip_cidr_set()
+        return fip_cidrs | centralized_cidrs
 
     def remove_centralized_floatingip(self, fip_cidr):
         """Function to handle the centralized Floatingip remove."""
@@ -313,10 +324,11 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
             return
         interface_name = self.get_snat_external_device_interface_name(
             self.get_ex_gw_port())
-        device = ip_lib.IPDevice(
-            interface_name, namespace=self.snat_namespace.name)
         try:
-            device.addr.add(fip_cidr)
+            ip_lib.add_ip_address(fip_cidr, interface_name,
+                                  namespace=self.snat_namespace.name)
+        except ip_lib.IpAddressAlreadyExists:
+            pass
         except RuntimeError:
             LOG.warning("Unable to configure IP address for centralized "
                         "floating IP: %s", fip['id'])

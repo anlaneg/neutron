@@ -17,15 +17,16 @@ from oslo_config import cfg
 from oslo_service import service
 
 from neutron import service as neutron_service
-from neutron.tests import base
+from neutron.tests.functional import base
 from neutron.tests.functional import test_server
 
 
-class TestService(base.BaseTestCase):
+class TestService(base.BaseLoggingTestCase):
 
     def test_api_workers_default(self):
-        self.assertEqual(processutils.get_worker_count(),
-                         neutron_service._get_api_workers())
+        # This value may end being scaled downward based on available RAM.
+        self.assertGreaterEqual(processutils.get_worker_count(),
+                                neutron_service._get_api_workers())
 
     def test_api_workers_from_config(self):
         cfg.CONF.set_override('api_workers', 1234)

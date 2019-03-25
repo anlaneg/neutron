@@ -21,8 +21,9 @@ from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import context
+from neutron_lib.db import api as session
 from neutron_lib.plugins import directory
-from neutron_lib import worker as neutron_worker
+from neutron_lib import rpc as n_rpc
 from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -31,16 +32,17 @@ from oslo_service import loopingcall
 from oslo_service import service as common_service
 from oslo_utils import excutils
 from oslo_utils import importutils
+import psutil
 
 from neutron.common import config
 from neutron.common import profiler
-from neutron.common import rpc as n_rpc
 from neutron.conf import service
-from neutron.db import api as session
+from neutron import worker as neutron_worker
 from neutron import wsgi
 
 
-service.register_service_opts(service.service_opts)
+service.register_service_opts(service.SERVICE_OPTS)
+service.register_service_opts(service.RPC_EXTRA_OPTS)
 
 LOG = logging.getLogger(__name__)
 
@@ -96,7 +98,7 @@ def serve_wsgi(cls):
     return service
 
 
-class RpcWorker(neutron_worker.BaseWorker):
+class RpcWorker(neutron_worker.NeutronBaseWorker):
     """Wraps a worker to be handled by ProcessLauncher"""
     start_listeners_method = 'start_rpc_listeners'
 
@@ -109,7 +111,7 @@ class RpcWorker(neutron_worker.BaseWorker):
         self._servers = []
 
     def start(self):
-        super(RpcWorker, self).start()
+        super(RpcWorker, self).start(desc="rpc worker")
         for plugin in self._plugins:
             if hasattr(plugin, self.start_listeners_method):
                 try:
@@ -151,28 +153,51 @@ class RpcReportsWorker(RpcWorker):
     start_listeners_method = 'start_rpc_state_reports_listener'
 
 
-def _get_rpc_workers():
-    plugin = directory.get_plugin()
+def _get_worker_count():
+    # Start with the number of CPUs
+    num_workers = processutils.get_worker_count()
+
+    # Now don't use more than half the system memory, assuming
+    # a steady-state bloat of around 2GB.
+    mem = psutil.virtual_memory()
+    mem_workers = int(mem.total / (2 * 1024 * 1024 * 1024))
+    if mem_workers < num_workers:
+        num_workers = mem_workers
+
+    # And just in case, always at least one.
+    if num_workers <= 0:
+        num_workers = 1
+
+    return num_workers
+
+
+def _get_rpc_workers(plugin=None):
+    if plugin is None:
+        plugin = directory.get_plugin()
     service_plugins = directory.get_plugins().values()
 
-    if cfg.CONF.rpc_workers < 1:
-        cfg.CONF.set_override('rpc_workers', 1)
+    workers = cfg.CONF.rpc_workers
+    if workers is None:
+        # By default, half as many rpc workers as api workers
+        workers = int(_get_worker_count() / 2)
+    if workers < 1:
+        workers = 1
 
-    # If 0 < rpc_workers then start_rpc_listeners would be called in a
+    # If workers > 0 then start_rpc_listeners would be called in a
     # subprocess and we cannot simply catch the NotImplementedError.  It is
     # simpler to check this up front by testing whether the plugin supports
     # multiple RPC workers.
     if not plugin.rpc_workers_supported():
         LOG.debug("Active plugin doesn't implement start_rpc_listeners")
-        if 0 < cfg.CONF.rpc_workers:
+        if workers > 0:
             LOG.error("'rpc_workers = %d' ignored because "
                       "start_rpc_listeners is not implemented.",
-                      cfg.CONF.rpc_workers)
+                      workers)
         raise NotImplementedError()
 
     # passing service plugins only, because core plugin is among them
     rpc_workers = [RpcWorker(service_plugins,
-                             worker_process_count=cfg.CONF.rpc_workers)]
+                             worker_process_count=workers)]
 
     if (cfg.CONF.rpc_state_report_workers > 0 and
             plugin.rpc_state_report_workers_supported()):
@@ -199,7 +224,7 @@ def _get_plugins_workers():
     ]
 
 
-class AllServicesNeutronWorker(neutron_worker.BaseWorker):
+class AllServicesNeutronWorker(neutron_worker.NeutronBaseWorker):
     def __init__(self, services, worker_process_count=1):
         super(AllServicesNeutronWorker, self).__init__(worker_process_count)
         self._services = services
@@ -209,7 +234,7 @@ class AllServicesNeutronWorker(neutron_worker.BaseWorker):
     def start(self):
         for srv in self._services:
             self._launcher.launch_service(srv)
-        super(AllServicesNeutronWorker, self).start()
+        super(AllServicesNeutronWorker, self).start(desc="services worker")
 
     def stop(self):
         self._launcher.stop()
@@ -248,7 +273,7 @@ def _start_workers(workers):
             # dispose the whole pool before os.fork, otherwise there will
             # be shared DB connections in child processes which may cause
             # DB errors.
-            session.context_manager.dispose_pool()
+            session.get_context_manager().dispose_pool()
 
             for worker in process_workers:
                 worker_launcher.launch_service(worker,
@@ -290,7 +315,7 @@ def _get_api_workers():
     workers = cfg.CONF.api_workers
     if workers is None:
         #如果不配置workers的数量，则默认每cpu上对应一个worker
-        workers = processutils.get_worker_count()
+        workers = _get_worker_count()
     return workers
 
 
@@ -307,7 +332,7 @@ def run_wsgi_app(app):
     server = wsgi.Server("Neutron")
     #启动paste的app
     server.start(app, cfg.CONF.bind_port, cfg.CONF.bind_host,
-                 workers=_get_api_workers())
+                 workers=_get_api_workers(), desc="api worker")
     LOG.info("Neutron service started, listening on %(host)s:%(port)s",
              {'host': cfg.CONF.bind_host, 'port': cfg.CONF.bind_port})
     return server

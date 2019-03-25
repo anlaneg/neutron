@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import errno
 import socket
 
@@ -20,7 +21,9 @@ import mock
 import netaddr
 from neutron_lib import constants
 from neutron_lib import exceptions
+from oslo_utils import uuidutils
 import pyroute2
+from pyroute2.netlink.rtnl import ifaddrmsg
 from pyroute2.netlink.rtnl import ifinfmsg
 from pyroute2.netlink.rtnl import ndmsg
 from pyroute2 import NetlinkError
@@ -28,7 +31,7 @@ import testtools
 
 from neutron.agent.common import utils  # noqa
 from neutron.agent.linux import ip_lib
-from neutron.common import exceptions as n_exc
+from neutron.common import utils as common_utils
 from neutron import privileged
 from neutron.privileged.agent.linux import ip_lib as priv_lib
 from neutron.tests import base
@@ -37,58 +40,6 @@ NETNS_SAMPLE = [
     '12345678-1234-5678-abcd-1234567890ab',
     'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
     'cccccccc-cccc-cccc-cccc-cccccccccccc']
-
-
-ADDR_SAMPLE = ("""
-2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP qlen 1000
-    link/ether dd:cc:aa:b9:76:ce brd ff:ff:ff:ff:ff:ff
-    inet 172.16.77.240/24 brd 172.16.77.255 scope global eth0
-    inet6 2001:470:9:1224:5595:dd51:6ba2:e788/64 scope global temporary dynamic
-       valid_lft 14187sec preferred_lft 3387sec
-    inet6 fe80::3023:39ff:febc:22ae/64 scope link tentative
-        valid_lft forever preferred_lft forever
-    inet6 fe80::3023:39ff:febc:22af/64 scope link tentative dadfailed
-        valid_lft forever preferred_lft forever
-    inet6 2001:470:9:1224:fd91:272:581e:3a32/64 scope global temporary """
-               """deprecated dynamic
-       valid_lft 14187sec preferred_lft 0sec
-    inet6 2001:470:9:1224:4508:b885:5fb:740b/64 scope global temporary """
-               """deprecated dynamic
-       valid_lft 14187sec preferred_lft 0sec
-    inet6 2001:470:9:1224:dfcc:aaff:feb9:76ce/64 scope global dynamic
-       valid_lft 14187sec preferred_lft 3387sec
-    inet6 fe80::dfcc:aaff:feb9:76ce/64 scope link
-       valid_lft forever preferred_lft forever
-""")
-
-ADDR_SAMPLE2 = ("""
-2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP qlen 1000
-    link/ether dd:cc:aa:b9:76:ce brd ff:ff:ff:ff:ff:ff
-    inet 172.16.77.240/24 scope global eth0
-    inet6 2001:470:9:1224:5595:dd51:6ba2:e788/64 scope global temporary dynamic
-       valid_lft 14187sec preferred_lft 3387sec
-    inet6 fe80::3023:39ff:febc:22ae/64 scope link tentative
-        valid_lft forever preferred_lft forever
-    inet6 fe80::3023:39ff:febc:22af/64 scope link tentative dadfailed
-        valid_lft forever preferred_lft forever
-    inet6 2001:470:9:1224:fd91:272:581e:3a32/64 scope global temporary """
-                """deprecated dynamic
-       valid_lft 14187sec preferred_lft 0sec
-    inet6 2001:470:9:1224:4508:b885:5fb:740b/64 scope global temporary """
-                """deprecated dynamic
-       valid_lft 14187sec preferred_lft 0sec
-    inet6 2001:470:9:1224:dfcc:aaff:feb9:76ce/64 scope global dynamic
-       valid_lft 14187sec preferred_lft 3387sec
-    inet6 fe80::dfcc:aaff:feb9:76ce/64 scope link
-       valid_lft forever preferred_lft forever
-""")
-
-
-ADDR_SAMPLE3 = ("""
-2: eth0@NONE: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP
-    link/ether dd:cc:aa:b9:76:ce brd ff:ff:ff:ff:ff:ff
-    inet 172.16.77.240/24 brd 172.16.77.255 scope global eth0
-""")
 
 GATEWAY_SAMPLE1 = ("""
 default via 10.35.19.254  metric 100
@@ -146,20 +97,6 @@ SUBNET_SAMPLE1 = ("10.0.0.0/24 dev qr-23380d11-d2  scope link  src 10.0.0.1\n"
                   "10.0.0.0/24 dev tap1d7888a7-10  scope link  src 10.0.0.2")
 SUBNET_SAMPLE2 = ("10.0.0.0/24 dev tap1d7888a7-10  scope link  src 10.0.0.2\n"
                   "10.0.0.0/24 dev qr-23380d11-d2  scope link  src 10.0.0.1")
-
-RULE_V4_SAMPLE = ("""
-0:      from all lookup local
-32766:  from all lookup main
-32767:  from all lookup default
-101:    from 192.168.45.100 lookup 2
-""")
-
-RULE_V6_SAMPLE = ("""
-0:      from all lookup local
-32766:  from all lookup main
-32767:  from all lookup default
-201:    from 2001:db8::1 lookup 3
-""")
 
 
 class TestSubProcessBase(base.BaseTestCase):
@@ -222,53 +159,31 @@ class TestIpWrapper(base.BaseTestCase):
         self.execute_p = mock.patch.object(ip_lib.IPWrapper, '_execute')
         self.execute = self.execute_p.start()
 
-    @mock.patch('os.path.islink')
-    @mock.patch('os.listdir', return_value=['lo'])
-    def test_get_devices(self, mocked_listdir, mocked_islink):
-        retval = ip_lib.IPWrapper().get_devices()
-        mocked_islink.assert_called_once_with('/sys/class/net/lo')
-        self.assertEqual([], retval)
+    @mock.patch.object(priv_lib, 'get_device_names')
+    def test_get_devices(self, mock_get_devices):
+        interfaces = ['br01', 'lo', 'gre0']
+        mock_get_devices.return_value = interfaces
+        devices = ip_lib.IPWrapper(namespace='foo').get_devices()
+        for device in devices:
+            self.assertEqual('br01', device.name)
+            interfaces.remove(device.name)
 
-    @mock.patch('neutron.agent.common.utils.execute')
-    def test_get_devices_namespaces(self, mocked_execute):
-        fake_str = mock.Mock()
-        fake_str.split.return_value = ['lo']
-        mocked_execute.return_value = fake_str
-        retval = ip_lib.IPWrapper(namespace='foo').get_devices()
-        mocked_execute.assert_called_once_with(
-                ['ip', 'netns', 'exec', 'foo', 'find', '/sys/class/net',
-                 '-maxdepth', '1', '-type', 'l', '-printf', '%f '],
-                run_as_root=True, log_fail_as_error=True)
-        self.assertTrue(fake_str.split.called)
-        self.assertEqual([], retval)
-
-    @mock.patch('neutron.agent.common.utils.execute')
-    def test_get_devices_namespaces_ns_not_exists(self, mocked_execute):
-        mocked_execute.side_effect = RuntimeError(
-            "Cannot open network namespace")
-        with mock.patch.object(ip_lib.IpNetnsCommand, 'exists',
-                               return_value=False):
-            retval = ip_lib.IPWrapper(namespace='foo').get_devices()
-            self.assertEqual([], retval)
-
-    @mock.patch('neutron.agent.common.utils.execute')
-    def test_get_devices_namespaces_ns_exists(self, mocked_execute):
-        mocked_execute.side_effect = RuntimeError(
-            "Cannot open network namespace")
-        with mock.patch.object(ip_lib.IpNetnsCommand, 'exists',
-                               return_value=True):
-            self.assertRaises(RuntimeError,
-                              ip_lib.IPWrapper(namespace='foo').get_devices)
-
-    @mock.patch('neutron.agent.common.utils.execute')
-    def test_get_devices_exclude_loopback_and_gre(self, mocked_execute):
-        device_name = 'somedevice'
-        mocked_execute.return_value = 'lo gre0 sit0 ip6gre0 ' + device_name
+    @mock.patch.object(priv_lib, 'get_device_names')
+    def test_get_devices_include_loopback_and_gre(self, mock_get_devices):
+        interfaces = ['br01', 'lo', 'gre0']
+        mock_get_devices.return_value = interfaces
         devices = ip_lib.IPWrapper(namespace='foo').get_devices(
-            exclude_loopback=True, exclude_fb_tun_devices=True)
-        somedevice = devices.pop()
-        self.assertEqual(device_name, somedevice.name)
-        self.assertFalse(devices)
+            exclude_loopback=False, exclude_fb_tun_devices=False)
+        for device in devices:
+            self.assertIn(device.name, interfaces)
+            interfaces.remove(device.name)
+        self.assertEqual(0, len(interfaces))
+
+    @mock.patch.object(priv_lib, 'get_device_names')
+    def test_get_devices_no_netspace(self, mock_get_devices):
+        mock_get_devices.side_effect = priv_lib.NetworkNamespaceNotFound(
+            netns_name='foo')
+        self.assertEqual([], ip_lib.IPWrapper(namespace='foo').get_devices())
 
     @mock.patch.object(pyroute2.netns, 'listnetns')
     @mock.patch.object(priv_lib, 'list_netns')
@@ -473,7 +388,7 @@ class TestIpWrapper(base.BaseTestCase):
 
     def test_add_vxlan_invalid_srcport_length(self):
         wrapper = ip_lib.IPWrapper()
-        self.assertRaises(n_exc.NetworkVxlanPortRangeError,
+        self.assertRaises(exceptions.NetworkVxlanPortRangeError,
                           wrapper.add_vxlan, 'vxlan0', 'vni0', group='group0',
                           dev='dev0', ttl='ttl0', tos='tos0',
                           local='local0', proxy=True,
@@ -481,7 +396,7 @@ class TestIpWrapper(base.BaseTestCase):
 
     def test_add_vxlan_invalid_srcport_range(self):
         wrapper = ip_lib.IPWrapper()
-        self.assertRaises(n_exc.NetworkVxlanPortRangeError,
+        self.assertRaises(exceptions.NetworkVxlanPortRangeError,
                           wrapper.add_vxlan, 'vxlan0', 'vni0', group='group0',
                           dev='dev0', ttl='ttl0', tos='tos0',
                           local='local0', proxy=True,
@@ -639,93 +554,65 @@ class TestIpRuleCommand(TestIPCmdBase):
     def setUp(self):
         super(TestIpRuleCommand, self).setUp()
         self.parent._as_root.return_value = ''
+        self.ns = uuidutils.generate_uuid()
+        self.parent.namespace = self.ns
         self.command = 'rule'
-        self.rule_cmd = ip_lib.IpRuleCommand(self.parent)
+        self._mock_priv_list_ip_rules = mock.patch.object(priv_lib,
+                                                          'list_ip_rules')
+        self.mock_priv_list_ip_rules = self._mock_priv_list_ip_rules.start()
+        self.addCleanup(self._stop_mock)
 
-    def _test_add_rule(self, ip, table, priority):
+    def _stop_mock(self):
+        self._mock_priv_list_ip_rules.stop()
+
+    def _test_add_rule(self, ip, iif, table, priority):
         ip_version = netaddr.IPNetwork(ip).version
-        self.rule_cmd.add(ip, table=table, priority=priority)
-        self._assert_sudo([ip_version], (['show']))
-        self._assert_sudo([ip_version], ('add', 'from', ip,
-                                         'priority', str(priority),
-                                         'table', str(table),
-                                         'type', 'unicast'))
+        ip_family = common_utils.get_socket_address_family(ip_version)
+        table_num = ip_lib.IP_RULE_TABLES.get(table) or int(table)
+        cmd_args = {'table': table_num,
+                    'priority': priority,
+                    'family': ip_family}
+        if iif:
+            cmd_args['iifname'] = iif
+        else:
+            cmd_args['src'] = ip
+            cmd_args['src_len'] = common_utils.get_network_length(ip_version)
+
+        with mock.patch.object(priv_lib, 'add_ip_rule') as mock_add_ip_rule:
+            ip_lib.add_ip_rule('namespace', ip, iif=iif, table=table,
+                               priority=priority)
+            mock_add_ip_rule.assert_called_once_with('namespace', **cmd_args)
 
     def _test_add_rule_exists(self, ip, table, priority, output):
         self.parent._as_root.return_value = output
-        ip_version = netaddr.IPNetwork(ip).version
-        self.rule_cmd.add(ip, table=table, priority=priority)
-        self._assert_sudo([ip_version], (['show']))
+        with mock.patch.object(ip_lib, '_exist_ip_rule', return_value=True) \
+                as mock_exists:
+            ip_lib.add_ip_rule(self.ns, ip, table=table, priority=priority)
+            kwargs = {'from': ip, 'priority': str(priority),
+                      'table': str(table), 'type': 'unicast'}
+            mock_exists.assert_called_once_with(
+                common_utils.get_ip_version(ip), **kwargs)
 
     def _test_delete_rule(self, ip, table, priority):
-        ip_version = netaddr.IPNetwork(ip).version
-        self.rule_cmd.delete(ip, table=table, priority=priority)
-        self._assert_sudo([ip_version],
-                          ('del', 'from', ip, 'priority', str(priority),
-                           'table', str(table), 'type', 'unicast'))
-
-    def test__parse_line(self):
-        def test(ip_version, line, expected):
-            actual = self.rule_cmd._parse_line(ip_version, line)
-            self.assertEqual(expected, actual)
-
-        test(4, "4030201:\tfrom 1.2.3.4/24 lookup 10203040",
-             {'from': '1.2.3.4/24',
-              'table': '10203040',
-              'type': 'unicast',
-              'priority': '4030201'})
-        test(6, "1024:    from all iif qg-c43b1928-48 lookup noscope",
-             {'priority': '1024',
-              'from': '::/0',
-              'type': 'unicast',
-              'iif': 'qg-c43b1928-48',
-              'table': 'noscope'})
-
-    def test__make_canonical_all_v4(self):
-        actual = self.rule_cmd._make_canonical(4, {'from': 'all'})
-        self.assertEqual({'from': '0.0.0.0/0', 'type': 'unicast'}, actual)
-
-    def test__make_canonical_all_v6(self):
-        actual = self.rule_cmd._make_canonical(6, {'from': 'all'})
-        self.assertEqual({'from': '::/0', 'type': 'unicast'}, actual)
-
-    def test__make_canonical_lookup(self):
-        actual = self.rule_cmd._make_canonical(6, {'lookup': 'table'})
-        self.assertEqual({'table': 'table', 'type': 'unicast'}, actual)
-
-    def test__make_canonical_iif(self):
-        actual = self.rule_cmd._make_canonical(6, {'iif': 'iface_name'})
-        self.assertEqual({'iif': 'iface_name', 'type': 'unicast'}, actual)
-
-    def test__make_canonical_fwmark(self):
-        actual = self.rule_cmd._make_canonical(6, {'fwmark': '0x400'})
-        self.assertEqual({'fwmark': '0x400/0xffffffff',
-                          'type': 'unicast'}, actual)
-
-    def test__make_canonical_fwmark_with_mask(self):
-        actual = self.rule_cmd._make_canonical(6, {'fwmark': '0x400/0x00ff'})
-        self.assertEqual({'fwmark': '0x400/0xff', 'type': 'unicast'}, actual)
-
-    def test__make_canonical_fwmark_integer(self):
-        actual = self.rule_cmd._make_canonical(6, {'fwmark': 0x400})
-        self.assertEqual({'fwmark': '0x400/0xffffffff',
-                          'type': 'unicast'}, actual)
-
-    def test__make_canonical_fwmark_iterable(self):
-        actual = self.rule_cmd._make_canonical(6, {'fwmark': (0x400, 0xffff)})
-        self.assertEqual({'fwmark': '0x400/0xffff', 'type': 'unicast'}, actual)
+        with mock.patch.object(priv_lib, 'delete_ip_rule') as mock_delete:
+            ip_lib.delete_ip_rule(self.ns, ip, table=table, priority=priority)
+            args = ip_lib._make_pyroute2_args(ip, None, table, priority, None)
+            mock_delete.assert_called_with(self.ns, **args)
 
     def test_add_rule_v4(self):
-        self._test_add_rule('192.168.45.100', 2, 100)
+        self._test_add_rule('192.168.45.100', None, 2, 100)
 
-    def test_add_rule_v4_exists(self):
-        self._test_add_rule_exists('192.168.45.100', 2, 101, RULE_V4_SAMPLE)
+    def test_add_rule_v4_iif(self):
+        self._test_add_rule('192.168.45.100', 'iif_name', 2, 100)
 
     def test_add_rule_v6(self):
-        self._test_add_rule('2001:db8::1', 3, 200)
+        self._test_add_rule('2001:db8::1', None, 3, 200)
 
-    def test_add_rule_v6_exists(self):
-        self._test_add_rule_exists('2001:db8::1', 3, 201, RULE_V6_SAMPLE)
+    def test_add_rule_table_string(self):
+        self._test_add_rule('2001:db8::1', None, 'default', 200)
+        self._test_add_rule('2001:db8::1', None, 'main', 200)
+        self._test_add_rule('2001:db8::1', None, 'local', 200)
+        self._test_add_rule('2001:db8::1', None, '100', 200)
 
     def test_delete_rule_v4(self):
         self._test_delete_rule('192.168.45.100', 2, 100)
@@ -792,6 +679,12 @@ class TestIpLinkCommand(TestIPCmdBase):
         self.link_cmd.set_alias('openvswitch')
         set_link_attribute.assert_called_once_with(
             self.parent.name, self.parent.namespace, ifalias='openvswitch')
+
+    @mock.patch.object(priv_lib, 'create_interface')
+    def test_create(self, create):
+        self.link_cmd.create()
+        create.assert_called_once_with(self.parent.name, self.parent.namespace,
+                                       self.parent.kind)
 
     @mock.patch.object(priv_lib, 'delete_interface')
     def test_delete(self, delete):
@@ -864,48 +757,8 @@ class TestIpAddrCommand(TestIPCmdBase):
         flush.assert_called_once_with(
             6, self.parent.name, self.addr_cmd._parent.namespace)
 
-    def test_list(self):
-        expected_brd = [
-            dict(name='eth0', scope='global', tentative=False, dadfailed=False,
-                 dynamic=False, cidr='172.16.77.240/24',
-                 broadcast='172.16.77.255')]
-        expected_no_brd = [
-            dict(name='eth0', scope='global', tentative=False, dadfailed=False,
-                 dynamic=False, cidr='172.16.77.240/24', broadcast=None)]
-        expected_ipv6 = [
-            dict(name='eth0', scope='global', dadfailed=False, tentative=False,
-                 dynamic=True, cidr='2001:470:9:1224:5595:dd51:6ba2:e788/64',
-                 broadcast=None),
-            dict(name='eth0', scope='link', dadfailed=False, tentative=True,
-                 dynamic=False, cidr='fe80::3023:39ff:febc:22ae/64',
-                 broadcast=None),
-            dict(name='eth0', scope='link', dadfailed=True, tentative=True,
-                 dynamic=False, cidr='fe80::3023:39ff:febc:22af/64',
-                 broadcast=None),
-            dict(name='eth0', scope='global', dadfailed=False, tentative=False,
-                 dynamic=True, cidr='2001:470:9:1224:fd91:272:581e:3a32/64',
-                 broadcast=None),
-            dict(name='eth0', scope='global', dadfailed=False, tentative=False,
-                 dynamic=True, cidr='2001:470:9:1224:4508:b885:5fb:740b/64',
-                 broadcast=None),
-            dict(name='eth0', scope='global', dadfailed=False, tentative=False,
-                 dynamic=True, cidr='2001:470:9:1224:dfcc:aaff:feb9:76ce/64',
-                 broadcast=None),
-            dict(name='eth0', scope='link', dadfailed=False, tentative=False,
-                 dynamic=False, cidr='fe80::dfcc:aaff:feb9:76ce/64',
-                 broadcast=None)]
-
-        cases = [
-            (ADDR_SAMPLE, expected_brd + expected_ipv6),
-            (ADDR_SAMPLE2, expected_no_brd + expected_ipv6)]
-
-        for test_case, expected in cases:
-            self.parent._run = mock.Mock(return_value=test_case)
-            self.assertEqual(expected, self.addr_cmd.list())
-            self._assert_call([], ('show', 'tap0'))
-
     def test_wait_until_address_ready(self):
-        self.parent._run.return_value = ADDR_SAMPLE
+        self.addr_cmd.list = mock.Mock(return_value=[{'tentative': False}])
         # this address is not tentative or failed so it should return
         self.assertIsNone(self.addr_cmd.wait_until_address_ready(
             '2001:470:9:1224:fd91:272:581e:3a32'))
@@ -924,44 +777,68 @@ class TestIpAddrCommand(TestIPCmdBase):
             self.addr_cmd.wait_until_address_ready(tentative_address,
                                                    wait_time=1)
 
-    def test_list_filtered(self):
-        expected_brd = [
-            dict(name='eth0', scope='global', tentative=False, dadfailed=False,
-                 dynamic=False, cidr='172.16.77.240/24',
-                 broadcast='172.16.77.255')]
-        expected_no_brd = [
-            dict(name='eth0', scope='global', tentative=False, dadfailed=False,
-                 dynamic=False, cidr='172.16.77.240/24', broadcast=None)]
+    @mock.patch.object(ip_lib, 'get_devices_with_ip')
+    def test_list(self, mock_get_dev_ip):
+        self.addr_cmd._parent.namespace = 'test_ns'
+        self.addr_cmd.list()
+        mock_get_dev_ip.assert_called_once_with('test_ns',
+                                                name=self.addr_cmd.name)
 
-        cases = [
-            (ADDR_SAMPLE, expected_brd), (ADDR_SAMPLE2, expected_no_brd)]
+    @mock.patch.object(ip_lib, 'get_devices_with_ip')
+    def test_list_scope(self, mock_get_dev_ip):
+        self.addr_cmd._parent.namespace = 'test_ns'
+        self.addr_cmd.list(scope='link')
+        mock_get_dev_ip.assert_called_once_with('test_ns',
+                                                name=self.addr_cmd.name,
+                                                scope=253)
 
-        for test_case, expected in cases:
-            output = '\n'.join(test_case.split('\n')[0:4])
-            self.parent._run.return_value = output
-            self.assertEqual(
-                expected,
-                self.addr_cmd.list(
-                    'global', filters=['permanent']))
-            self._assert_call([], ('show', 'tap0', 'permanent', 'scope',
-                              'global'))
+    @mock.patch.object(ip_lib, 'get_devices_with_ip')
+    def test_list_to(self, mock_get_dev_ip):
+        self.addr_cmd._parent.namespace = 'test_ns'
+        cidrs = [{'cidr': '1.2.3.4', 'mask': None},
+                 {'cidr': '1.2.3.4/24', 'mask': 24},
+                 {'cidr': '2001:db8::1', 'mask': None},
+                 {'cidr': '2001:db8::1/64', 'mask': 64}]
+        for cidr in cidrs:
+            self.addr_cmd.list(to=cidr['cidr'])
+            args = {'name': self.addr_cmd.name,
+                    'address': common_utils.cidr_to_ip(cidr['cidr'])}
+            if cidr['mask']:
+                args['mask'] = cidr['mask']
+            mock_get_dev_ip.assert_called_once_with('test_ns', **args)
+            mock_get_dev_ip.reset_mock()
 
-    def test_get_devices_with_ip(self):
-        # This can only verify that get_devices_with_ip() returns a dict
-        # with the correct entry, it doesn't actually test that it only
-        # returns items filtered by the arguments since it isn't calling
-        # /sbin/ip at all.
-        self.parent._run.return_value = ADDR_SAMPLE3
-        devices = self.addr_cmd.get_devices_with_ip(to='172.16.77.240/24')
-        self.assertEqual(1, len(devices))
-        expected = {'cidr': '172.16.77.240/24',
-                    'broadcast': '172.16.77.255',
-                    'dadfailed': False,
-                    'dynamic': False,
-                    'name': 'eth0',
-                    'scope': 'global',
-                    'tentative': False}
-        self.assertEqual(expected, devices[0])
+    @mock.patch.object(ip_lib, 'get_devices_with_ip')
+    def test_list_ip_version(self, mock_get_dev_ip):
+        self.addr_cmd._parent.namespace = 'test_ns'
+        ip_versions = [
+            {'ip_version': constants.IP_VERSION_4, 'family': socket.AF_INET},
+            {'ip_version': constants.IP_VERSION_6, 'family': socket.AF_INET6}]
+        for ip_version in ip_versions:
+            self.addr_cmd.list(ip_version=ip_version['ip_version'])
+            mock_get_dev_ip.assert_called_once_with(
+                'test_ns', name=self.addr_cmd.name,
+                family=ip_version['family'])
+            mock_get_dev_ip.reset_mock()
+
+    @mock.patch.object(ip_lib, 'get_devices_with_ip')
+    def test_list_filters_dynamic_permanent(self, mock_get_dev_ip):
+        self.addr_cmd._parent.namespace = 'test_ns'
+        mock_get_dev_ip.return_value = [{'dynamic': True}]
+        retval = self.addr_cmd.list(filters=['dynamic'])
+        self.assertEqual(1, len(retval))
+        retval = self.addr_cmd.list(filters=['permanent'])
+        self.assertEqual(0, len(retval))
+
+    @mock.patch.object(ip_lib, 'get_devices_with_ip')
+    def test_list_filters_tentative_dadfailed(self, mock_get_dev_ip):
+        self.addr_cmd._parent.namespace = 'test_ns'
+        mock_get_dev_ip.return_value = [{'tentative': True,
+                                         'dadfailed': False}]
+        retval = self.addr_cmd.list(filters=['tentative'])
+        self.assertEqual(1, len(retval))
+        retval = self.addr_cmd.list(filters=['tentative', 'dadfailed'])
+        self.assertEqual(0, len(retval))
 
 
 class TestIpRouteCommand(TestIPCmdBase):
@@ -1835,7 +1712,7 @@ class TestSetIpNonlocalBindForHaNamespace(base.BaseTestCase):
     def test_setting_failure(self):
         """Make sure message is formatted correctly."""
         with mock.patch.object(ip_lib, 'set_ip_nonlocal_bind', return_value=1):
-            ip_lib.set_ip_nonlocal_bind_for_namespace('foo')
+            ip_lib.set_ip_nonlocal_bind_for_namespace('foo', value=1)
 
 
 class TestSysctl(base.BaseTestCase):
@@ -1879,3 +1756,309 @@ class TestConntrack(base.BaseTestCase):
         device.delete_socket_conntrack_state(ip_str, dport, protocol)
         self.execute.assert_called_once_with(expect_cmd, check_exit_code=True,
                                              extra_ok_codes=[1])
+
+
+class ParseIpRuleTestCase(base.BaseTestCase):
+
+    BASE_RULE = {
+        'family': 2, 'dst_len': 0, 'res2': 0, 'tos': 0, 'res1': 0, 'flags': 0,
+        'header': {
+            'pid': 18152, 'length': 44, 'flags': 2, 'error': None, 'type': 32,
+            'sequence_number': 281},
+        'attrs': {'FRA_TABLE': 255, 'FRA_SUPPRESS_PREFIXLEN': 4294967295},
+        'table': 255, 'action': 1, 'src_len': 0, 'event': 'RTM_NEWRULE'}
+
+    def setUp(self):
+        super(ParseIpRuleTestCase, self).setUp()
+        self.rule = copy.deepcopy(self.BASE_RULE)
+
+    def test_parse_priority(self):
+        self.rule['attrs']['FRA_PRIORITY'] = 1000
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertEqual('1000', parsed_rule['priority'])
+
+    def test_parse_from_ipv4(self):
+        self.rule['attrs']['FRA_SRC'] = '192.168.0.1'
+        self.rule['src_len'] = 24
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertEqual('192.168.0.1/24', parsed_rule['from'])
+
+    def test_parse_from_ipv6(self):
+        self.rule['attrs']['FRA_SRC'] = '2001:db8::1'
+        self.rule['src_len'] = 64
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 6)
+        self.assertEqual('2001:db8::1/64', parsed_rule['from'])
+
+    def test_parse_from_any_ipv4(self):
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertEqual('0.0.0.0/0', parsed_rule['from'])
+
+    def test_parse_from_any_ipv6(self):
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 6)
+        self.assertEqual('::/0', parsed_rule['from'])
+
+    def test_parse_to_ipv4(self):
+        self.rule['attrs']['FRA_DST'] = '192.168.10.1'
+        self.rule['dst_len'] = 24
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertEqual('192.168.10.1/24', parsed_rule['to'])
+
+    def test_parse_to_ipv6(self):
+        self.rule['attrs']['FRA_DST'] = '2001:db8::1'
+        self.rule['dst_len'] = 64
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 6)
+        self.assertEqual('2001:db8::1/64', parsed_rule['to'])
+
+    def test_parse_to_none(self):
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertIsNone(parsed_rule.get('to'))
+
+    def test_parse_table(self):
+        self.rule['attrs']['FRA_TABLE'] = 255
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertEqual('local', parsed_rule['table'])
+        self.rule['attrs']['FRA_TABLE'] = 254
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertEqual('main', parsed_rule['table'])
+        self.rule['attrs']['FRA_TABLE'] = 253
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertEqual('default', parsed_rule['table'])
+        self.rule['attrs']['FRA_TABLE'] = 1000
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertEqual('1000', parsed_rule['table'])
+
+    def test_parse_fwmark(self):
+        self.rule['attrs']['FRA_FWMARK'] = 1000
+        self.rule['attrs']['FRA_FWMASK'] = 10
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertEqual('0x3e8/0xa', parsed_rule['fwmark'])
+
+    def test_parse_fwmark_none(self):
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertIsNone(parsed_rule.get('fwmark'))
+
+    def test_parse_iif(self):
+        self.rule['attrs']['FRA_IIFNAME'] = 'input_interface_name'
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertEqual('input_interface_name', parsed_rule['iif'])
+
+    def test_parse_iif_none(self):
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertIsNone(parsed_rule.get('iif'))
+
+    def test_parse_oif(self):
+        self.rule['attrs']['FRA_OIFNAME'] = 'output_interface_name'
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertEqual('output_interface_name', parsed_rule['oif'])
+
+    def test_parse_oif_none(self):
+        parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
+        self.assertIsNone(parsed_rule.get('oif'))
+
+
+class ListIpRulesTestCase(base.BaseTestCase):
+
+    def test_list_ip_rules(self):
+        rule1 = {'family': 2, 'src_len': 24, 'action': 1,
+                 'attrs': {'FRA_SRC': '10.0.0.1', 'FRA_TABLE': 100}}
+        rule2 = {'family': 2, 'src_len': 0, 'action': 6,
+                 'attrs': {'FRA_TABLE': 255}}
+        rules = [rule1, rule2]
+        with mock.patch.object(priv_lib, 'list_ip_rules') as mock_list_rules:
+            mock_list_rules.return_value = rules
+            retval = ip_lib.list_ip_rules(mock.ANY, 4)
+        reference = [
+            {'type': 'unicast', 'from': '10.0.0.1/24', 'priority': '0',
+             'table': '100'},
+            {'type': 'blackhole', 'from': '0.0.0.0/0', 'priority': '0',
+             'table': 'local'}]
+        self.assertEqual(reference, retval)
+
+
+class ParseLinkDeviceTestCase(base.BaseTestCase):
+
+    def setUp(self):
+        super(ParseLinkDeviceTestCase, self).setUp()
+        self._mock_get_ip_addresses = mock.patch.object(priv_lib,
+                                                        'get_ip_addresses')
+        self.mock_get_ip_addresses = self._mock_get_ip_addresses.start()
+        self.addCleanup(self._stop_mock)
+
+    def _stop_mock(self):
+        self._mock_get_ip_addresses.stop()
+
+    def test_parse_link_devices(self):
+        device = ({'index': 1, 'attrs': [['IFLA_IFNAME', 'int_name']]})
+        self.mock_get_ip_addresses.return_value = [
+            {'prefixlen': 24, 'scope': 200, 'attrs': [
+                ['IFA_ADDRESS', '192.168.10.20'],
+                ['IFA_FLAGS', ifaddrmsg.IFA_F_PERMANENT]]},
+            {'prefixlen': 64, 'scope': 200, 'attrs': [
+                ['IFA_ADDRESS', '2001:db8::1'],
+                ['IFA_FLAGS', ifaddrmsg.IFA_F_PERMANENT]]}]
+
+        retval = ip_lib._parse_link_device('namespace', device)
+        expected = [{'scope': 'site', 'cidr': '192.168.10.20/24',
+                     'dynamic': False, 'dadfailed': False, 'name': 'int_name',
+                     'broadcast': None, 'tentative': False},
+                    {'scope': 'site', 'cidr': '2001:db8::1/64',
+                     'dynamic': False, 'dadfailed': False, 'name': 'int_name',
+                     'broadcast': None, 'tentative': False}]
+        self.assertEqual(expected, retval)
+
+
+class GetDevicesInfoTestCase(base.BaseTestCase):
+
+    DEVICE_LO = {
+        'index': 2,
+        'attrs': (('IFLA_IFNAME', 'lo'), ('IFLA_OPERSTATE', 'UP'),
+                  ('IFLA_LINKMODE', 0), ('IFLA_MTU', 1000),
+                  ('IFLA_PROMISCUITY', 0),
+                  ('IFLA_ADDRESS', '5a:76:ed:cc:ce:90'),
+                  ('IFLA_BROADCAST', 'ff:ff:ff:ff:ff:f0'), )
+    }
+
+    DEVICE_DUMMY = {
+        'index': 2,
+        'attrs': (('IFLA_IFNAME', 'int_01'), ('IFLA_OPERSTATE', 'DOWN'),
+                  ('IFLA_LINKMODE', 0), ('IFLA_MTU', 1500),
+                  ('IFLA_PROMISCUITY', 0),
+                  ('IFLA_ADDRESS', '5a:76:ed:cc:ce:90'),
+                  ('IFLA_BROADCAST', 'ff:ff:ff:ff:ff:f0'),
+                  ('IFLA_LINKINFO', {
+                      'attrs': (('IFLA_INFO_KIND', 'dummy'), )}))
+    }
+    DEVICE_VLAN = {
+        'index': 5,
+        'attrs': (('IFLA_IFNAME', 'int_02'), ('IFLA_OPERSTATE', 'DOWN'),
+                  ('IFLA_LINKMODE', 0), ('IFLA_MTU', 1400),
+                  ('IFLA_PROMISCUITY', 0),
+                  ('IFLA_ADDRESS', '5a:76:ed:cc:ce:91'),
+                  ('IFLA_BROADCAST', 'ff:ff:ff:ff:ff:f1'),
+                  ('IFLA_LINK', 2),
+                  ('IFLA_LINKINFO', {'attrs': (
+                      ('IFLA_INFO_KIND', 'vlan'),
+                      ('IFLA_INFO_DATA', {'attrs': (('IFLA_VLAN_ID', 1000), )})
+                  )}))
+    }
+    DEVICE_VXLAN = {
+        'index': 9,
+        'attrs': (('IFLA_IFNAME', 'int_03'), ('IFLA_OPERSTATE', 'UP'),
+                  ('IFLA_LINKMODE', 0), ('IFLA_MTU', 1300),
+                  ('IFLA_PROMISCUITY', 0),
+                  ('IFLA_ADDRESS', '5a:76:ed:cc:ce:92'),
+                  ('IFLA_BROADCAST', 'ff:ff:ff:ff:ff:f2'),
+                  ('IFLA_LINKINFO', {'attrs': (
+                      ('IFLA_INFO_KIND', 'vxlan'),
+                      ('IFLA_INFO_DATA', {'attrs': (
+                          ('IFLA_VXLAN_ID', 1001),
+                          ('IFLA_VXLAN_GROUP', '239.1.1.1'),
+                          ('IFLA_VXLAN_LINK', 2))})
+                  )}))
+    }
+
+    DEVICE_VETH = {
+        'index': 11,
+        'attrs': (('IFLA_IFNAME', 'int_04'), ('IFLA_OPERSTATE', 'UP'),
+                  ('IFLA_LINKMODE', 0), ('IFLA_MTU', 900),
+                  ('IFLA_PROMISCUITY', 0),
+                  ('IFLA_ADDRESS', '5a:76:ed:cc:ce:93'),
+                  ('IFLA_BROADCAST', 'ff:ff:ff:ff:ff:f3'),
+                  ('IFLA_LINK', 30),
+                  ('IFLA_LINKINFO', {
+                      'attrs': (('IFLA_INFO_KIND', 'veth'), )}))
+    }
+
+    def setUp(self):
+        super(GetDevicesInfoTestCase, self).setUp()
+        self.mock_getdevs = mock.patch.object(priv_lib,
+                                              'get_link_devices').start()
+
+    def test_get_devices_info_lo(self):
+        self.mock_getdevs.return_value = (self.DEVICE_LO, )
+        ret = ip_lib.get_devices_info('namespace')
+        expected = {'index': 2,
+                    'name': 'lo',
+                    'operstate': 'UP',
+                    'linkmode': 0,
+                    'mtu': 1000,
+                    'promiscuity': 0,
+                    'mac': '5a:76:ed:cc:ce:90',
+                    'broadcast': 'ff:ff:ff:ff:ff:f0'}
+        self.assertEqual(expected, ret[0])
+
+    def test_get_devices_info_dummy(self):
+        self.mock_getdevs.return_value = (self.DEVICE_DUMMY, )
+        ret = ip_lib.get_devices_info('namespace')
+        expected = {'index': 2,
+                    'name': 'int_01',
+                    'operstate': 'DOWN',
+                    'linkmode': 0,
+                    'mtu': 1500,
+                    'promiscuity': 0,
+                    'mac': '5a:76:ed:cc:ce:90',
+                    'broadcast': 'ff:ff:ff:ff:ff:f0',
+                    'kind': 'dummy'}
+        self.assertEqual(expected, ret[0])
+
+    def test_get_devices_info_vlan(self):
+        self.mock_getdevs.return_value = (self.DEVICE_VLAN, self.DEVICE_DUMMY)
+        ret = ip_lib.get_devices_info('namespace')
+        expected = {'index': 5,
+                    'name': 'int_02',
+                    'operstate': 'DOWN',
+                    'linkmode': 0,
+                    'mtu': 1400,
+                    'promiscuity': 0,
+                    'mac': '5a:76:ed:cc:ce:91',
+                    'broadcast': 'ff:ff:ff:ff:ff:f1',
+                    'kind': 'vlan',
+                    'vlan_id': 1000,
+                    'parent_index': 2,
+                    'parent_name': 'int_01'}
+        for device in (device for device in ret if device['kind'] == 'vlan'):
+            self.assertEqual(expected, device)
+            break
+        else:
+            self.fail('No VLAN device found')
+
+    def test_get_devices_info_vxlan(self):
+        self.mock_getdevs.return_value = (self.DEVICE_VXLAN, self.DEVICE_DUMMY)
+        ret = ip_lib.get_devices_info('namespace')
+        expected = {'index': 9,
+                    'name': 'int_03',
+                    'operstate': 'UP',
+                    'linkmode': 0,
+                    'mtu': 1300,
+                    'promiscuity': 0,
+                    'mac': '5a:76:ed:cc:ce:92',
+                    'broadcast': 'ff:ff:ff:ff:ff:f2',
+                    'kind': 'vxlan',
+                    'vxlan_id': 1001,
+                    'vxlan_group': '239.1.1.1',
+                    'vxlan_link_index': 2,
+                    'vxlan_link_name': 'int_01'}
+        for device in (device for device in ret if device['kind'] == 'vxlan'):
+            self.assertEqual(expected, device)
+            break
+        else:
+            self.fail('No VXLAN device found')
+
+    def test_get_devices_info_veth(self):
+        self.mock_getdevs.return_value = (self.DEVICE_VETH, self.DEVICE_DUMMY)
+        ret = ip_lib.get_devices_info('namespace')
+        expected = {'index': 11,
+                    'name': 'int_04',
+                    'operstate': 'UP',
+                    'linkmode': 0,
+                    'mtu': 900,
+                    'promiscuity': 0,
+                    'mac': '5a:76:ed:cc:ce:93',
+                    'broadcast': 'ff:ff:ff:ff:ff:f3',
+                    'kind': 'veth',
+                    'parent_index': 30}
+        for device in (device for device in ret if device['kind'] == 'veth'):
+            self.assertEqual(expected, device)
+            break
+        else:
+            self.fail('No VETH device found')

@@ -14,6 +14,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import datetime
 
 from eventlet import greenthread
@@ -27,6 +28,7 @@ from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib.db import api as db_api
+from neutron_lib.db import model_query
 from neutron_lib.db import utils as db_utils
 from neutron_lib.exceptions import agent as agent_exc
 from neutron_lib.exceptions import availability_zone as az_exc
@@ -43,7 +45,6 @@ from neutron.agent.common import utils
 from neutron.api.rpc.callbacks import version_manager
 from neutron.common import constants as n_const
 from neutron.conf.agent.database import agents_db
-from neutron.db import _model_query as model_query
 from neutron.db.models import agent as agent_model
 from neutron.extensions import _availability_zone_filter_lib as azfil_ext
 from neutron.extensions import agent as ext_agent
@@ -261,6 +262,7 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
         res['resource_versions'] = self._get_dict(agent, 'resource_versions',
                                                   ignore_missing=True)
         res['availability_zone'] = agent['availability_zone']
+        res['resources_synced'] = agent['resources_synced']
         return db_utils.resource_fields(res, fields)
 
     @db_api.retry_if_session_inactive()
@@ -274,7 +276,7 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
     @db_api.retry_if_session_inactive()
     def update_agent(self, context, id, agent):
         agent_data = agent['agent']
-        with context.session.begin(subtransactions=True):
+        with db_api.CONTEXT_WRITER.using(context):
             agent = self._get_agent(context, id)
             agent.update_fields(agent_data)
             agent.update()
@@ -377,7 +379,7 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
         It could be used by agent to do some sync with the server if needed.
         """
         status = agent_consts.AGENT_ALIVE
-        with context.session.begin(subtransactions=True):
+        with db_api.CONTEXT_WRITER.using(context):
             res_keys = ['agent_type', 'binary', 'host', 'topic']
             res = dict((k, agent_state[k]) for k in res_keys)
             if 'availability_zone' in agent_state:
@@ -393,6 +395,7 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
             try:
                 agent = self._get_agent_by_type_and_host(
                     context, agent_state['agent_type'], agent_state['host'])
+                agent_state_orig = copy.deepcopy(agent_state)
                 if not agent.is_active:
                     status = agent_consts.AGENT_REVIVED
                     if 'resource_versions' not in agent_state:
@@ -413,6 +416,7 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
                 agent.update()
                 event_type = events.AFTER_UPDATE
             except agent_exc.AgentNotFoundByTypeHost:
+                agent_state_orig = None
                 #没有找到具体的agent,需要创建
                 greenthread.sleep(0)
                 res['created_at'] = current_time
@@ -430,9 +434,17 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
         agent_state['agent_status'] = status
         agent_state['admin_state_up'] = agent.admin_state_up
         #触发agent after update 或者 after create事件
-        registry.notify(resources.AGENT, event_type, self, context=context,
-                        host=agent_state['host'], plugin=self,
-                        agent=agent_state)
+        registry.publish(resources.AGENT, event_type, self,
+                         payload=events.DBEventPayload(
+                             context=context, metadata={
+                                 'host': agent_state['host'],
+                                 'plugin': self,
+                                 'status': status
+                             },
+                             states=(agent_state_orig, ),
+                             desired_state=agent_state,
+                             resource_id=agent.id
+                         ))
         #返回agent状态及创建的agent状态记录
         return status, agent_state
 
@@ -469,9 +481,10 @@ class AgentExtRpcCallback(object):
     API version history:
         1.0 - Initial version.
         1.1 - report_state now returns agent state.
+        1.2 - add method has_alive_neutron_server.
     """
 
-    target = oslo_messaging.Target(version='1.1',
+    target = oslo_messaging.Target(version='1.2',
                                    namespace=n_const.RPC_NAMESPACE_STATE)
     START_TIME = timeutils.utcnow()
 
@@ -484,6 +497,9 @@ class AgentExtRpcCallback(object):
             'neutron.api.rpc.handlers.resources_rpc')
         # Initialize RPC api directed to other neutron-servers
         self.server_versions_rpc = resources_rpc.ResourcesPushToServersRpcApi()
+
+    def has_alive_neutron_server(self, context, **kwargs):
+        return True
 
     #neutron server收到agent的状态上报
     @db_api.retry_if_session_inactive()
@@ -559,5 +575,5 @@ class AgentExtRpcCallback(object):
                           "a timestamp: %(agent_time)s. This differs from "
                           "the current server timestamp: %(serv_time)s by "
                           "%(diff)s seconds, which is more than the "
-                          "threshold agent down"
+                          "threshold agent down "
                           "time: %(threshold)s.", log_dict)

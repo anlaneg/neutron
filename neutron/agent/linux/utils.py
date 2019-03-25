@@ -25,6 +25,7 @@ import time
 
 import eventlet
 from eventlet.green import subprocess
+from neutron_lib import exceptions
 from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -36,7 +37,6 @@ from six.moves import http_client as httplib
 
 from neutron._i18n import _
 from neutron.agent.linux import xenapi_root_helper
-from neutron.common import exceptions
 from neutron.common import utils
 from neutron.conf.agent import common as config
 from neutron import wsgi
@@ -207,6 +207,17 @@ def find_parent_pid(pid):
                 ctxt.reraise = False
                 return
     return ppid.strip()
+
+
+def get_process_count_by_name(name):
+    """Find the process count by name."""
+    try:
+        out = execute(['ps', '-C', name, '-o', 'comm='],
+                      log_fail_as_error=False)
+    except exceptions.ProcessExecutionError:
+        with excutils.save_and_reraise_exception(reraise=False):
+            return 0
+    return len(out.strip('\n').split('\n'))
 
 
 def find_fork_top_parent(pid):

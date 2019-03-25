@@ -21,6 +21,7 @@ from alembic import script as alembic_script
 from oslo_config import cfg
 from oslo_config import fixture as config_fixture
 from oslo_db.sqlalchemy import test_migrations
+from oslo_log import log as logging
 from oslotest import base as oslotest_base
 import six
 import sqlalchemy
@@ -32,6 +33,7 @@ from neutron.db.migration.alembic_migrations import external
 from neutron.db.migration import cli as migration
 from neutron.db.migration.models import head as head_models
 from neutron.tests import base as test_base
+from neutron.tests.functional import base as functional_base
 from neutron.tests.unit import testlib_api
 
 cfg.CONF.import_opt('core_plugin', 'neutron.conf.common')
@@ -53,6 +55,14 @@ DROP_OPERATIONS = {
     'alembic': (alembic_ddl.DropColumn,
                 )
 }
+
+LOG = logging.getLogger(__name__)
+
+# NOTE(slaweq): replace alembic_util logging functions used normally with
+# olso_log logger to limit output on stdout
+migration.log_error = LOG.error
+migration.log_warning = LOG.warning
+migration.log_info = LOG.info
 
 
 def upgrade(engine, alembic_config, branch_name='heads'):
@@ -155,7 +165,7 @@ class _TestModelsMigrations(test_migrations.ModelsMigrationsSync):
     def include_object(self, object_, name, type_, reflected, compare_to):
         if type_ == 'table' and (name == 'alembic_version' or
                                  name in external.TABLES):
-                return False
+            return False
 
         return super(_TestModelsMigrations, self).include_object(
             object_, name, type_, reflected, compare_to)
@@ -348,8 +358,10 @@ class _TestModelsMigrations(test_migrations.ModelsMigrationsSync):
 
 class TestModelsMigrationsMysql(testlib_api.MySQLTestCaseMixin,
                                 _TestModelsMigrations,
-                                testlib_api.SqlTestCaseLight):
+                                testlib_api.SqlTestCaseLight,
+                                functional_base.BaseLoggingTestCase):
 
+    @test_base.skip_if_timeout("bug 1687027")
     def test_check_mysql_engine(self):
         engine = self.get_engine()
         cfg.CONF.set_override('connection', engine.url, group='database')
@@ -367,6 +379,32 @@ class TestModelsMigrationsMysql(testlib_api.MySQLTestCaseMixin,
                    'InnoDB' and
                    table != 'alembic_version']
             self.assertEqual(0, len(res), "%s non InnoDB tables created" % res)
+
+    @test_base.skip_if_timeout("bug 1687027")
+    def test_upgrade_expand_branch(self):
+        super(TestModelsMigrationsMysql, self).test_upgrade_expand_branch()
+
+    @test_base.skip_if_timeout("bug 1687027")
+    def test_upgrade_contract_branch(self):
+        super(TestModelsMigrationsMysql, self).test_upgrade_contract_branch()
+
+    @test_base.skip_if_timeout("bug 1687027")
+    def test_branches(self):
+        super(TestModelsMigrationsMysql, self).test_branches()
+
+    @test_base.skip_if_timeout("bug 1687027")
+    def test_has_offline_migrations_pending_contract_scripts(self):
+        super(TestModelsMigrationsMysql,
+              self).test_has_offline_migrations_pending_contract_scripts()
+
+    @test_base.skip_if_timeout("bug 1687027")
+    def test_has_offline_migrations_all_heads_upgraded(self):
+        super(TestModelsMigrationsMysql,
+              self).test_has_offline_migrations_all_heads_upgraded()
+
+    @test_base.skip_if_timeout("bug 1687027")
+    def test_models_sync(self):
+        super(TestModelsMigrationsMysql, self).test_models_sync()
 
 
 class TestModelsMigrationsPsql(testlib_api.PostgreSQLTestCaseMixin,
@@ -587,6 +625,7 @@ class TestWalkMigrationsMysql(testlib_api.MySQLTestCaseMixin,
     # on slow nodes than 'psycopg2' and because of that this increased
     # timeout is required only when for testing with 'mysql' backend.
     @test_base.set_timeout(600)
+    @test_base.skip_if_timeout("bug 1687027")
     def test_walk_versions(self):
         super(TestWalkMigrationsMysql, self).test_walk_versions()
 

@@ -71,6 +71,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         config.register_opts(common_config.core_cli_opts)
         logging.register_options(config)
         agent_config.register_process_monitor_opts(config)
+        agent_config.register_root_helper(config)
         return config
 
     def _configure_agent(self, host, agent_mode='dvr_snat'):
@@ -79,9 +80,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         conf.set_override('interface_driver', self.INTERFACE_DRIVER)
 
         br_int = self.useFixture(net_helpers.OVSBridgeFixture()).bridge
-        br_ex = self.useFixture(net_helpers.OVSBridgeFixture()).bridge
         conf.set_override('ovs_integration_bridge', br_int.br_name)
-        conf.set_override('external_network_bridge', br_ex.br_name)
 
         temp_dir = self.get_new_temp_dir()
         get_temp_file_path = functools.partial(self.get_temp_file_path,
@@ -97,6 +96,11 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                           get_temp_file_path('external/pids'))
         conf.set_override('host', host)
         conf.set_override('agent_mode', agent_mode)
+        conf.set_override(
+            'root_helper', cfg.CONF.AGENT.root_helper, group='AGENT')
+        conf.set_override(
+            'root_helper_daemon', cfg.CONF.AGENT.root_helper_daemon,
+            group='AGENT')
 
         return conf
 
@@ -108,7 +112,9 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                              extra_routes=True,
                              enable_fip=True, enable_snat=True,
                              num_internal_ports=1,
-                             dual_stack=False, v6_ext_gw_with_sub=True,
+                             dual_stack=False, enable_gw=True,
+                             v6_ext_gw_with_sub=True,
+                             enable_pf_floating_ip=False,
                              qos_policy_id=None):
         if ip_version == constants.IP_VERSION_6 and not dual_stack:
             enable_snat = False
@@ -116,16 +122,20 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
             extra_routes = False
 
         return l3_test_common.prepare_router_data(ip_version=ip_version,
-                                                 enable_snat=enable_snat,
-                                                 num_internal_ports=(
-                                                     num_internal_ports),
-                                                 enable_floating_ip=enable_fip,
-                                                 enable_ha=enable_ha,
-                                                 extra_routes=extra_routes,
-                                                 dual_stack=dual_stack,
-                                                 v6_ext_gw_with_sub=(
-                                                     v6_ext_gw_with_sub),
-                                                 qos_policy_id=qos_policy_id)
+                                                  enable_snat=enable_snat,
+                                                  num_internal_ports=(
+                                                      num_internal_ports),
+                                                  enable_floating_ip=(
+                                                      enable_fip),
+                                                  enable_ha=enable_ha,
+                                                  extra_routes=extra_routes,
+                                                  dual_stack=dual_stack,
+                                                  enable_gw=enable_gw,
+                                                  v6_ext_gw_with_sub=(
+                                                      v6_ext_gw_with_sub),
+                                                  enable_pf_floating_ip=(
+                                                      enable_pf_floating_ip),
+                                                  qos_policy_id=qos_policy_id)
 
     def _test_conntrack_disassociate_fip(self, ha):
         '''Test that conntrack immediately drops stateful connection
@@ -232,14 +242,22 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
             'net.ipv6.conf.%s.accept_ra' % external_device_name])
         self.assertEqual(enabled, int(ra_state) != n_const.ACCEPT_RA_DISABLED)
 
-    def _assert_ipv6_forwarding(self, router, enabled=True):
+    def _wait_until_ipv6_forwarding_has_state(self, ns_name, dev_name, state):
+
+        def _ipv6_forwarding_has_state():
+            return ip_lib.get_ipv6_forwarding(
+                device=dev_name, namespace=ns_name) == state
+
+        common_utils.wait_until_true(_ipv6_forwarding_has_state)
+
+    def _assert_ipv6_forwarding(self, router, enabled=True, all_enabled=True):
         external_port = router.get_ex_gw_port()
         external_device_name = router.get_external_device_name(
             external_port['id'])
-        ip_wrapper = ip_lib.IPWrapper(namespace=router.ns_name)
-        fwd_state = ip_wrapper.netns.execute(['sysctl', '-b',
-            'net.ipv6.conf.%s.forwarding' % external_device_name])
-        self.assertEqual(int(enabled), int(fwd_state))
+        self._wait_until_ipv6_forwarding_has_state(
+            router.ns_name, external_device_name, int(enabled))
+        self._wait_until_ipv6_forwarding_has_state(
+            router.ns_name, 'all', int(all_enabled))
 
     def _router_lifecycle(self, enable_ha, ip_version=constants.IP_VERSION_4,
                           dual_stack=False, v6_ext_gw_with_sub=True,
@@ -260,10 +278,6 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         router.process()
 
         if enable_ha:
-            port = router.get_ex_gw_port()
-            interface_name = router.get_external_device_name(port['id'])
-            self._assert_no_ip_addresses_on_interface(router.ns_name,
-                                                      interface_name)
             common_utils.wait_until_true(lambda: router.ha_state == 'master')
 
             # Keepalived notifies of a state transition when it starts,
@@ -351,7 +365,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         return agent.router_info[router['id']]
 
     def _delete_router(self, agent, router_id):
-        agent._router_removed(router_id)
+        agent._safe_router_removed(router_id)
 
     def _add_fip(self, router, fip_address, fixed_address='10.0.0.2',
                  host=None, fixed_ip_address_scope=None):
@@ -368,7 +382,9 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                                           ipv6_subnet_modes=None,
                                           interface_id=None):
         return l3_test_common.router_append_subnet(router, count,
-                ip_version, ipv6_subnet_modes, interface_id)
+                                                   ip_version,
+                                                   ipv6_subnet_modes,
+                                                   interface_id)
 
     def _namespace_exists(self, namespace):
         return ip_lib.network_namespace_exists(namespace)
@@ -535,13 +551,8 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
             self.assertIn(extra_subnet, routes)
 
     def _assert_interfaces_deleted_from_ovs(self):
-
-        def assert_ovs_bridge_empty(bridge_name):
-            bridge = ovs_lib.OVSBridge(bridge_name)
-            self.assertFalse(bridge.get_port_name_list())
-
-        assert_ovs_bridge_empty(self.agent.conf.ovs_integration_bridge)
-        assert_ovs_bridge_empty(self.agent.conf.external_network_bridge)
+        bridge = ovs_lib.OVSBridge(self.agent.conf.ovs_integration_bridge)
+        self.assertFalse(bridge.get_port_name_list())
 
     def floating_ips_configured(self, router):
         floating_ips = router.router[constants.FLOATINGIP_KEY]
@@ -587,7 +598,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         router1 = self._create_router(router_info, self.agent)
         self._add_fip(router1, '192.168.111.12')
 
-        r1_br = ip_lib.IPDevice(router1.driver.conf.external_network_bridge)
+        r1_br = ip_lib.IPDevice(router1.driver.conf.ovs_integration_bridge)
         r1_br.addr.add('19.4.4.1/24')
         r1_br.link.set_up()
 
@@ -597,7 +608,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                                             mac='22:22:22:22:22:22'))
         router2 = self._create_router(router_info_2, self.failover_agent)
 
-        r2_br = ip_lib.IPDevice(router2.driver.conf.external_network_bridge)
+        r2_br = ip_lib.IPDevice(router2.driver.conf.ovs_integration_bridge)
         r2_br.addr.add('19.4.4.1/24')
         r2_br.link.set_up()
 
@@ -635,12 +646,12 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
 
     @staticmethod
     def fail_gw_router_port(router):
-        r_br = ip_lib.IPDevice(router.driver.conf.external_network_bridge)
+        r_br = ip_lib.IPDevice(router.driver.conf.ovs_integration_bridge)
         r_br.link.set_down()
 
     @staticmethod
     def restore_gw_router_port(router):
-        r_br = ip_lib.IPDevice(router.driver.conf.external_network_bridge)
+        r_br = ip_lib.IPDevice(router.driver.conf.ovs_integration_bridge)
         r_br.link.set_up()
 
     @classmethod
@@ -657,6 +668,11 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         for ip_address in ip_addresses:
             self._assert_ip_address_on_interface(namespace, interface,
                                                  ip_address)
+
+    def _assert_ip_address_not_on_interface(
+        self, namespace, interface, ip_address):
+        self.assertNotIn(
+            ip_address, self._get_addresses_on_device(namespace, interface))
 
     def _assert_ip_address_on_interface(self,
                                         namespace, interface, ip_address):

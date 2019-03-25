@@ -17,12 +17,12 @@ from neutron_lib.api.definitions import l3 as l3_apidef
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
+from neutron_lib.db import resource_extend
 from oslo_config import cfg
 import sqlalchemy as sa
 from sqlalchemy import sql
 
 from neutron.conf.db import l3_gwmode_db
-from neutron.db import _resource_extend as resource_extend
 from neutron.db import l3_db
 from neutron.db.models import l3 as l3_models
 
@@ -45,7 +45,7 @@ class L3_NAT_dbonly_mixin(l3_db.L3_NAT_dbonly_mixin):
     def _extend_router_dict_gw_mode(router_res, router_db):
         if router_db.gw_port_id:
             nw_id = router_db.gw_port['network_id']
-            router_res[l3_apidef.EXTERNAL_GW_INFO] = {
+            router_res[l3_apidef.EXTERNAL_GW_INFO].update({
                 'network_id': nw_id,
                 'enable_snat': router_db.enable_snat,
                 'external_fixed_ips': [
@@ -53,7 +53,7 @@ class L3_NAT_dbonly_mixin(l3_db.L3_NAT_dbonly_mixin):
                      'ip_address': ip["ip_address"]}
                     for ip in router_db.gw_port['fixed_ips']
                 ]
-            }
+            })
 
     def _update_router_gw_info(self, context, router_id, info, router=None):
         # Load the router only if necessary
@@ -63,7 +63,7 @@ class L3_NAT_dbonly_mixin(l3_db.L3_NAT_dbonly_mixin):
             old_router = self._make_router_dict(router)
             router.enable_snat = self._get_enable_snat(info)
             router_body = {l3_apidef.ROUTER:
-                {l3_apidef.EXTERNAL_GW_INFO: info}}
+                           {l3_apidef.EXTERNAL_GW_INFO: info}}
             registry.publish(resources.ROUTER, events.PRECOMMIT_UPDATE, self,
                              payload=events.DBEventPayload(
                                  context, request_body=router_body,

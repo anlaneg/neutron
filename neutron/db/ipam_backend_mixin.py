@@ -30,7 +30,6 @@ from oslo_log import log as logging
 from sqlalchemy.orm import exc as orm_exc
 
 from neutron._i18n import _
-from neutron.common import exceptions as n_exc
 from neutron.common import ipv6_utils
 from neutron.common import utils as common_utils
 from neutron.db import db_base_plugin_common
@@ -70,7 +69,7 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
                          "%(start)s - %(end)s:",
                          {'start': ip_pool['start'],
                           'end': ip_pool['end']})
-                raise n_exc.InvalidAllocationPool(pool=ip_pool)
+                raise exc.InvalidAllocationPool(pool=ip_pool)
         return ip_range_pools
 
     def delete_subnet(self, context, subnet_id):
@@ -126,7 +125,8 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
                 if _combine(route) == route_str:
                     route.delete()
         for route_str in new_route_set - old_route_set:
-            route = subnet_obj.Route(context,
+            route = subnet_obj.Route(
+                context,
                 destination=common_utils.AuthenticIPNetwork(
                     route_str.partition("_")[0]),
                 nexthop=netaddr.IPAddress(route_str.partition("_")[2]),
@@ -257,7 +257,7 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
         for subnet in network.subnets:
             if (subnet.ip_version == ip_version and
                     new_subnetpool_id != subnet.subnetpool_id):
-                raise n_exc.NetworkSubnetPoolAffinityError()
+                raise exc.NetworkSubnetPoolAffinityError()
 
     def validate_allocation_pools(self, ip_pools, subnet_cidr):
         """Validate IP allocation pools.
@@ -281,12 +281,12 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
                     end_ip.version != subnet.version):
                 LOG.info("Specified IP addresses do not match "
                          "the subnet IP version")
-                raise n_exc.InvalidAllocationPool(pool=ip_pool)
+                raise exc.InvalidAllocationPool(pool=ip_pool)
             if start_ip < subnet_first_ip or end_ip > subnet_last_ip:
                 LOG.info("Found pool larger than subnet "
                          "CIDR:%(start)s - %(end)s",
                          {'start': start_ip, 'end': end_ip})
-                raise n_exc.OutOfBoundsAllocationPool(
+                raise exc.OutOfBoundsAllocationPool(
                     pool=ip_pool,
                     subnet_cidr=subnet_cidr)
             # Valid allocation pool
@@ -307,16 +307,16 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
                     LOG.info("Found overlapping ranges: %(l_range)s and "
                              "%(r_range)s",
                              {'l_range': l_range, 'r_range': r_range})
-                    raise n_exc.OverlappingAllocationPools(
+                    raise exc.OverlappingAllocationPools(
                         pool_1=l_range,
                         pool_2=r_range,
                         subnet_cidr=subnet_cidr)
 
     def _validate_segment(self, context, network_id, segment_id, action=None,
                           old_segment_id=None):
-        query = context.session.query(models_v2.Subnet.segment_id)
-        query = query.filter(models_v2.Subnet.network_id == network_id)
-        associated_segments = set(row.segment_id for row in query)
+        segments = subnet_obj.Subnet.get_values(
+            context, 'segment_id', network_id=network_id)
+        associated_segments = set(segments)
         if None in associated_segments and len(associated_segments) > 1:
             raise segment_exc.SubnetsNotAllAssociatedWithSegments(
                 network_id=network_id)
@@ -324,7 +324,7 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
         if action == 'update' and old_segment_id != segment_id:
             # Check the current state of segments and subnets on the network
             # before allowing migration from non-routed to routed network.
-            if query.count() > 1:
+            if len(segments) > 1:
                 raise segment_exc.SubnetsNotAllAssociatedWithSegments(
                     network_id=network_id)
             if (None not in associated_segments and
@@ -401,7 +401,7 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
     def validate_gw_out_of_pools(self, gateway_ip, pools):
         for pool_range in pools:
             if netaddr.IPAddress(gateway_ip) in pool_range:
-                raise n_exc.GatewayConflictWithAllocationPools(
+                raise exc.GatewayConflictWithAllocationPools(
                     pool=pool_range,
                     ip_address=gateway_ip)
 

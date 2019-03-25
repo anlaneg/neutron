@@ -13,26 +13,33 @@
 import copy
 
 import mock
+from neutron_lib.api.definitions import qos
 from neutron_lib.callbacks import events
+from neutron_lib import constants as lib_constants
 from neutron_lib import context
 from neutron_lib import exceptions as lib_exc
+from neutron_lib.exceptions import qos as qos_exc
+from neutron_lib.objects import utils as obj_utils
+from neutron_lib.placement import constants as pl_constants
 from neutron_lib.plugins import constants as plugins_constants
 from neutron_lib.plugins import directory
 from neutron_lib.services.qos import constants as qos_consts
 from oslo_config import cfg
 from oslo_utils import uuidutils
+import webob.exc
 
 from neutron.common import constants
-from neutron.common import exceptions as n_exc
+from neutron.extensions import qos_rules_alias
 from neutron import manager
-from neutron.objects import base as base_object
 from neutron.objects.qos import policy as policy_object
 from neutron.objects.qos import rule as rule_object
 from neutron.services.qos import qos_plugin
+from neutron.tests.unit.db import test_db_base_plugin_v2
 from neutron.tests.unit.services.qos import base
 
 
 DB_PLUGIN_KLASS = 'neutron.db.db_base_plugin_v2.NeutronDbPluginV2'
+SERVICE_PLUGIN_KLASS = 'neutron.services.qos.qos_plugin.QoSPlugin'
 
 
 class TestQosPlugin(base.BaseQosTestCase):
@@ -106,6 +113,112 @@ class TestQosPlugin(base.BaseQosTestCase):
         self.assertEqual(call_args[0], method_name)
         self.assertEqual(call_args[1], ctxt)
         self.assertIsInstance(call_args[2], policy_object.QosPolicy)
+
+    def _create_and_extend_port(self, bw_rules, physical_network='public',
+                                has_qos_policy=True, network_qos=None):
+        network_id = uuidutils.generate_uuid()
+
+        if has_qos_policy or network_qos:
+            policy = self.policy
+            policy_id = self.policy.id
+            self.policy.rules = bw_rules
+            for rule in bw_rules:
+                rule.qos_policy_id = self.policy.id
+        else:
+            policy = None
+            policy_id = None
+
+        port_res = {
+            "id": uuidutils.generate_uuid(),
+            "qos_policy_id": policy_id,
+            "network_id": network_id,
+            "binding:vnic_type": "normal",
+        }
+        network_mock = mock.MagicMock(id=network_id, qos_policy_id=policy_id)
+        segment_mock = mock.MagicMock(network_id=network_id,
+                                      physical_network=physical_network)
+
+        with mock.patch(
+            'neutron.objects.network.Network.get_object',
+            return_value=network_mock
+        ), mock.patch(
+            'neutron.objects.network.NetworkSegment.get_objects',
+            return_value=[segment_mock]
+        ), mock.patch(
+            'neutron.objects.qos.policy.QosPolicy.get_port_policy',
+            return_value=policy
+        ):
+            return qos_plugin.QoSPlugin._extend_port_resource_request(
+                port_res, {})
+
+    def test__extend_port_resource_request_min_bw_rule(self):
+        self.min_rule.direction = lib_constants.EGRESS_DIRECTION
+        port = self._create_and_extend_port([self.min_rule])
+
+        self.assertEqual(
+            ['CUSTOM_PHYSNET_PUBLIC', 'CUSTOM_VNIC_TYPE_NORMAL'],
+            port['resource_request']['required']
+        )
+        self.assertEqual(
+            {pl_constants.CLASS_NET_BW_EGRESS_KBPS: 10},
+            port['resource_request']['resources'],
+        )
+
+    def test__extend_port_resource_request_mixed_rules(self):
+        self.min_rule.direction = lib_constants.EGRESS_DIRECTION
+
+        min_rule_ingress_data = {
+            'id': uuidutils.generate_uuid(),
+            'min_kbps': 20,
+            'direction': lib_constants.INGRESS_DIRECTION}
+        min_rule_ingress = rule_object.QosMinimumBandwidthRule(
+            self.ctxt, **min_rule_ingress_data)
+
+        port = self._create_and_extend_port([self.min_rule, min_rule_ingress])
+        self.assertEqual(
+            ['CUSTOM_PHYSNET_PUBLIC', 'CUSTOM_VNIC_TYPE_NORMAL'],
+            port['resource_request']['required']
+        )
+        self.assertEqual(
+            {
+                pl_constants.CLASS_NET_BW_EGRESS_KBPS: 10,
+                pl_constants.CLASS_NET_BW_INGRESS_KBPS: 20
+            },
+            port['resource_request']['resources'],
+        )
+
+    def test__extend_port_resource_request_non_min_bw_rule(self):
+        port = self._create_and_extend_port([self.rule])
+
+        self.assertIsNone(port.get('resource_request'))
+
+    def test__extend_port_resource_request_non_provider_net(self):
+        self.min_rule.direction = lib_constants.EGRESS_DIRECTION
+
+        port = self._create_and_extend_port([self.min_rule],
+                                            physical_network=None)
+        self.assertIsNone(port.get('resource_request'))
+
+    def test__extend_port_resource_request_no_qos_policy(self):
+        port = self._create_and_extend_port([], physical_network='public',
+                                            has_qos_policy=False)
+        self.assertIsNone(port.get('resource_request'))
+
+    def test__extend_port_resource_request_inherited_policy(self):
+        self.min_rule.direction = lib_constants.EGRESS_DIRECTION
+        self.policy.rules = [self.min_rule]
+        self.min_rule.qos_policy_id = self.policy.id
+
+        port = self._create_and_extend_port([self.min_rule],
+                                            network_qos=self.policy)
+        self.assertEqual(
+            ['CUSTOM_PHYSNET_PUBLIC', 'CUSTOM_VNIC_TYPE_NORMAL'],
+            port['resource_request']['required']
+        )
+        self.assertEqual(
+            {pl_constants.CLASS_NET_BW_EGRESS_KBPS: 10},
+            port['resource_request']['resources'],
+        )
 
     def test_get_ports_with_policy(self):
         network_ports = [
@@ -313,7 +426,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         ):
             self.policy.rules = [self.rule]
             self.assertRaises(
-                n_exc.QosRuleNotSupported,
+                qos_exc.QosRuleNotSupported,
                 self.qos_plugin.validate_policy_for_port,
                 self.policy, port)
 
@@ -326,7 +439,7 @@ class TestQosPlugin(base.BaseQosTestCase):
             self.policy.rules = [self.rule]
             try:
                 self.qos_plugin.validate_policy_for_port(self.policy, port)
-            except n_exc.QosRuleNotSupported:
+            except qos_exc.QosRuleNotSupported:
                 self.fail("QosRuleNotSupported exception unexpectedly raised")
 
     @mock.patch(
@@ -387,7 +500,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         mock_manager.attach_mock(self.qos_plugin.driver_manager, 'driver')
         mock_manager.reset_mock()
 
-        fields = base_object.get_updatable_fields(
+        fields = obj_utils.get_updatable_fields(
             policy_object.QosPolicy, self.policy_data['policy'])
         self.qos_plugin.update_policy(
             self.ctxt, self.policy.id, {'policy': fields})
@@ -479,7 +592,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         setattr(_policy, "rules", [self.min_rule])
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=_policy) as mock_qos_get_obj:
-            self.assertRaises(n_exc.QoSRuleParameterConflict,
+            self.assertRaises(qos_exc.QoSRuleParameterConflict,
                 self.qos_plugin.create_policy_bandwidth_limit_rule,
                 self.ctxt, self.policy.id, self.rule_data)
             mock_qos_get_obj.assert_called_once_with(self.ctxt, id=_policy.id)
@@ -490,7 +603,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         setattr(_policy, "rules", [self.rule])
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=_policy) as mock_qos_get_obj:
-            self.assertRaises(n_exc.QoSRuleParameterConflict,
+            self.assertRaises(qos_exc.QoSRuleParameterConflict,
                 self.qos_plugin.create_policy_minimum_bandwidth_rule,
                 self.ctxt, self.policy.id, self.rule_data)
             mock_qos_get_obj.assert_called_once_with(self.ctxt, id=_policy.id)
@@ -507,7 +620,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=_policy) as mock_qos_get_obj:
             self.assertRaises(
-                n_exc.QoSRulesConflict,
+                qos_exc.QoSRulesConflict,
                 self.qos_plugin.create_policy_bandwidth_limit_rule,
                 self.ctxt, _policy.id, new_rule_data)
             mock_qos_get_obj.assert_called_once_with(self.ctxt, id=_policy.id)
@@ -575,7 +688,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=_policy):
             self.assertRaises(
-                n_exc.QoSRuleParameterConflict,
+                qos_exc.QoSRuleParameterConflict,
                 self.qos_plugin.update_policy_minimum_bandwidth_rule,
                 self.ctxt, self.min_rule.id,
                 self.policy.id, self.rule_data)
@@ -593,7 +706,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=_policy):
             self.assertRaises(
-                n_exc.QoSRuleParameterConflict,
+                qos_exc.QoSRuleParameterConflict,
                 self.qos_plugin.update_policy_bandwidth_limit_rule,
                 self.ctxt, self.rule.id,
                 self.policy.id, self.rule_data)
@@ -609,7 +722,7 @@ class TestQosPlugin(base.BaseQosTestCase):
                         return_value=_policy):
             setattr(_policy, "rules", [])
             self.assertRaises(
-                n_exc.QosRuleNotFound,
+                qos_exc.QosRuleNotFound,
                 self.qos_plugin.update_policy_bandwidth_limit_rule,
                 self.ctxt, self.rule.id, self.policy.id,
                 self.rule_data)
@@ -647,7 +760,7 @@ class TestQosPlugin(base.BaseQosTestCase):
                         return_value=_policy):
             setattr(_policy, "rules", [])
             self.assertRaises(
-                n_exc.QosRuleNotFound,
+                qos_exc.QosRuleNotFound,
                 self.qos_plugin.delete_policy_bandwidth_limit_rule,
                 self.ctxt, self.rule.id, _policy.id)
 
@@ -692,7 +805,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=None):
             self.assertRaises(
-                n_exc.QosPolicyNotFound,
+                qos_exc.QosPolicyNotFound,
                 self.qos_plugin.get_policy,
                 self.ctxt, self.policy.id)
 
@@ -700,7 +813,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=None):
             self.assertRaises(
-                n_exc.QosPolicyNotFound,
+                qos_exc.QosPolicyNotFound,
                 self.qos_plugin.get_policy_bandwidth_limit_rule,
                 self.ctxt, self.rule.id, self.policy.id)
 
@@ -708,7 +821,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=None):
             self.assertRaises(
-                n_exc.QosPolicyNotFound,
+                qos_exc.QosPolicyNotFound,
                 self.qos_plugin.get_policy_bandwidth_limit_rules,
                 self.ctxt, self.policy.id)
 
@@ -771,7 +884,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=None):
             self.assertRaises(
-                n_exc.QosPolicyNotFound,
+                qos_exc.QosPolicyNotFound,
                 self.qos_plugin.get_policy_dscp_marking_rule,
                 self.ctxt, self.dscp_rule.id, self.policy.id)
 
@@ -779,7 +892,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=None):
             self.assertRaises(
-                n_exc.QosPolicyNotFound,
+                qos_exc.QosPolicyNotFound,
                 self.qos_plugin.get_policy_dscp_marking_rules,
                 self.ctxt, self.policy.id)
 
@@ -824,7 +937,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=None):
             self.assertRaises(
-                n_exc.QosPolicyNotFound,
+                qos_exc.QosPolicyNotFound,
                 self.qos_plugin.get_policy_minimum_bandwidth_rule,
                 self.ctxt, self.rule.id, self.policy.id)
 
@@ -832,7 +945,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=None):
             self.assertRaises(
-                n_exc.QosPolicyNotFound,
+                qos_exc.QosPolicyNotFound,
                 self.qos_plugin.get_policy_minimum_bandwidth_rules,
                 self.ctxt, self.policy.id)
 
@@ -840,7 +953,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=None):
             self.assertRaises(
-                n_exc.QosPolicyNotFound,
+                qos_exc.QosPolicyNotFound,
                 self.qos_plugin.create_policy_bandwidth_limit_rule,
                 self.ctxt, self.policy.id, self.rule_data)
 
@@ -848,7 +961,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=None):
             self.assertRaises(
-                n_exc.QosPolicyNotFound,
+                qos_exc.QosPolicyNotFound,
                 self.qos_plugin.update_policy_bandwidth_limit_rule,
                 self.ctxt, self.rule.id, self.policy.id, self.rule_data)
 
@@ -856,7 +969,7 @@ class TestQosPlugin(base.BaseQosTestCase):
         with mock.patch('neutron.objects.qos.policy.QosPolicy.get_object',
                         return_value=None):
             self.assertRaises(
-                n_exc.QosPolicyNotFound,
+                qos_exc.QosPolicyNotFound,
                 self.qos_plugin.delete_policy_bandwidth_limit_rule,
                 self.ctxt, self.rule.id, self.policy.id)
 
@@ -946,3 +1059,140 @@ class TestQosPlugin(base.BaseQosTestCase):
 
             self.assertLess(
                 action_index, mock_manager.mock_calls.index(driver_mock_call))
+
+
+class QoSRuleAliasTestExtensionManager(object):
+
+    def get_resources(self):
+        return qos_rules_alias.Qos_rules_alias.get_resources()
+
+    def get_actions(self):
+        return []
+
+    def get_request_extensions(self):
+        return []
+
+
+class TestQoSRuleAlias(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
+
+    def setUp(self):
+        # Remove MissingAuthPlugin exception from logs
+        self.patch_notifier = mock.patch(
+            'neutron.notifiers.batch_notifier.BatchNotifier._notify')
+        self.patch_notifier.start()
+        plugin = 'ml2'
+        service_plugins = {'qos_plugin_name': SERVICE_PLUGIN_KLASS}
+        ext_mgr = QoSRuleAliasTestExtensionManager()
+        super(TestQoSRuleAlias, self).setUp(plugin=plugin, ext_mgr=ext_mgr,
+                                            service_plugins=service_plugins)
+        self.qos_plugin = directory.get_plugin(plugins_constants.QOS)
+
+        self.ctxt = context.Context('fake_user', 'fake_tenant')
+        self.rule_objects = {
+            'bandwidth_limit': rule_object.QosBandwidthLimitRule,
+            'dscp_marking': rule_object.QosDscpMarkingRule,
+            'minimum_bandwidth': rule_object.QosMinimumBandwidthRule
+        }
+
+        self.qos_policy_id = uuidutils.generate_uuid()
+        self.rule_data = {
+            'bandwidth_limit_rule': {'max_kbps': 100,
+                                     'max_burst_kbps': 150},
+            'dscp_marking_rule': {'dscp_mark': 16},
+            'minimum_bandwidth_rule': {'min_kbps': 10}
+        }
+
+    def _update_rule(self, rule_type, rule_id, **kwargs):
+        data = {'alias_%s_rule' % rule_type: kwargs}
+        resource = '%s/alias-%s-rules' % (qos.ALIAS,
+                                          rule_type.replace('_', '-'))
+        request = self.new_update_request(resource, data, rule_id, self.fmt)
+        res = request.get_response(self.ext_api)
+        if res.status_int >= webob.exc.HTTPClientError.code:
+            raise webob.exc.HTTPClientError(code=res.status_int)
+        return self.deserialize(self.fmt, res)
+
+    def _show_rule(self, rule_type, rule_id):
+        resource = '%s/alias-%s-rules' % (qos.ALIAS,
+                                          rule_type.replace('_', '-'))
+        request = self.new_show_request(resource, rule_id, self.fmt)
+        res = request.get_response(self.ext_api)
+        if res.status_int >= webob.exc.HTTPClientError.code:
+            raise webob.exc.HTTPClientError(code=res.status_int)
+        return self.deserialize(self.fmt, res)
+
+    def _delete_rule(self, rule_type, rule_id):
+        resource = '%s/alias-%s-rules' % (qos.ALIAS,
+                                          rule_type.replace('_', '-'))
+        request = self.new_delete_request(resource, rule_id, self.fmt)
+        res = request.get_response(self.ext_api)
+        if res.status_int >= webob.exc.HTTPClientError.code:
+            raise webob.exc.HTTPClientError(code=res.status_int)
+
+    @mock.patch.object(qos_plugin.QoSPlugin, "update_policy_rule")
+    def test_update_rule(self, update_policy_rule_mock):
+        calls = []
+        for rule_type, rule_object_class in self.rule_objects.items():
+            rule_id = uuidutils.generate_uuid()
+            rule_data_name = '%s_rule' % rule_type
+            data = self.rule_data[rule_data_name]
+            rule = rule_object_class(self.ctxt, id=rule_id,
+                                     qos_policy_id=self.qos_policy_id,
+                                     **data)
+            with mock.patch(
+                'neutron.objects.qos.rule.QosRule.get_object',
+                return_value=rule
+            ), mock.patch.object(self.qos_plugin, 'get_policy_rule',
+                                 return_value=rule.to_dict()):
+                self._update_rule(rule_type, rule_id, **data)
+            calls.append(mock.call(mock.ANY, rule_object_class, rule_id,
+                                   self.qos_policy_id, {rule_data_name: data}))
+        update_policy_rule_mock.assert_has_calls(calls, any_order=True)
+
+    @mock.patch.object(qos_plugin.QoSPlugin, "get_policy_rule")
+    def test_show_rule(self, get_policy_rule_mock):
+        calls = []
+        for rule_type, rule_object_class in self.rule_objects.items():
+            rule_id = uuidutils.generate_uuid()
+            rule_data_name = '%s_rule' % rule_type
+            data = self.rule_data[rule_data_name]
+            rule = rule_object_class(self.ctxt, id=rule_id,
+                                     qos_policy_id=self.qos_policy_id,
+                                     **data)
+            with mock.patch('neutron.objects.qos.rule.QosRule.get_object',
+                            return_value=rule):
+                self._show_rule(rule_type, rule_id)
+            calls.append(mock.call(mock.ANY, rule_object_class, rule_id,
+                                   self.qos_policy_id))
+        get_policy_rule_mock.assert_has_calls(calls, any_order=True)
+
+    @mock.patch.object(qos_plugin.QoSPlugin, "delete_policy_rule")
+    def test_delete_rule(self, delete_policy_rule_mock):
+        calls = []
+        for rule_type, rule_object_class in self.rule_objects.items():
+            rule_id = uuidutils.generate_uuid()
+            rule_data_name = '%s_rule' % rule_type
+            data = self.rule_data[rule_data_name]
+            rule = rule_object_class(self.ctxt, id=rule_id,
+                                     qos_policy_id=self.qos_policy_id,
+                                     **data)
+            with mock.patch(
+                'neutron.objects.qos.rule.QosRule.get_object',
+                return_value=rule
+            ), mock.patch.object(self.qos_plugin, 'get_policy_rule',
+                                 return_value=rule.to_dict()):
+                self._delete_rule(rule_type, rule_id)
+            calls.append(mock.call(mock.ANY, rule_object_class, rule_id,
+                                   self.qos_policy_id))
+        delete_policy_rule_mock.assert_has_calls(calls, any_order=True)
+
+    def test_show_non_existing_rule(self):
+        for rule_type, rule_object_class in self.rule_objects.items():
+            rule_id = uuidutils.generate_uuid()
+            with mock.patch('neutron.objects.qos.rule.QosRule.get_object',
+                            return_value=None):
+                resource = '%s/alias-%s-rules' % (qos.ALIAS,
+                                                  rule_type.replace('_', '-'))
+                request = self.new_show_request(resource, rule_id, self.fmt)
+                res = request.get_response(self.ext_api)
+                self.assertEqual(webob.exc.HTTPNotFound.code, res.status_int)

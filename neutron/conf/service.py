@@ -19,17 +19,19 @@ from oslo_config import cfg
 from neutron._i18n import _
 
 
-service_opts = [
+SERVICE_OPTS = [
     cfg.IntOpt('periodic_interval',
                default=40,
                help=_('Seconds between running periodic tasks.')),
     cfg.IntOpt('api_workers',
                help=_('Number of separate API worker processes for service. '
                       'If not specified, the default is equal to the number '
-                      'of CPUs available for best performance.')),
+                      'of CPUs available for best performance, capped by '
+                      'potential RAM usage.')),
     cfg.IntOpt('rpc_workers',
-               default=1,
-               help=_('Number of RPC worker processes for service.')),
+               help=_('Number of RPC worker processes for service. '
+                      'If not specified, the default is equal to half the '
+                      'number of API workers.')),
     cfg.IntOpt('rpc_state_report_workers',
                default=1,
                help=_('Number of RPC worker processes dedicated to state '
@@ -39,6 +41,13 @@ service_opts = [
                help=_('Range of seconds to randomly delay when starting the '
                       'periodic task scheduler to reduce stampeding. '
                       '(Disable by setting to 0)')),
+]
+
+RPC_EXTRA_OPTS = [
+    cfg.IntOpt('rpc_response_max_timeout',
+               default=600,
+               help=_('Maximum seconds to wait for a response from an RPC '
+                      'call.')),
 ]
 
 

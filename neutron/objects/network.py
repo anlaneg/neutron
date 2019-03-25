@@ -14,7 +14,9 @@
 
 from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib.api.validators import availability_zone as az_validator
+from oslo_utils import versionutils
 from oslo_versionedobjects import fields as obj_fields
+import sqlalchemy as sa
 
 from neutron.db.models import dns as dns_models
 from neutron.db.models import external_net as ext_net_model
@@ -28,21 +30,43 @@ from neutron.objects import base
 from neutron.objects import common_types
 from neutron.objects.extensions import port_security as base_ps
 from neutron.objects.qos import binding
+from neutron.objects import rbac
 from neutron.objects import rbac_db
 
 
 @base.NeutronObjectRegistry.register
-class NetworkRBAC(base.NeutronDbObject):
+class NetworkRBAC(rbac.RBACBaseObject):
     # Version 1.0: Initial version
-    VERSION = '1.0'
+    # Version 1.1: Added 'id' and 'project_id'
+    # Version 1.2: Inherit from rbac.RBACBaseObject; changed 'object_id' from
+    #              StringField to UUIDField
+
+    VERSION = '1.2'
 
     db_model = rbac_db_models.NetworkRBAC
 
-    fields = {
-        'object_id': obj_fields.StringField(),
-        'target_tenant': obj_fields.StringField(),
-        'action': obj_fields.StringField(),
-    }
+    def obj_make_compatible(self, primitive, target_version):
+        _target_version = versionutils.convert_version_to_tuple(target_version)
+        if _target_version < (1, 1):
+            standard_fields = ['id', 'project_id']
+            for f in standard_fields:
+                primitive.pop(f, None)
+
+    @classmethod
+    def get_projects(cls, context, object_id=None, action=None,
+                     target_tenant=None):
+        clauses = []
+        if object_id:
+            clauses.append(rbac_db_models.NetworkRBAC.object_id == object_id)
+        if action:
+            clauses.append(rbac_db_models.NetworkRBAC.action == action)
+        if target_tenant:
+            clauses.append(rbac_db_models.NetworkRBAC.target_tenant ==
+                           target_tenant)
+        query = context.session.query(rbac_db_models.NetworkRBAC.target_tenant)
+        if clauses:
+            query = query.filter(sa.and_(*clauses))
+        return [data[0] for data in query]
 
 
 @base.NeutronObjectRegistry.register
@@ -268,8 +292,8 @@ class Network(rbac_db.NeutronRbacObject):
     def _set_dns_domain(self, dns_domain):
         NetworkDNSDomain.delete_objects(self.obj_context, network_id=self.id)
         if dns_domain:
-            NetworkDNSDomain(self.obj_context,
-                network_id=self.id, dns_domain=dns_domain).create()
+            NetworkDNSDomain(self.obj_context, network_id=self.id,
+                             dns_domain=dns_domain).create()
         self.dns_domain = dns_domain
         self.obj_reset_changes(['dns_domain'])
 

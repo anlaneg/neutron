@@ -16,6 +16,8 @@
 
 import functools
 
+import six
+
 from neutron_lib.api.definitions import network as net_def
 from neutron_lib.api.definitions import port as port_def
 from neutron_lib.api.definitions import subnet as subnet_def
@@ -23,17 +25,16 @@ from neutron_lib.api.definitions import subnetpool as subnetpool_def
 from neutron_lib.api import validators
 from neutron_lib import constants
 from neutron_lib.db import api as db_api
+from neutron_lib.db import model_query
+from neutron_lib.db import resource_extend
 from neutron_lib.db import utils as db_utils
-from neutron_lib import exceptions as n_exc
+from neutron_lib import exceptions
 from neutron_lib.utils import net
 from oslo_config import cfg
 from oslo_log import log as logging
 from sqlalchemy.orm import exc
 
 from neutron.common import constants as n_const
-from neutron.common import exceptions
-from neutron.db import _model_query as model_query
-from neutron.db import _resource_extend as resource_extend
 from neutron.db import common_db_mixin
 from neutron.db import models_v2
 from neutron.objects import base as base_obj
@@ -89,9 +90,10 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
     """
 
     @staticmethod
-    def _generate_mac():
+    def _generate_macs(mac_count=1):
         #生成mac地址
-        return net.get_random_mac(cfg.CONF.base_mac.split(':'))
+        mac_maker = net.random_mac_generator(cfg.CONF.base_mac.split(':'))
+        return [six.next(mac_maker) for x in range(mac_count)]
 
     @db_api.CONTEXT_READER
     def _is_mac_in_use(self, context, network_id, mac_address):
@@ -154,7 +156,7 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
                                        for pool in subnet.allocation_pools]
             res['host_routes'] = [{'destination': str(route.destination),
                                    'nexthop': str(route.nexthop)}
-                                 for route in subnet.host_routes]
+                                  for route in subnet.host_routes]
             res['dns_nameservers'] = [str(dns.address)
                                       for dns in subnet.dns_nameservers]
             res['shared'] = subnet.shared
@@ -208,7 +210,7 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
                'name': port['name'],
                "network_id": port["network_id"],
                'tenant_id': port['tenant_id'],
-               "mac_address": port["mac_address"],
+               "mac_address": str(port["mac_address"]),
                "admin_state_up": port["admin_state_up"],
                "status": port["status"],
                "fixed_ips": [{'subnet_id': ip["subnet_id"],
@@ -218,14 +220,18 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
                "device_owner": port["device_owner"]}
         # Call auxiliary extend functions, if any
         if process_extensions:
-            resource_extend.apply_funcs(port_def.COLLECTION_NAME, res, port)
+            port_data = port
+            if isinstance(port, port_obj.Port):
+                port_data = port.db_obj
+            resource_extend.apply_funcs(
+                port_def.COLLECTION_NAME, res, port_data)
         return db_utils.resource_fields(res, fields)
 
     def _get_network(self, context, id):
         try:
             network = model_query.get_by_id(context, models_v2.Network, id)
         except exc.NoResultFound:
-            raise n_exc.NetworkNotFound(net_id=id)
+            raise exceptions.NetworkNotFound(net_id=id)
         return network
 
     def _get_subnet(self, context, id):
@@ -234,13 +240,13 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
         try:
             subnet = model_query.get_by_id(context, models_v2.Subnet, id)
         except exc.NoResultFound:
-            raise n_exc.SubnetNotFound(subnet_id=id)
+            raise exceptions.SubnetNotFound(subnet_id=id)
         return subnet
 
     def _get_subnet_object(self, context, id):
         subnet = subnet_obj.Subnet.get_object(context, id=id)
         if not subnet:
-            raise n_exc.SubnetNotFound(subnet_id=id)
+            raise exceptions.SubnetNotFound(subnet_id=id)
         return subnet
 
     def _get_subnetpool(self, context, id):
@@ -254,7 +260,7 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
         try:
             port = model_query.get_by_id(context, models_v2.Port, id)
         except exc.NoResultFound:
-            raise n_exc.PortNotFound(port_id=id)
+            raise exceptions.PortNotFound(port_id=id)
         return port
 
     def _get_route_by_subnet(self, context, subnet_id):

@@ -17,6 +17,7 @@ import copy
 
 import mock
 from neutron_lib import constants
+from neutron_lib import exceptions
 from oslo_config import cfg
 import testtools
 
@@ -25,7 +26,6 @@ from neutron.agent.linux import ip_conntrack
 from neutron.agent.linux import ipset_manager
 from neutron.agent.linux import iptables_comments as ic
 from neutron.agent.linux import iptables_firewall
-from neutron.common import exceptions as n_exc
 from neutron.common import utils
 from neutron.conf.agent import common as agent_config
 from neutron.conf.agent import securitygroups_rpc as security_config
@@ -276,6 +276,20 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
         egress = None
         self._test_prepare_port_filter(rule, ingress, egress)
 
+    def test_filter_bad_vrrp_with_dport(self):
+        rule = {'ethertype': 'IPv4',
+                'direction': 'ingress',
+                'protocol': 'vrrp',
+                'port_range_min': 10,
+                'port_range_max': 10}
+        # Dest port isn't support with VRRP, so don't send it
+        # down to iptables.
+        ingress = mock.call.add_rule('ifake_dev',
+                                     '-p vrrp -j RETURN',
+                                     top=False, comment=None)
+        egress = None
+        self._test_prepare_port_filter(rule, ingress, egress)
+
     def test_filter_ipv4_ingress_tcp_port_by_num(self):
         rule = {'ethertype': 'IPv4',
                 'direction': 'ingress',
@@ -398,6 +412,32 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
         ingress = mock.call.add_rule('ifake_dev',
                                      '-p sctp -m sctp --dport 10 -j RETURN',
                                      top=False, comment=None)
+        egress = None
+        self._test_prepare_port_filter(rule, ingress, egress)
+
+    def test_filter_ipv4_ingress_udplite_port(self):
+        rule = {'ethertype': 'IPv4',
+                'direction': 'ingress',
+                'protocol': 'udplite',
+                'port_range_min': 10,
+                'port_range_max': 10}
+        ingress = mock.call.add_rule(
+            'ifake_dev',
+            '-p udplite -m multiport --dports 10 -j RETURN',
+            top=False, comment=None)
+        egress = None
+        self._test_prepare_port_filter(rule, ingress, egress)
+
+    def test_filter_ipv4_ingress_udplite_mport(self):
+        rule = {'ethertype': 'IPv4',
+                'direction': 'ingress',
+                'protocol': 'udplite',
+                'port_range_min': 10,
+                'port_range_max': 100}
+        ingress = mock.call.add_rule(
+            'ifake_dev',
+            '-p udplite -m multiport --dports 10:100 -j RETURN',
+            top=False, comment=None)
         egress = None
         self._test_prepare_port_filter(rule, ingress, egress)
 
@@ -2329,7 +2369,7 @@ class OVSHybridIptablesFirewallTestCase(BaseIptablesFirewallTestCase):
         for i in range(ip_conntrack.ZONE_START,
             ip_conntrack.MAX_CONNTRACK_ZONES):
             self.firewall.ipconntrack._device_zone_map['dev-%s' % i] = i
-        with testtools.ExpectedException(n_exc.CTZoneExhaustedError):
+        with testtools.ExpectedException(exceptions.CTZoneExhaustedError):
             self.firewall.ipconntrack._find_open_zone()
 
         # with it full, try again, this should trigger a cleanup

@@ -26,6 +26,7 @@ import os.path
 import random
 import re
 import signal
+import socket
 import sys
 import threading
 import time
@@ -35,6 +36,7 @@ import eventlet
 from eventlet.green import subprocess
 import netaddr
 from neutron_lib import constants as n_const
+from neutron_lib.db import api as db_api
 from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_db import exception as db_exc
@@ -45,7 +47,6 @@ import six
 import neutron
 from neutron._i18n import _
 from neutron.api import api_common
-from neutron.db import api as db_api
 
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 LOG = logging.getLogger(__name__)
@@ -234,6 +235,14 @@ def cidr_to_ip(ip_cidr):
     return str(net.ip)
 
 
+def cidr_mask(ip_cidr):
+    """Returns the subnet mask length from a cidr
+
+    :param: An ipv4 or ipv6 cidr mask length
+    """
+    return netaddr.IPNetwork(ip_cidr).netmask.netmask_bits()
+
+
 def fixed_ip_cidrs(fixed_ips):
     """Create a list of a port's fixed IPs in cidr notation.
 
@@ -259,6 +268,29 @@ def is_cidr_host(cidr):
     return net.prefixlen == n_const.IPv6_BITS
 
 
+def cidr_mask_length(cidr):
+    """Returns the mask length of a cidr
+
+    :param cidr: (string) either an ipv4 or ipv6 cidr or a host IP.
+    :returns: (int) mask length of a cidr; in case of host IP, the mask length
+              will be 32 (IPv4) or 128 (IPv6)
+    """
+    return netaddr.IPNetwork(cidr).netmask.netmask_bits()
+
+
+def cidr_broadcast_address(cidr):
+    """Returns the broadcast address of a cidr
+
+    :param cidr: (string, netaddr.IPNetwork, netaddr.IPAddress) either an ipv4
+                 or ipv6 cidr or a host IP.
+    :returns: (string) broadcast address of the cidr, None if the cidr has no
+              broadcast domain
+    """
+    broadcast = netaddr.IPNetwork(cidr).broadcast
+    if broadcast:
+        return str(broadcast)
+
+
 def get_ip_version(ip_or_cidr):
     return netaddr.IPNetwork(ip_or_cidr).version
 
@@ -269,6 +301,18 @@ def ip_version_from_int(ip_version_int):
     if ip_version_int == 6:
         return n_const.IPv6
     raise ValueError(_('Illegal IP version number'))
+
+
+def get_network_length(ip_version):
+    """Returns the network length depeding on the IP version"""
+    return (n_const.IPv4_BITS if ip_version == n_const.IP_VERSION_4
+            else n_const.IPv6_BITS)
+
+
+def get_socket_address_family(ip_version):
+    """Returns the address family depending on the IP version"""
+    return (int(socket.AF_INET if ip_version == n_const.IP_VERSION_4
+                else socket.AF_INET6))
 
 
 class DelayedStringRenderer(object):
@@ -555,7 +599,7 @@ def create_object_with_dependency(creator, dep_getter, dep_creator,
     This function protects against all of the cases where the dependency can
     be concurrently removed by catching exceptions and restarting the
     process of creating the dependency if one no longer exists. It will
-    give up after neutron.db.api.MAX_RETRIES and raise the exception it
+    give up after neutron_lib.db.api.MAX_RETRIES and raise the exception it
     encounters after that.
     """
     result, dependency, dep_id, made_locally = None, None, None, False

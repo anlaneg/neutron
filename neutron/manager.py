@@ -113,6 +113,9 @@ class NeutronManager(object):
     __trace_args__ = {"name": "rpc"}
 
     def __init__(self, options=None, config_file=None):
+        # Store instances of already loaded plugins to avoid instantiate same
+        # plugin more than once
+        self._loaded_plugins = {}
         # If no options have been provided, create an empty dict
         if not options:
             options = {}
@@ -163,9 +166,16 @@ class NeutronManager(object):
             with excutils.save_and_reraise_exception():
                 LOG.error("Plugin '%s' not found.", plugin_provider)
 
+    def _get_plugin_class(self, namespace, plugin_provider):
+        return self.load_class_for_provider(namespace, plugin_provider)
+
     def _get_plugin_instance(self, namespace, plugin_provider):
-        plugin_class = self.load_class_for_provider(namespace, plugin_provider)
-        return plugin_class()
+        plugin_class = self._get_plugin_class(namespace, plugin_provider)
+        plugin_inst = self._loaded_plugins.get(plugin_class)
+        if not plugin_inst:
+            plugin_inst = plugin_class()
+            self._loaded_plugins[plugin_class] = plugin_inst
+        return plugin_inst
 
     def _load_services_from_core_plugin(self, plugin):
         """Puts core plugin in service_plugins for supported services."""
@@ -203,36 +213,41 @@ class NeutronManager(object):
                 continue
 
             LOG.info("Loading Plugin: %s", provider)
-            plugin_inst = self._get_plugin_instance('neutron.service_plugins',
-                                                    provider)
+            plugin_class = self._get_plugin_class(
+                'neutron.service_plugins', provider)
+            required_plugins = getattr(
+                plugin_class, "required_service_plugins", [])
+            for req_plugin in required_plugins:
+                LOG.info("Loading service plugin %s, it is required by %s",
+                         req_plugin, provider)
+            	#指明插件被加载
+                self._create_and_add_service_plugin(req_plugin)
+            # NOTE(liuyulong): adding one plugin multiple times does not have
+            # bad effect for it. Since all the plugin has its own specific
+            # unique name.
+            self._create_and_add_service_plugin(provider)
 
-            # only one implementation of svc_type allowed
-            # specifying more than one plugin
-            # for the same type is a fatal exception
-            # TODO(armax): simplify this by moving the conditional into the
-            # directory itself.
-            plugin_type = plugin_inst.get_plugin_type()
-            if directory.get_plugin(plugin_type):
-                raise ValueError(_("Multiple plugins for service "
-                                   "%s were configured") % plugin_type)
+    def _create_and_add_service_plugin(self, provider):
+        plugin_inst = self._get_plugin_instance('neutron.service_plugins',
+                                                provider)
+        plugin_type = plugin_inst.get_plugin_type()
+        directory.add_plugin(plugin_type, plugin_inst)
 
-            #指明插件被加载
-            directory.add_plugin(plugin_type, plugin_inst)
+        # search for possible agent notifiers declared in service plugin
+        # (needed by agent management extension)
+        plugin = directory.get_plugin()
+        if (hasattr(plugin, 'agent_notifiers') and
+                hasattr(plugin_inst, 'agent_notifiers')):
+            plugin.agent_notifiers.update(plugin_inst.agent_notifiers)
 
-            # search for possible agent notifiers declared in service plugin
-            # (needed by agent management extension)
-            plugin = directory.get_plugin()
-            if (hasattr(plugin, 'agent_notifiers') and
-                    hasattr(plugin_inst, 'agent_notifiers')):
-                plugin.agent_notifiers.update(plugin_inst.agent_notifiers)
+        # disable incompatible extensions in core plugin if any
+        utils.disable_extension_by_service_plugin(plugin, plugin_inst)
 
-            # disable incompatible extensions in core plugin if any
-            utils.disable_extension_by_service_plugin(plugin, plugin_inst)
-
-            LOG.debug("Successfully loaded %(type)s plugin. "
-                      "Description: %(desc)s",
-                      {"type": plugin_type,
-                       "desc": plugin_inst.get_plugin_description()})
+        LOG.debug("Successfully loaded %(type)s plugin. "
+                  "Description: %(desc)s",
+                  {"type": plugin_type,
+                   "desc": plugin_inst.get_plugin_description()})
+>>>>>>> upstream/master
 
     @classmethod
     @runtime.synchronized("manager")

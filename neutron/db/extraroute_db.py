@@ -20,6 +20,7 @@ from neutron_lib.api.definitions import l3 as l3_apidef
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
+from neutron_lib.db import resource_extend
 from neutron_lib.exceptions import extraroute as xroute_exc
 from neutron_lib.utils import helpers
 from oslo_config import cfg
@@ -28,7 +29,6 @@ from oslo_log import log as logging
 from neutron._i18n import _
 from neutron.common import utils
 from neutron.conf.db import extraroute_db
-from neutron.db import _resource_extend as resource_extend
 from neutron.db import l3_db
 from neutron.objects import router as l3_obj
 
@@ -143,7 +143,7 @@ class ExtraRoute_dbonly_mixin(l3_db.L3_NAT_dbonly_mixin):
     def _confirm_router_interface_not_in_use(self, context, router_id,
                                              subnet_id):
         super(ExtraRoute_dbonly_mixin,
-            self)._confirm_router_interface_not_in_use(
+              self)._confirm_router_interface_not_in_use(
             context, router_id, subnet_id)
         subnet = self._core_plugin.get_subnet(context, subnet_id)
         subnet_cidr = netaddr.IPNetwork(subnet['cidr'])

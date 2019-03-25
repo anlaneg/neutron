@@ -16,6 +16,7 @@
 import weakref
 
 import fixtures
+import mock
 from neutron_lib.plugins import constants as lib_const
 from neutron_lib.plugins import directory
 from oslo_config import cfg
@@ -89,15 +90,20 @@ class NeutronManagerTestCase(base.BaseTestCase):
                                "neutron.tests.unit.dummy_plugin."
                                "DummyServicePlugin"])
         cfg.CONF.set_override("core_plugin", DB_PLUGIN_KLASS)
-        e = self.assertRaises(ValueError, manager.NeutronManager.get_instance)
-        self.assertIn(dummy_plugin.DUMMY_SERVICE_TYPE, str(e))
+        manager.NeutronManager.get_instance()
+        plugins = directory.get_plugins()
+        # CORE, DUMMY
+        self.assertEqual(2, len(plugins))
 
     def test_multiple_plugins_by_name_specified_for_service_type(self):
         cfg.CONF.set_override("service_plugins",
                               [dummy_plugin.Dummy.get_alias(),
                                dummy_plugin.Dummy.get_alias()])
         cfg.CONF.set_override("core_plugin", DB_PLUGIN_KLASS)
-        self.assertRaises(ValueError, manager.NeutronManager.get_instance)
+        manager.NeutronManager.get_instance()
+        plugins = directory.get_plugins()
+        # CORE, DUMMY
+        self.assertEqual(2, len(plugins))
 
     def test_multiple_plugins_mixed_specified_for_service_type(self):
         cfg.CONF.set_override("service_plugins",
@@ -105,7 +111,10 @@ class NeutronManagerTestCase(base.BaseTestCase):
                                "DummyServicePlugin",
                                dummy_plugin.Dummy.get_alias()])
         cfg.CONF.set_override("core_plugin", DB_PLUGIN_KLASS)
-        self.assertRaises(ValueError, manager.NeutronManager.get_instance)
+        manager.NeutronManager.get_instance()
+        plugins = directory.get_plugins()
+        # CORE, DUMMY
+        self.assertEqual(2, len(plugins))
 
     def test_service_plugin_conflicts_with_core_plugin(self):
         cfg.CONF.set_override("service_plugins",
@@ -114,8 +123,78 @@ class NeutronManagerTestCase(base.BaseTestCase):
         cfg.CONF.set_override("core_plugin",
                               "neutron.tests.unit.test_manager."
                               "MultiServiceCorePlugin")
-        e = self.assertRaises(ValueError, manager.NeutronManager.get_instance)
-        self.assertIn(dummy_plugin.DUMMY_SERVICE_TYPE, str(e))
+        manager.NeutronManager.get_instance()
+        plugins = directory.get_plugins()
+        # CORE, LOADBALANCER, DUMMY
+        self.assertEqual(3, len(plugins))
+
+    def test_load_plugins_with_requirements(self):
+        cfg.CONF.set_override("service_plugins",
+                              ["neutron.tests.unit.dummy_plugin."
+                               "DummyWithRequireServicePlugin"])
+        cfg.CONF.set_override("core_plugin", DB_PLUGIN_KLASS)
+        with mock.patch(
+            "neutron.tests.unit.dummy_plugin.DummyServicePlugin.__init__",
+            return_value=None
+        ) as dummy_init_mock, mock.patch(
+            "neutron.tests.unit.dummy_plugin."
+            "DummyWithRequireServicePlugin.__init__",
+            return_value=None
+        ) as dummy_with_require_init_mock:
+            manager.NeutronManager.get_instance()
+            plugins = directory.get_plugins()
+        # DUMMY will also be initialized since DUMMY_REQIURE needs it.
+        # CORE, DUMMY, DUMMY_REQIURE
+        self.assertEqual(3, len(plugins))
+        # ensure that DUMMY and DUMMY_REQIURE was instantiate only once:
+        self.assertEqual(1, dummy_init_mock.call_count)
+        self.assertEqual(1, dummy_with_require_init_mock.call_count)
+
+    def test_load_plugins_with_requirements_with_parent(self):
+        cfg.CONF.set_override("service_plugins",
+                              ["neutron.tests.unit.dummy_plugin."
+                               "DummyServicePlugin",
+                               "neutron.tests.unit.dummy_plugin."
+                               "DummyWithRequireServicePlugin"])
+        cfg.CONF.set_override("core_plugin", DB_PLUGIN_KLASS)
+        with mock.patch(
+            "neutron.tests.unit.dummy_plugin.DummyServicePlugin.__init__",
+            return_value=None
+        ) as dummy_init_mock, mock.patch(
+            "neutron.tests.unit.dummy_plugin."
+            "DummyWithRequireServicePlugin.__init__",
+            return_value=None
+        ) as dummy_with_require_init_mock:
+            manager.NeutronManager.get_instance()
+            plugins = directory.get_plugins()
+        # CORE, DUMMY, DUMMY_REQIURE
+        self.assertEqual(3, len(plugins))
+        # ensure that DUMMY and DUMMY_REQIURE was instantiate only once:
+        self.assertEqual(1, dummy_init_mock.call_count)
+        self.assertEqual(1, dummy_with_require_init_mock.call_count)
+
+    def test_load_plugins_with_requirements_child_first(self):
+        cfg.CONF.set_override("service_plugins",
+                              ["neutron.tests.unit.dummy_plugin."
+                               "DummyWithRequireServicePlugin",
+                               "neutron.tests.unit.dummy_plugin."
+                               "DummyServicePlugin"])
+        cfg.CONF.set_override("core_plugin", DB_PLUGIN_KLASS)
+        with mock.patch(
+            "neutron.tests.unit.dummy_plugin.DummyServicePlugin.__init__",
+            return_value=None
+        ) as dummy_init_mock, mock.patch(
+            "neutron.tests.unit.dummy_plugin."
+            "DummyWithRequireServicePlugin.__init__",
+            return_value=None
+        ) as dummy_with_require_init_mock:
+            manager.NeutronManager.get_instance()
+            plugins = directory.get_plugins()
+        # CORE, DUMMY, DUMMY_REQIURE
+        self.assertEqual(3, len(plugins))
+        # ensure that DUMMY and DUMMY_REQIURE was instantiate only once:
+        self.assertEqual(1, dummy_init_mock.call_count)
+        self.assertEqual(1, dummy_with_require_init_mock.call_count)
 
     def test_core_plugin_supports_services(self):
         cfg.CONF.set_override("core_plugin",

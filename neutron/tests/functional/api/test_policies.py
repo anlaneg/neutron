@@ -20,13 +20,14 @@ from neutron_lib import context
 from neutron_lib import fixture
 
 from neutron.api import extensions
+from neutron.conf import policies
 from neutron import policy
-from neutron.tests import base
+from neutron.tests.functional import base
 
 TEST_PATH = os.path.dirname(os.path.abspath(__file__))
 
 
-class APIPolicyTestCase(base.BaseTestCase):
+class APIPolicyTestCase(base.BaseLoggingTestCase):
     """Base class for API policy tests
 
     Tests for REST API policy checks. Ideally this would be done against an
@@ -86,6 +87,10 @@ class APIPolicyTestCase(base.BaseTestCase):
         extension_manager = extensions.ExtensionManager(self.extension_path)
         extension_manager.extend_resources(self.api_version,
                                            attributes.RESOURCES)
+        # TODO(amotoki): Consider this should be part of
+        # neutron.policy.reset (or refresh), but as of now
+        # this is only required for unit testing.
+        policies.reload_default_policies()
         policy.init()
         admin_context = context.get_admin_context()
         tenant_context = context.Context('test_user', 'test_tenant_id', False)

@@ -118,6 +118,10 @@ class ClientFixture(fixtures.Fixture):
 
         return self._create_resource(resource_type, spec)
 
+    def list_ports(self, retrieve_all=True, **kwargs):
+        resp = self.client.list_ports(retrieve_all=retrieve_all, **kwargs)
+        return resp['ports']
+
     def create_port(self, tenant_id, network_id, hostname=None,
                     qos_policy_id=None, security_groups=None, **kwargs):
         spec = {
@@ -198,6 +202,22 @@ class ClientFixture(fixtures.Fixture):
                         qos_policy_id)
 
         return rule['bandwidth_limit_rule']
+
+    def create_minimum_bandwidth_rule(self, tenant_id, qos_policy_id,
+                                      min_bw, direction=None):
+        rule = {'tenant_id': tenant_id,
+                'min_kbps': min_bw}
+        if direction:
+            rule['direction'] = direction
+        rule = self.client.create_minimum_bandwidth_rule(
+            policy=qos_policy_id,
+            body={'minimum_bandwidth_rule': rule})
+
+        self.addCleanup(_safe_method(
+            self.client.delete_minimum_bandwidth_rule),
+            rule['minimum_bandwidth_rule']['id'], qos_policy_id)
+
+        return rule['minimum_bandwidth_rule']
 
     def create_dscp_marking_rule(self, tenant_id, qos_policy_id, dscp_mark=0):
         rule = {'tenant_id': tenant_id}

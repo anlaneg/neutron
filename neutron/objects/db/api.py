@@ -13,11 +13,10 @@
 # TODO(ihrachys): cover the module with functional tests targeting supported
 # backends
 
+from neutron_lib.db import model_query
 from neutron_lib import exceptions as n_exc
 from neutron_lib.objects import utils as obj_utils
 from oslo_utils import uuidutils
-
-from neutron.db import _model_query as model_query
 
 
 # Common database operation implementations
@@ -41,7 +40,7 @@ def count(obj_cls, context, **kwargs):
 
 #构造查询dict
 def _kwargs_to_filters(**kwargs):
-    retain_classes = (list, set, obj_utils.StringMatchingFilterObj)
+    retain_classes = (list, set, obj_utils.FilterObj)
     return {k: v if isinstance(v, retain_classes) else [v]
             for k, v in kwargs.items()}
 
@@ -54,6 +53,13 @@ def get_objects(obj_cls, context, _pager=None, **kwargs):
             dict_func=None,  # return all the data
             filters=filters,
             **(_pager.to_kwargs(context, obj_cls) if _pager else {}))
+
+
+def get_values(obj_cls, context, field, **kwargs):
+    with obj_cls.db_context_reader(context):
+        filters = _kwargs_to_filters(**kwargs)
+        return model_query.get_values(
+            context, obj_cls.db_model, field, filters=filters)
 
 
 def create_object(obj_cls, context, values, populate_id=True):

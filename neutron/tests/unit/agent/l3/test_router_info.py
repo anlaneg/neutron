@@ -12,11 +12,11 @@
 
 import mock
 from neutron_lib import constants as lib_constants
+from neutron_lib.exceptions import l3 as l3_exc
 from oslo_utils import uuidutils
 
 from neutron.agent.l3 import router_info
 from neutron.agent.linux import ip_lib
-from neutron.common import exceptions as n_exc
 from neutron.conf.agent import common as config
 from neutron.conf.agent.l3 import config as l3_config
 from neutron.tests import base
@@ -209,6 +209,28 @@ class TestRouterInfo(base.BaseTestCase):
             p_i_p.assert_called_once_with()
             p_e_o_d.assert_called_once_with()
 
+    def test__update_internal_ports_cache(self):
+        ri = router_info.RouterInfo(mock.Mock(), _uuid(), {}, **self.ri_kwargs)
+        ri.internal_ports = [
+            {'id': 'port-id-1', 'mtu': 1500},
+            {'id': 'port-id-2', 'mtu': 2000}]
+        initial_internal_ports = ri.internal_ports[:]
+
+        # Test add new element to the cache
+        new_port = {'id': 'new-port-id', 'mtu': 1500}
+        ri._update_internal_ports_cache(new_port)
+        self.assertEqual(
+            initial_internal_ports + [new_port],
+            ri.internal_ports)
+
+        # Test update existing port in cache
+        updated_port = new_port.copy()
+        updated_port['mtu'] = 2500
+        ri._update_internal_ports_cache(updated_port)
+        self.assertEqual(
+            initial_internal_ports + [updated_port],
+            ri.internal_ports)
+
 
 class BasicRouterTestCaseFramework(base.BaseTestCase):
     def _create_router(self, router=None, **kwargs):
@@ -352,7 +374,7 @@ class TestBasicRouterOperations(BasicRouterTestCaseFramework):
         ri = self._create_router()
         ri.process_floating_ip_nat_rules = mock.Mock(side_effect=Exception)
 
-        self.assertRaises(n_exc.FloatingIpSetupException,
+        self.assertRaises(l3_exc.FloatingIpSetupException,
                           ri.process_snat_dnat_for_fip)
 
         ri.process_floating_ip_nat_rules.assert_called_once_with()
@@ -374,7 +396,7 @@ class TestBasicRouterOperations(BasicRouterTestCaseFramework):
         ri.process_floating_ip_addresses = mock.Mock(
             side_effect=Exception)
 
-        self.assertRaises(n_exc.FloatingIpSetupException,
+        self.assertRaises(l3_exc.FloatingIpSetupException,
                           ri.configure_fip_addresses,
                           mock.sentinel.interface_name)
 

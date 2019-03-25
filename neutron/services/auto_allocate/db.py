@@ -21,6 +21,7 @@ from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib.db import api as db_api
+from neutron_lib.db import resource_extend
 from neutron_lib.db import utils as db_utils
 from neutron_lib import exceptions as n_exc
 from neutron_lib.objects import exceptions as obj_exc
@@ -30,8 +31,6 @@ from neutron_lib.plugins import utils as p_utils
 from oslo_log import log as logging
 
 from neutron._i18n import _
-from neutron.common import exceptions as c_exc
-from neutron.db import _resource_extend as resource_extend
 from neutron.db import common_db_mixin
 from neutron.objects import auto_allocate as auto_allocate_obj
 from neutron.objects import base as base_obj
@@ -67,8 +66,8 @@ def _ensure_external_network_default_value_callback(
         if is_default:
             # ensure only one default external network at any given time
             pager = base_obj.Pager(limit=1)
-            objs = net_obj.ExternalNetwork.get_objects(context,
-                _pager=pager, is_default=True)
+            objs = net_obj.ExternalNetwork.get_objects(context, _pager=pager,
+                                                       is_default=True)
             if objs:
                 if objs[0] and network['id'] != objs[0].network_id:
                     raise exceptions.DefaultExternalNetworkExists(
@@ -97,9 +96,9 @@ class AutoAllocatedTopologyMixin(common_db_mixin.CommonDbMixin):
         new = super(AutoAllocatedTopologyMixin, cls).__new__(cls, *args,
                                                              **kwargs)
         registry.subscribe(_ensure_external_network_default_value_callback,
-            resources.NETWORK, events.PRECOMMIT_UPDATE)
+                           resources.NETWORK, events.PRECOMMIT_UPDATE)
         registry.subscribe(_ensure_external_network_default_value_callback,
-            resources.NETWORK, events.PRECOMMIT_CREATE)
+                           resources.NETWORK, events.PRECOMMIT_CREATE)
         return new
 
     # TODO(armax): if a tenant modifies auto allocated resources under
@@ -146,7 +145,7 @@ class AutoAllocatedTopologyMixin(common_db_mixin.CommonDbMixin):
             return self._check_requirements(context, tenant_id)
         elif fields:
             raise n_exc.BadRequest(resource='auto_allocate',
-                msg=_("Unrecognized field"))
+                                   msg=_("Unrecognized field"))
 
         # Check for an existent topology
         network_id = self._get_auto_allocated_network(context, tenant_id)
@@ -295,7 +294,7 @@ class AutoAllocatedTopologyMixin(common_db_mixin.CommonDbMixin):
                 subnets.append(p_utils.create_subnet(
                     self.core_plugin, context, {'subnet': subnet_args}))
             return subnets
-        except (c_exc.SubnetAllocationError, ValueError,
+        except (n_exc.SubnetAllocationError, ValueError,
                 n_exc.BadRequest, n_exc.NotFound) as e:
             LOG.error("Unable to auto allocate topology for tenant "
                       "%(tenant_id)s due to missing or unmet "
@@ -336,8 +335,8 @@ class AutoAllocatedTopologyMixin(common_db_mixin.CommonDbMixin):
                       {'tenant_id': tenant_id, 'reason': e})
             router_id = router['id'] if router else None
             self._cleanup(context,
-                network_id=subnets[0]['network_id'],
-                router_id=router_id, subnets=attached_subnets)
+                          network_id=subnets[0]['network_id'],
+                          router_id=router_id, subnets=attached_subnets)
             raise exceptions.AutoAllocationFailure(
                 reason=_("Unable to provide external connectivity"))
         except Exception as e:

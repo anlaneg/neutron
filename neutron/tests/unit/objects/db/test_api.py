@@ -14,10 +14,10 @@ import copy
 
 import mock
 from neutron_lib import context
+from neutron_lib.db import model_query
 from neutron_lib import exceptions as n_exc
 from neutron_lib.objects import utils as obj_utils
 
-from neutron.db import _model_query as model_query
 from neutron.objects import base
 from neutron.objects.db import api
 from neutron.objects import network
@@ -52,6 +52,19 @@ class GetObjectsTestCase(test_base.BaseTestCase):
             filters={},
             limit=limit,
             marker_obj=get_object.return_value)
+
+
+class GetValuesTestCase(test_base.BaseTestCase):
+
+    def test_get_values(self):
+        ctxt = context.get_admin_context()
+        fake_field = 'fake_field'
+
+        with mock.patch.object(
+                model_query, 'get_values') as get_values:
+            api.get_values(FakeObj, ctxt, fake_field)
+        get_values.assert_called_with(
+            ctxt, FakeObj.db_model, fake_field, filters={})
 
 
 class CreateObjectTestCase(test_base.BaseTestCase):
@@ -136,6 +149,53 @@ class CRUDScenarioTestCase(testlib_api.SqlTestCase):
         self.assertIn(obj1, objs)
         self.assertIn(obj2, objs)
         self.assertNotIn(obj3, objs)
+
+    def test_get_values_with_None_value_in_filters(self):
+        api.create_object(self.obj_cls, self.ctxt, {'name': 'foo'})
+        values = api.get_values(
+            self.obj_cls, self.ctxt, 'name', name='foo', status=None)
+        self.assertEqual('foo', values[0])
+
+    def test_get_values_with_string_matching_filters_contains(self):
+        api.create_object(
+            self.obj_cls, self.ctxt, {'name': 'obj_con_1'})
+        api.create_object(
+            self.obj_cls, self.ctxt, {'name': 'obj_con_2'})
+        api.create_object(
+            self.obj_cls, self.ctxt, {'name': 'obj_3'})
+
+        values = api.get_values(
+            self.obj_cls, self.ctxt, 'name',
+            name=obj_utils.StringContains('con'))
+        self.assertEqual(2, len(values))
+        self.assertIn('obj_con_1', values)
+        self.assertIn('obj_con_2', values)
+        self.assertNotIn('obj_3', values)
+
+    def test_get_values_with_string_matching_filters_starts(self):
+        api.create_object(self.obj_cls, self.ctxt, {'name': 'pre_obj1'})
+        api.create_object(self.obj_cls, self.ctxt, {'name': 'pre_obj2'})
+        api.create_object(self.obj_cls, self.ctxt, {'name': 'obj_3'})
+
+        values = api.get_values(
+            self.obj_cls, self.ctxt, 'name',
+            name=obj_utils.StringStarts('pre'))
+        self.assertEqual(2, len(values))
+        self.assertIn('pre_obj1', values)
+        self.assertIn('pre_obj2', values)
+        self.assertNotIn('obj_3', values)
+
+    def test_get_values_with_string_matching_filters_ends(self):
+        api.create_object(self.obj_cls, self.ctxt, {'name': 'obj1_end'})
+        api.create_object(self.obj_cls, self.ctxt, {'name': 'obj2_end'})
+        api.create_object(self.obj_cls, self.ctxt, {'name': 'obj_3'})
+
+        values = api.get_values(
+            self.obj_cls, self.ctxt, 'name', name=obj_utils.StringEnds('end'))
+        self.assertEqual(2, len(values))
+        self.assertIn('obj1_end', values)
+        self.assertIn('obj2_end', values)
+        self.assertNotIn('obj_3', values)
 
     def test_get_object_create_update_delete(self):
         obj = api.create_object(self.obj_cls, self.ctxt, {'name': 'foo'})

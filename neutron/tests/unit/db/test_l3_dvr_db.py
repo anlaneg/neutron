@@ -24,6 +24,7 @@ from neutron_lib import exceptions
 from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
+from neutron_lib.plugins import utils as plugin_utils
 from oslo_utils import uuidutils
 
 from neutron.db import agents_db
@@ -36,11 +37,13 @@ from neutron.objects import agent as agent_obj
 from neutron.objects import l3agent as rb_obj
 from neutron.objects import router as router_obj
 from neutron.tests.unit.db import test_db_base_plugin_v2
+from neutron.tests.unit.extensions import test_l3
 
 _uuid = uuidutils.generate_uuid
 
 
-class FakeL3Plugin(common_db_mixin.CommonDbMixin,
+class FakeL3Plugin(test_l3.TestL3PluginBaseAttributes,
+                   common_db_mixin.CommonDbMixin,
                    l3_dvr_db.L3_NAT_with_dvr_db_mixin,
                    l3_dvrscheduler_db.L3_DVRsch_db_mixin,
                    agents_db.AgentDbMixin):
@@ -663,6 +666,28 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
             self.assertEqual(1, len(csnat_ports))
             self.assertEqual(2, len(csnat_ports[0]['fixed_ips']))
 
+    def _test_update_router_interface_port_ip_not_allowed(self, device_owner):
+        router, subnet_v4, subnet_v6 = self._setup_router_with_v4_and_v6()
+        device_filter = {'device_owner': [device_owner]}
+        ports = self.core_plugin.get_ports(self.ctx, filters=device_filter)
+        self.assertRaises(
+            exceptions.BadRequest,
+            self.core_plugin.update_port,
+            self.ctx, ports[0]['id'],
+            {'port': {'fixed_ips': [
+                {'ip_address': "20.0.0.100",
+                 'subnet_id': subnet_v4['subnet']['id']},
+                {'ip_address': "20.0.0.101",
+                 'subnet_id': subnet_v4['subnet']['id']}]}})
+
+    def test_update_router_centralized_snat_port_ip_not_allowed(self):
+        self._test_update_router_interface_port_ip_not_allowed(
+            const.DEVICE_OWNER_ROUTER_SNAT)
+
+    def test_update_router_interface_distributed_port_ip_not_allowed(self):
+        self._test_update_router_interface_port_ip_not_allowed(
+            const.DEVICE_OWNER_DVR_INTERFACE)
+
     def test_remove_router_interface_csnat_ports_removal(self):
         router_dict = {'name': 'test_router', 'admin_state_up': True,
                        'distributed': True}
@@ -797,24 +822,6 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
             self.ctx, filters=dvr_filters)
         self.assertEqual(1, len(dvr_ports))
 
-    def test_remove_router_interface_csnat_port_missing_ip(self):
-        # NOTE(kevinbenton): this is a contrived scenario to reproduce
-        # a condition observed in bug/1609540. Once we figure out why
-        # these ports lose their IP we can remove this test.
-        router, subnet_v4, subnet_v6 = self._setup_router_with_v4_and_v6()
-        self.mixin.remove_router_interface(
-            self.ctx, router['id'],
-            {'subnet_id': subnet_v4['subnet']['id']})
-        csnat_filters = {'device_owner':
-                         [const.DEVICE_OWNER_ROUTER_SNAT]}
-        csnat_ports = self.core_plugin.get_ports(
-            self.ctx, filters=csnat_filters)
-        self.core_plugin.update_port(self.ctx, csnat_ports[0]['id'],
-                                     {'port': {'fixed_ips': []}})
-        self.mixin.remove_router_interface(
-            self.ctx, router['id'],
-            {'subnet_id': subnet_v6['subnet']['id']})
-
     def test__validate_router_migration_notify_advanced_services(self):
         router = {'name': 'foo_router', 'admin_state_up': False}
         router_db = self._create_router(router)
@@ -857,6 +864,26 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
             mock_notify.assert_called_once_with(self.ctx, router_db=router_db,
                                                 port=mock.ANY,
                                                 interface_info=interface_info)
+
+    def test__generate_arp_table_and_notify_agent(self):
+        fixed_ip = {
+            'ip_address': '1.2.3.4',
+            'subnet_id': _uuid()}
+        mac_address = "00:11:22:33:44:55"
+        expected_arp_table = {
+            'ip_address': fixed_ip['ip_address'],
+            'subnet_id': fixed_ip['subnet_id'],
+            'mac_address': mac_address}
+        notifier = mock.Mock()
+        ports = [{'id': _uuid(), 'device_id': 'router_1'},
+                 {'id': _uuid(), 'device_id': 'router_2'}]
+        with mock.patch.object(self.core_plugin, "get_ports",
+                               return_value=ports):
+            self.mixin._generate_arp_table_and_notify_agent(
+                self.ctx, fixed_ip, mac_address, notifier)
+        notifier.assert_has_calls([
+            mock.call(self.ctx, "router_1", expected_arp_table),
+            mock.call(self.ctx, "router_2", expected_arp_table)])
 
     def _test_update_arp_entry_for_dvr_service_port(
             self, device_owner, action):
@@ -1041,3 +1068,44 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
                 routers = self.mixin._get_sync_routers(
                     self.ctx, router_ids=[router['id']])
                 self.assertEqual("fake-host", routers[0]['gw_port_host'])
+
+    def test_is_router_distributed(self):
+        router_id = 'router_id'
+        with mock.patch.object(self.mixin, 'get_router') as \
+                mock_get_router:
+            mock_get_router.return_value = {'distributed': True}
+            self.assertTrue(
+                self.mixin.is_router_distributed(self.ctx, router_id))
+
+    @mock.patch.object(plugin_utils, 'can_port_be_bound_to_virtual_bridge',
+                       return_value=True)
+    def test__get_assoc_data_valid_vnic_type(self, *args):
+        with mock.patch.object(self.mixin, '_internal_fip_assoc_data') as \
+                mock_fip_assoc_data, \
+                mock.patch.object(self.mixin, '_get_router_for_floatingip') \
+                as mock_router_fip, \
+                mock.patch.object(self.mixin, 'is_router_distributed',
+                                  return_value=True):
+            port = {portbindings.VNIC_TYPE: portbindings.VNIC_NORMAL}
+            mock_fip_assoc_data.return_value = (port, 'subnet_id', 'ip_addr')
+            mock_router_fip.return_value = 'router_id'
+            fip = {'port_id': 'port_id'}
+            self.assertEqual(
+                ('port_id', 'ip_addr', 'router_id'),
+                self.mixin._get_assoc_data(self.ctx, fip, mock.Mock()))
+
+    @mock.patch.object(plugin_utils, 'can_port_be_bound_to_virtual_bridge',
+                       return_value=False)
+    def test__get_assoc_data_invalid_vnic_type(self, *args):
+        with mock.patch.object(self.mixin, '_internal_fip_assoc_data') as \
+                mock_fip_assoc_data, \
+                mock.patch.object(self.mixin, '_get_router_for_floatingip') \
+                as mock_router_fip, \
+                mock.patch.object(self.mixin, 'is_router_distributed',
+                                  return_value=True):
+            port = {portbindings.VNIC_TYPE: portbindings.VNIC_NORMAL}
+            mock_fip_assoc_data.return_value = (port, 'subnet_id', 'ip_addr')
+            mock_router_fip.return_value = 'router_id'
+            self.assertRaises(
+                exceptions.BadRequest,
+                self.mixin._get_assoc_data, self.ctx, mock.ANY, mock.Mock())

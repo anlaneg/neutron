@@ -19,6 +19,7 @@ import mock
 from neutron_lib import constants
 import testtools
 
+from neutron.agent.common import ovs_lib
 from neutron.agent.l3 import agent as neutron_l3_agent
 from neutron.agent.linux import ip_lib
 from neutron.common import ipv6_utils
@@ -118,7 +119,11 @@ class L3HATestCase(framework.L3AgentTestFramework):
         router_info['gw_port'] = ex_port
         router.process()
         self._assert_ipv6_accept_ra(router, expected_ra)
-        self._assert_ipv6_forwarding(router, expected_forwarding)
+        # As router is going first to master and than to backup mode,
+        # ipv6_forwarding should be enabled on "all" interface always after
+        # that transition
+        self._assert_ipv6_forwarding(router, expected_forwarding,
+                                     True)
 
     @testtools.skipUnless(ipv6_utils.is_enabled_and_bind_by_default(),
                           "IPv6 is not enabled")
@@ -352,17 +357,33 @@ class L3HATestCase(framework.L3AgentTestFramework):
             external_port['id'])
 
         common_utils.wait_until_true(lambda: router.ha_state == 'backup')
-        self.assertEqual(
-            0, ip_lib.get_ipv6_forwarding(device=external_device_name,
-                                          namespace=router.ns_name))
+        self._wait_until_ipv6_forwarding_has_state(
+            router.ns_name, external_device_name, 0)
 
         router.router[constants.HA_INTERFACE_KEY]['status'] = (
             constants.PORT_STATUS_ACTIVE)
         self.agent._process_updated_router(router.router)
         common_utils.wait_until_true(lambda: router.ha_state == 'master')
-        self.assertEqual(
-            1, ip_lib.get_ipv6_forwarding(device=external_device_name,
-                                          namespace=router.ns_name))
+        self._wait_until_ipv6_forwarding_has_state(
+            router.ns_name, external_device_name, 1)
+
+    @testtools.skipUnless(ipv6_utils.is_enabled_and_bind_by_default(),
+                          "IPv6 is not enabled")
+    def test_ha_router_without_gw_ipv6_forwarding_state(self):
+        router_info = self.generate_router_info(
+            enable_ha=True, enable_gw=False)
+        router_info[constants.HA_INTERFACE_KEY]['status'] = (
+            constants.PORT_STATUS_DOWN)
+        router = self.manage_router(self.agent, router_info)
+
+        common_utils.wait_until_true(lambda: router.ha_state == 'backup')
+        self._wait_until_ipv6_forwarding_has_state(router.ns_name, 'all', 0)
+
+        router.router[constants.HA_INTERFACE_KEY]['status'] = (
+            constants.PORT_STATUS_ACTIVE)
+        self.agent._process_updated_router(router.router)
+        common_utils.wait_until_true(lambda: router.ha_state == 'master')
+        self._wait_until_ipv6_forwarding_has_state(router.ns_name, 'all', 1)
 
 
 class L3HATestFailover(framework.L3AgentTestFramework):
@@ -382,11 +403,38 @@ class L3HATestFailover(framework.L3AgentTestFramework):
         br_int_1.add_port(veth1.name)
         br_int_2.add_port(veth2.name)
 
+    @staticmethod
+    def fail_gw_router_port(router):
+        # NOTE(slaweq): in HA failover tests there are two integration bridges
+        # connected with veth pair to each other. To stop traffic from router's
+        # namespace to gw ip (19.4.4.1) it needs to be blocked by openflow rule
+        # as simple setting ovs_integration_bridge device DOWN will not be
+        # enough because same IP address is also configured on
+        # ovs_integration_bridge device from second router and it will still
+        # respond to ping
+        r_br = ovs_lib.OVSBridge(router.driver.conf.ovs_integration_bridge)
+        external_port = router.get_ex_gw_port()
+        for subnet in external_port['subnets']:
+            r_br.add_flow(
+                proto='ip', nw_dst=subnet['gateway_ip'], actions='drop')
+
+    @staticmethod
+    def restore_gw_router_port(router):
+        r_br = ovs_lib.OVSBridge(router.driver.conf.ovs_integration_bridge)
+        external_port = router.get_ex_gw_port()
+        for subnet in external_port['subnets']:
+            r_br.delete_flows(proto='ip', nw_dst=subnet['gateway_ip'])
+
     def test_ha_router_failover(self):
         router1, router2 = self.create_ha_routers()
 
         master_router, slave_router = self._get_master_and_slave_routers(
             router1, router2)
+
+        self._assert_ipv6_accept_ra(master_router, True)
+        self._assert_ipv6_forwarding(master_router, True, True)
+        self._assert_ipv6_accept_ra(slave_router, False)
+        self._assert_ipv6_forwarding(slave_router, False, False)
 
         self.fail_ha_router(router1)
 
@@ -397,6 +445,12 @@ class L3HATestFailover(framework.L3AgentTestFramework):
 
         self.assertEqual(master_router, new_slave)
         self.assertEqual(slave_router, new_master)
+        self._assert_ipv6_accept_ra(new_master, True)
+        self._assert_ipv6_forwarding(new_master, True, True)
+        self._assert_ipv6_accept_ra(new_slave, False)
+        # after transition from master -> slave, 'all' IPv6 forwarding should
+        # be enabled
+        self._assert_ipv6_forwarding(new_slave, False, True)
 
     def test_ha_router_lost_gw_connection(self):
         self.agent.conf.set_override(

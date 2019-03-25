@@ -232,6 +232,7 @@ class TestSriovAgent(base.BaseTestCase):
                           'port_id': 'port123',
                           'network_id': 'net123',
                           'admin_state_up': True,
+                          'propagate_uplink_status': True,
                           'network_type': 'vlan',
                           'segmentation_id': 100,
                           'profile': {'pci_slot': '1:2:3.0'},
@@ -255,6 +256,7 @@ class TestSriovAgent(base.BaseTestCase):
                         'port_id': 'port123',
                         'network_id': 'net123',
                         'admin_state_up': True,
+                        'propagate_uplink_status': False,
                         'network_type': 'vlan',
                         'segmentation_id': 100,
                         'profile': {'pci_slot': SLOT1},
@@ -264,6 +266,7 @@ class TestSriovAgent(base.BaseTestCase):
                         'port_id': 'port124',
                         'network_id': 'net123',
                         'admin_state_up': True,
+                        'propagate_uplink_status': False,
                         'network_type': 'vlan',
                         'segmentation_id': 100,
                         'profile': {'pci_slot': SLOT2},
@@ -299,6 +302,7 @@ class TestSriovAgent(base.BaseTestCase):
                         'port_id': 'port123',
                         'network_id': 'net123',
                         'admin_state_up': True,
+                        'propagate_uplink_status': False,
                         'network_type': 'vlan',
                         'segmentation_id': 100,
                         'profile': {'pci_slot': '1:2:3.0'},
@@ -319,7 +323,7 @@ class TestSriovAgent(base.BaseTestCase):
         agent.eswitch_mgr.set_device_state.assert_called_with(
                                         'aa:bb:cc:dd:ee:ff',
                                         '1:2:3.0',
-                                        True)
+                                        True, False)
         agent.eswitch_mgr.set_device_spoofcheck.assert_called_with(
                                         'aa:bb:cc:dd:ee:ff',
                                         '1:2:3.0',
@@ -337,6 +341,7 @@ class TestSriovAgent(base.BaseTestCase):
                          'port_id': 'port123',
                          'network_id': 'net123',
                          'admin_state_up': True,
+                         'propagate_uplink_status': False,
                          'network_type': 'vlan',
                          'segmentation_id': 100,
                          'profile': {'pci_slot': '1:2:3.0'},
@@ -346,6 +351,7 @@ class TestSriovAgent(base.BaseTestCase):
                          'port_id': 'port321',
                          'network_id': 'net123',
                          'admin_state_up': True,
+                         'propagate_uplink_status': False,
                          'network_type': 'vlan',
                          'segmentation_id': 100,
                          'profile': {'pci_slot': '1:2:3.0'},
@@ -364,8 +370,8 @@ class TestSriovAgent(base.BaseTestCase):
         calls = [mock.call('aa:bb:cc:dd:ee:ff', '1:2:3.0'),
                  mock.call('11:22:33:44:55:66', '1:2:3.0')]
         agent.eswitch_mgr.device_exists.assert_has_calls(calls, any_order=True)
-        calls = [mock.call('aa:bb:cc:dd:ee:ff', '1:2:3.0', True),
-                 mock.call('11:22:33:44:55:66', '1:2:3.0', True)]
+        calls = [mock.call('aa:bb:cc:dd:ee:ff', '1:2:3.0', True, False),
+                 mock.call('11:22:33:44:55:66', '1:2:3.0', True, False)]
         agent.eswitch_mgr.set_device_state.assert_has_calls(calls,
                                                             any_order=True)
         calls = [mock.call('aa:bb:cc:dd:ee:ff', '1:2:3.0', False),
@@ -385,6 +391,7 @@ class TestSriovAgent(base.BaseTestCase):
                          'port_id': 'port123',
                          'network_id': 'net123',
                          'admin_state_up': True,
+                         'propagate_uplink_status': False,
                          'network_type': 'vlan',
                          'segmentation_id': 100,
                          'profile': {'pci_slot': '1:2:3.0'},
@@ -394,6 +401,7 @@ class TestSriovAgent(base.BaseTestCase):
                          'port_id': 'port321',
                          'network_id': 'net123',
                          'admin_state_up': False,
+                         'propagate_uplink_status': False,
                          'network_type': 'vlan',
                          'segmentation_id': 100,
                          'profile': {'pci_slot': '1:2:3.0'},
@@ -412,8 +420,8 @@ class TestSriovAgent(base.BaseTestCase):
         calls = [mock.call('aa:bb:cc:dd:ee:ff', '1:2:3.0'),
                  mock.call('11:22:33:44:55:66', '1:2:3.0')]
         agent.eswitch_mgr.device_exists.assert_has_calls(calls, any_order=True)
-        calls = [mock.call('aa:bb:cc:dd:ee:ff', '1:2:3.0', True),
-                 mock.call('11:22:33:44:55:66', '1:2:3.0', False)]
+        calls = [mock.call('aa:bb:cc:dd:ee:ff', '1:2:3.0', True, False),
+                 mock.call('11:22:33:44:55:66', '1:2:3.0', False, False)]
         agent.eswitch_mgr.set_device_state.assert_has_calls(calls,
                                                             any_order=True)
         calls = [mock.call('aa:bb:cc:dd:ee:ff', '1:2:3.0', False),
@@ -465,6 +473,7 @@ class TestSriovAgent(base.BaseTestCase):
                         'port_id': 'port123',
                         'network_id': 'net123',
                         'admin_state_up': False,
+                        'propagate_uplink_status': False,
                         'network_type': 'vlan',
                         'segmentation_id': 100,
                         'profile': {'pci_slot': '1:2:3.0'},
@@ -493,6 +502,7 @@ class TestSriovAgent(base.BaseTestCase):
                         'network_type': 'vlan',
                         'segmentation_id': 100,
                         'profile': {'pci_slot': '1:2:3.0'},
+                        'propagate_uplink_status': False,
                         'physical_network': 'physnet1'}
         agent.plugin_rpc = mock.Mock()
         agent.plugin_rpc.get_devices_details_list.return_value = [mock_details]
@@ -565,10 +575,30 @@ class TestSriovAgent(base.BaseTestCase):
             self.assertEqual(inv_value,
                              rp_inv_defaults[inv_key])
 
+    def test_process_activated_bindings(self):
+        # Create several devices which are pairs of (<mac_addr>, <pci_slot>)
+        dev_a = ('fa:16:3e:f8:ae:af', "0000:01:00.0")
+        dev_b = ('fa:16:3e:f8:ae:b0', "0000:02:00.0")
+        dev_c = ('fa:16:3e:f8:ae:b1', "0000:03:00.0")
+        # Create device_info
+        fake_device_info = {
+            'current': set([dev_a, dev_b]),
+            'added': set([dev_c]),
+            'removed': set(),
+            'updated': set()}
+        fake_activated_bindings = set([dev_a])
+        self.agent.process_activated_bindings(fake_device_info,
+                                              fake_activated_bindings)
+        self.assertLessEqual(fake_activated_bindings,
+                             fake_device_info['added'])
+
 
 class FakeAgent(object):
     def __init__(self):
         self.updated_devices = set()
+        self.activated_bindings = set()
+        self.conf = mock.Mock()
+        self.conf.host = 'host1'
 
 
 class TestSriovNicSwitchRpcCallbacks(base.BaseTestCase):
@@ -585,6 +615,10 @@ class TestSriovNicSwitchRpcCallbacks(base.BaseTestCase):
         return {'id': uuidutils.generate_uuid(),
                 portbindings.PROFILE: {'pci_slot': PCI_SLOT},
                 'mac_address': DEVICE_MAC}
+
+    def _create_fake_bindings(self, fake_port, fake_host):
+        return {'port_id': fake_port['id'],
+                'host': fake_host}
 
     def test_port_update_with_pci_slot(self):
         port = self._create_fake_port()
@@ -623,6 +657,40 @@ class TestSriovNicSwitchRpcCallbacks(base.BaseTestCase):
         kwargs = {'context': self.context, 'network': network1}
         self.sriov_rpc_callback.network_update(**kwargs)
         self.assertEqual(set([('mac1', 'slot1')]), self.agent.updated_devices)
+
+    def test_binding_activate(self):
+        fake_port = self._create_fake_port()
+        self.agent.get_device_details_from_port_id = mock.Mock()
+        self.agent.get_device_details_from_port_id.return_value = {
+            'mac_address': fake_port['mac_address'],
+            'profile': fake_port[portbindings.PROFILE]
+        }
+        kwargs = self._create_fake_bindings(fake_port, self.agent.conf.host)
+        kwargs['context'] = self.context
+        self.sriov_rpc_callback.binding_activate(**kwargs)
+        # Assert agent.activated_binding set contains the new binding
+        self.assertIn((fake_port['mac_address'],
+                       fake_port[portbindings.PROFILE]['pci_slot']),
+                      self.agent.activated_bindings)
+
+    def test_binding_activate_no_host(self):
+        fake_port = self._create_fake_port()
+        kwargs = self._create_fake_bindings(fake_port, 'other-host')
+        kwargs['context'] = self.context
+        self.sriov_rpc_callback.binding_activate(**kwargs)
+        # Assert no bindings were added
+        self.assertEqual(set(), self.agent.activated_bindings)
+
+    def test_binding_deactivate(self):
+        # binding_deactivate() basically does nothing
+        # call it with both the agent's host and other host to cover
+        # all code paths
+        fake_port = self._create_fake_port()
+        kwargs = self._create_fake_bindings(fake_port, self.agent.conf.host)
+        kwargs['context'] = self.context
+        self.sriov_rpc_callback.binding_deactivate(**kwargs)
+        kwargs['host'] = 'other-host'
+        self.sriov_rpc_callback.binding_deactivate(**kwargs)
 
 
 class TestSRIOVAgentExtensionConfig(base.BaseTestCase):
