@@ -55,7 +55,6 @@ from neutron.api.rpc.callbacks import resources
 from neutron.api.rpc.handlers import dvr_rpc
 from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
 from neutron.common import config
-from neutron.common import constants as c_const
 from neutron.common import utils as n_utils
 from neutron.conf.agent import common as agent_config
 from neutron.conf.agent import xenapi_conf
@@ -299,8 +298,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             'host': host,
             'topic': n_const.L2_AGENT_TOPIC,
             'configurations': {'bridge_mappings': self.bridge_mappings,
-                               c_const.RP_BANDWIDTHS: self.rp_bandwidths,
-                               c_const.RP_INVENTORY_DEFAULTS:
+                               n_const.RP_BANDWIDTHS: self.rp_bandwidths,
+                               n_const.RP_INVENTORY_DEFAULTS:
                                    self.rp_inventory_defaults,
                                'integration_bridge':
                                ovs_conf.integration_bridge,
@@ -367,11 +366,16 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
             #第一次report完成后，删除掉start_flag,resouce_version说明
             # we only want to update resource versions on startup
-            self.agent_state.pop('resource_versions', None)
-            if self.agent_state.pop('start_flag', None) and self.iter_num == 0:
+            if self.agent_state.pop('resource_versions', None):
                 # On initial start, we notify systemd after initialization
                 # is complete.
                 systemd.notify_once()
+
+            if self.iter_num > 0:
+                # agent is considered started after
+                # initial sync with server (iter 0) is done
+                self.agent_state.pop('start_flag', None)
+
         except Exception:
             self.failed_report_state = True
             LOG.exception("Failed reporting state!")
@@ -735,24 +739,18 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                     segmentation_id=segmentation_id)
 
     #分配本地vlan
-    def provision_local_vlan(self, net_uuid, network_type, physical_network,
-                             segmentation_id):
-        '''Provisions a local VLAN.
+    def _add_local_vlan(self, net_uuid, network_type, physical_network,
+                        segmentation_id):
+        """Add a network to the local VLAN manager
 
-        :param net_uuid: the uuid of the network associated with this vlan.
-        :param network_type: the network type ('gre', 'vxlan', 'vlan', 'flat',
-                                               'local', 'geneve')
-        :param physical_network: the physical network for 'vlan' or 'flat'
-        :param segmentation_id: the VID for 'vlan' or tunnel ID for 'tunnel'
-        '''
-
-        # On a restart or crash of OVS, the network associated with this VLAN
-        # will already be assigned, so check for that here before assigning a
-        # new one.
+        On a restart or crash of OVS, the network associated with this VLAN
+        will already be assigned, so check for that here before assigning a
+        new one. If the VLAN tag is not used, check if there are local VLAN
+        tags available.
+        """
         try:
             #如果在vlan manager中可以找到net_uuid的配置，则返回
             lvm = self.vlan_manager.get(net_uuid)
-            lvid = lvm.vlan
         except vlanmanager.MappingNotFound:
             # 没有找到net_uuid的配置
             lvid = self._local_vlan_hints.pop(net_uuid, None)
@@ -768,13 +766,30 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             self.vlan_manager.add(
                 net_uuid, lvid, network_type, physical_network,
                 segmentation_id)
+            lvm = self.vlan_manager.get(net_uuid)
+            LOG.info(
+                "Assigning %(vlan_id)s as local vlan for net-id=%(net_uuid)s",
+                {'vlan_id': lvm.vlan, 'net_uuid': net_uuid})
 
-        #设置本地vlan使用
-        LOG.info("Assigning %(vlan_id)s as local vlan for "
-                 "net-id=%(net_uuid)s",
-                 {'vlan_id': lvid, 'net_uuid': net_uuid})
+        return lvm
 
-        #如果网络类型为tunnel类型
+    def provision_local_vlan(self, net_uuid, network_type, physical_network,
+                             segmentation_id):
+        '''Provisions a local VLAN.
+
+        :param net_uuid: the uuid of the network associated with this vlan.
+        :param network_type: the network type ('gre', 'vxlan', 'vlan', 'flat',
+                                               'local', 'geneve')
+        :param physical_network: the physical network for 'vlan' or 'flat'
+        :param segmentation_id: the VID for 'vlan' or tunnel ID for 'tunnel'
+        '''
+        lvm = self._add_local_vlan(net_uuid, network_type, physical_network,
+                                   segmentation_id)
+        if not lvm or not lvm.vlan:
+            return
+
+        lvid = lvm.vlan
+>>>>>>> upstream/master
         if network_type in constants.TUNNEL_NETWORK_TYPES:
             if self.enable_tunneling:
                 # outbound broadcast/multicast
@@ -1033,10 +1048,15 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 LOG.debug("Setting status for %s to DOWN", device)
                 devices_down.append(device)
         if devices_up or devices_down:
+            # When the iter_num == 0, that indicate the ovs-agent is doing
+            # the initialization work. L2 pop needs this precise knowledge
+            # to notify the agent to refresh the tunnel related flows.
+            # Otherwise, these flows will be cleaned as stale due to the
+            # different cookie id.
+            agent_restarted = self.iter_num == 0
             devices_set = self.plugin_rpc.update_device_list(
                 self.context, devices_up, devices_down, self.agent_id,
-                self.conf.host)
-            #置设置接口up失败 与 设置接口down失败 的接口为失败接口
+                self.conf.host, agent_restarted=agent_restarted)
             failed_devices = (devices_set.get('failed_devices_up') +
                               devices_set.get('failed_devices_down'))
             if failed_devices:
@@ -1882,7 +1902,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 self.ext_manager.handle_port(self.context, details)
             else:
                 #这些接口是没有获得缓存的，需要置为dead
-                if c_const.NO_ACTIVE_BINDING in details:
+                if n_const.NO_ACTIVE_BINDING in details:
                     # Port was added to the bridge, but its binding in this
                     # agent hasn't been activated yet. It will be treated as
                     # added when binding is activated
@@ -1991,8 +2011,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         need_binding_devices = []
         skipped_devices = set()
         binding_no_activated_devices = set()
+        start = time.time()
         if devices_added_updated:
-            start = time.time()
             (skipped_devices, binding_no_activated_devices,
              need_binding_devices, failed_devices['added']) = (
                 self.treat_devices_added_or_updated(
@@ -2021,6 +2041,10 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         self._add_port_tag_info(need_binding_devices)
         self.sg_agent.setup_port_filters(added_ports,
                                          port_info.get('updated', set()))
+        LOG.info("process_network_ports - iteration:%(iter_num)d - "
+                 "agent port security group processed in %(elapsed).3f",
+                 {'iter_num': self.iter_num,
+                  'elapsed': time.time() - start})
         #主要处理arp防欺骗，vlan更新
         failed_devices['added'] |= self._bind_devices(need_binding_devices)
 
@@ -2194,13 +2218,15 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         return port_stats
 
     def cleanup_stale_flows(self):
-        bridges = [self.int_br]
-        bridges.extend(self.phys_brs.values())
+        LOG.info("Cleaning stale %s flows", self.int_br.br_name)
+        self.int_br.cleanup_flows()
+        for pby_br in self.phys_brs.values():
+            LOG.info("Cleaning stale %s flows", pby_br.br_name)
+            pby_br.cleanup_flows()
+
         if self.enable_tunneling:
-            bridges.append(self.tun_br)
-        for bridge in bridges:
-            LOG.info("Cleaning stale %s flows", bridge.br_name)
-            bridge.cleanup_flows()
+            LOG.info("Cleaning stale %s flows", self.tun_br.br_name)
+            self.tun_br.cleanup_flows()
 
     def process_port_info(self, start, polling_manager, sync, ovs_restarted,
                           ports, ancillary_ports, updated_ports_copy,
@@ -2365,10 +2391,10 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             self.dvr_agent.setup_dvr_flows()
         # notify that OVS has restarted
 	# 触发ovs重启完成事件
-        registry.notify(
+        registry.publish(
             callback_resources.AGENT,
             callback_events.OVS_RESTARTED,
-            self)
+            self, payload=None)
         # restart the polling manager so that it will signal as added
         # all the current ports
         # REVISIT (rossella_s) Define a method "reset" in

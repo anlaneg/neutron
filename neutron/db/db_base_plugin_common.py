@@ -16,6 +16,7 @@
 
 import functools
 
+import netaddr
 import six
 
 from neutron_lib.api.definitions import network as net_def
@@ -34,7 +35,6 @@ from oslo_config import cfg
 from oslo_log import log as logging
 from sqlalchemy.orm import exc
 
-from neutron.common import constants as n_const
 from neutron.db import common_db_mixin
 from neutron.db import models_v2
 from neutron.objects import base as base_obj
@@ -206,11 +206,14 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
 
     def _make_port_dict(self, port, fields=None,
                         process_extensions=True):
+        mac = port["mac_address"]
+        if isinstance(mac, netaddr.EUI):
+            mac.dialect = netaddr.mac_unix_expanded
         res = {"id": port["id"],
                'name': port['name'],
                "network_id": port["network_id"],
                'tenant_id': port['tenant_id'],
-               "mac_address": str(port["mac_address"]),
+               "mac_address": str(mac),
                "admin_state_up": port["admin_state_up"],
                "status": port["status"],
                "fixed_ips": [{'subnet_id': ip["subnet_id"],
@@ -299,7 +302,7 @@ class DbBasePluginCommon(common_db_mixin.CommonDbMixin):
                'name': network['name'],
                'tenant_id': network['tenant_id'],
                'admin_state_up': network['admin_state_up'],
-               'mtu': network.get('mtu', n_const.DEFAULT_NETWORK_MTU),
+               'mtu': network.get('mtu', constants.DEFAULT_NETWORK_MTU),
                'status': network['status'],
                'subnets': [subnet['id']
                            for subnet in network['subnets']]} #显示其子网

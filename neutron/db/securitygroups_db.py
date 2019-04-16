@@ -33,7 +33,7 @@ import six
 from sqlalchemy.orm import scoped_session
 
 from neutron._i18n import _
-from neutron.common import constants as n_const
+from neutron.common import _constants as const
 from neutron.common import utils
 from neutron.db.models import securitygroup as sg_models
 from neutron.db import rbac_db_mixin as rbac_mixin
@@ -450,8 +450,8 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         # problems with comparing int and string in PostgreSQL. Here this
         # string is converted to int to give an opportunity to use it as
         # before.
-        if protocol in n_const.IP_PROTOCOL_NAME_ALIASES:
-            protocol = n_const.IP_PROTOCOL_NAME_ALIASES[protocol]
+        if protocol in constants.IP_PROTOCOL_NAME_ALIASES:
+            protocol = constants.IP_PROTOCOL_NAME_ALIASES[protocol]
         return int(constants.IP_PROTOCOL_MAP.get(protocol, protocol))
 
     def _get_ip_proto_name_and_num(self, protocol):
@@ -460,8 +460,8 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         protocol = str(protocol)
         if protocol in constants.IP_PROTOCOL_MAP:
             return [protocol, str(constants.IP_PROTOCOL_MAP.get(protocol))]
-        elif protocol in n_const.IP_PROTOCOL_NUM_TO_NAME_MAP:
-            return [n_const.IP_PROTOCOL_NUM_TO_NAME_MAP.get(protocol),
+        elif protocol in constants.IP_PROTOCOL_NUM_TO_NAME_MAP:
+            return [constants.IP_PROTOCOL_NUM_TO_NAME_MAP.get(protocol),
                     protocol]
         return [protocol, protocol]
 
@@ -483,8 +483,8 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         ip_proto = self._get_ip_proto_number(rule['protocol'])
         # Not all firewall_driver support all these protocols,
         # but being strict here doesn't hurt.
-        if (ip_proto in n_const.SG_PORT_PROTO_NUMS or
-                ip_proto in n_const.SG_PORT_PROTO_NAMES):
+        if (ip_proto in const.SG_PORT_PROTO_NUMS or
+                ip_proto in const.SG_PORT_PROTO_NAMES):
             if rule['port_range_min'] == 0 or rule['port_range_max'] == 0:
                 raise ext_sg.SecurityGroupInvalidPortValue(port=0)
             elif (rule['port_range_min'] is not None and
@@ -510,7 +510,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             if (rule['port_range_min'] is not None or
                     rule['port_range_max'] is not None):
                 port_protocols = (
-                    ', '.join(s.upper() for s in n_const.SG_PORT_PROTO_NAMES))
+                    ', '.join(s.upper() for s in const.SG_PORT_PROTO_NAMES))
                 raise ext_sg.SecurityGroupInvalidProtocolForPort(
                     protocol=ip_proto, valid_port_protocols=port_protocols)
 

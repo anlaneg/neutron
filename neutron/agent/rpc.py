@@ -31,7 +31,7 @@ from oslo_utils import uuidutils
 
 from neutron.agent import resource_cache
 from neutron.api.rpc.callbacks import resources
-from neutron.common import constants as n_const
+from neutron.common import _constants as n_const
 from neutron import objects
 
 LOG = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ class PluginReportStateAPI(object):
     """
     def __init__(self, topic):
         target = oslo_messaging.Target(topic=topic, version='1.2',
-                                       namespace=n_const.RPC_NAMESPACE_STATE)
+                                       namespace=constants.RPC_NAMESPACE_STATE)
         self.client = lib_rpc.get_client(target)
 
     def has_alive_neutron_server(self, context, **kwargs):
@@ -157,11 +157,33 @@ class PluginApi(object):
 
     #更新设备状态
     def update_device_list(self, context, devices_up, devices_down,
-                           agent_id, host):
+                           agent_id, host, agent_restarted=False):
         cctxt = self.client.prepare(version='1.5')
-        return cctxt.call(context, 'update_device_list',
-                          devices_up=devices_up, devices_down=devices_down,
-                          agent_id=agent_id, host=host)
+
+        ret_devices_up = []
+        failed_devices_up = []
+        ret_devices_down = []
+        failed_devices_down = []
+
+        step = n_const.RPC_RES_PROCESSING_STEP
+        devices_up = list(devices_up)
+        devices_down = list(devices_down)
+        for i in range(0, max(len(devices_up), len(devices_down)), step):
+            # Divide-and-conquer RPC timeout
+            ret = cctxt.call(context, 'update_device_list',
+                             devices_up=devices_up[i:i + step],
+                             devices_down=devices_down[i:i + step],
+                             agent_id=agent_id, host=host,
+                             agent_restarted=agent_restarted)
+            ret_devices_up.extend(ret.get("devices_up", []))
+            failed_devices_up.extend(ret.get("failed_devices_up", []))
+            ret_devices_down.extend(ret.get("devices_down", []))
+            failed_devices_down.extend(ret.get("failed_devices_down", []))
+
+        return {'devices_up': ret_devices_up,
+                'failed_devices_up': failed_devices_up,
+                'devices_down': ret_devices_down,
+                'failed_devices_down': failed_devices_down}
 
     def tunnel_sync(self, context, tunnel_ip, tunnel_type=None, host=None):
         cctxt = self.client.prepare(version='1.4')
@@ -307,7 +329,7 @@ class CacheBackedPluginApi(PluginApi):
             LOG.debug("Device %s has no active binding in this host",
                       port_obj)
             return {'device': device,
-                    n_const.NO_ACTIVE_BINDING: True}
+                    constants.NO_ACTIVE_BINDING: True}
         #缓存中命中
         net = self.remote_resource_cache.get_resource_by_id(
             resources.NETWORK, port_obj.network_id)

@@ -25,7 +25,6 @@ import six
 from neutron.agent.l3 import dvr_fip_ns
 from neutron.agent.l3 import dvr_router_base
 from neutron.agent.linux import ip_lib
-from neutron.common import constants as n_const
 from neutron.common import utils as common_utils
 
 LOG = logging.getLogger(__name__)
@@ -189,6 +188,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
             device = ip_lib.IPDevice(fip_2_rtr_name, namespace=fip_ns_name)
 
             device.route.delete_route(fip_cidr, str(rtr_2_fip.ip))
+            return device
 
     def floating_ip_moved_dist(self, fip):
         """Handle floating IP move between fixed IPs."""
@@ -202,7 +202,9 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         return self.floating_ip_added_dist(fip, ip_cidr)
 
     def remove_floating_ip(self, device, ip_cidr):
-        self.floating_ip_removed_dist(ip_cidr)
+        fip_2_rtr_device = self.floating_ip_removed_dist(ip_cidr)
+        if fip_2_rtr_device:
+            fip_2_rtr_device.delete_conntrack_state(ip_cidr)
 
     def move_floating_ip(self, fip):
         self.floating_ip_moved_dist(fip)
@@ -508,7 +510,8 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
 
     def get_floating_agent_gw_interface(self, ext_net_id):
         """Filter Floating Agent GW port for the external network."""
-        fip_ports = self.router.get(n_const.FLOATINGIP_AGENT_INTF_KEY, [])
+        fip_ports = self.router.get(
+            lib_constants.FLOATINGIP_AGENT_INTF_KEY, [])
         return next(
             (p for p in fip_ports if p['network_id'] == ext_net_id), None)
 

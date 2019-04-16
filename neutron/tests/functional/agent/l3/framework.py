@@ -34,7 +34,6 @@ from neutron.agent.linux import external_process
 from neutron.agent.linux import interface
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import keepalived
-from neutron.common import constants as n_const
 from neutron.common import utils as common_utils
 from neutron.conf.agent import common as agent_config
 from neutron.conf import common as common_config
@@ -240,7 +239,8 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         ip_wrapper = ip_lib.IPWrapper(namespace=router.ns_name)
         ra_state = ip_wrapper.netns.execute(['sysctl', '-b',
             'net.ipv6.conf.%s.accept_ra' % external_device_name])
-        self.assertEqual(enabled, int(ra_state) != n_const.ACCEPT_RA_DISABLED)
+        self.assertEqual(
+            enabled, int(ra_state) != constants.ACCEPT_RA_DISABLED)
 
     def _wait_until_ipv6_forwarding_has_state(self, ns_name, dev_name, state):
 
@@ -614,26 +614,30 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
 
         return (router1, router2)
 
-    def _get_master_and_slave_routers(self, router1, router2):
+    def _get_master_and_slave_routers(self, router1, router2,
+                                      check_external_device=True):
 
         try:
             common_utils.wait_until_true(
                 lambda: router1.ha_state == 'master')
-            common_utils.wait_until_true(
-                lambda: self._check_external_device(router1))
+            if check_external_device:
+                common_utils.wait_until_true(
+                    lambda: self._check_external_device(router1))
             master_router = router1
             slave_router = router2
         except common_utils.WaitTimeout:
             common_utils.wait_until_true(
                 lambda: router2.ha_state == 'master')
-            common_utils.wait_until_true(
-                lambda: self._check_external_device(router2))
+            if check_external_device:
+                common_utils.wait_until_true(
+                    lambda: self._check_external_device(router2))
             master_router = router2
             slave_router = router1
 
         common_utils.wait_until_true(
                 lambda: master_router.ha_state == 'master')
-        common_utils.wait_until_true(
+        if check_external_device:
+            common_utils.wait_until_true(
                 lambda: self._check_external_device(master_router))
         common_utils.wait_until_true(
             lambda: slave_router.ha_state == 'backup')

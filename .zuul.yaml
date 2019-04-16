@@ -54,6 +54,9 @@
         - networking-ovn-tempest-dsvm-ovs-release:
             voting: false
             irrelevant-files: *tempest-irrelevant-files
+        - networking-midonet-tempest-aio-ml2-centos-7:
+            voting: false
+            irrelevant-files: *tempest-irrelevant-files
         - grenade-py3:
             irrelevant-files: *tempest-irrelevant-files
         - openstacksdk-functional-devstack-networking:
@@ -226,7 +229,6 @@
       - openstack-dev/grenade
       - openstack-infra/devstack-gate
       - openstack/neutron
-    nodeset: ubuntu-xenial-2-node
     irrelevant-files: *tempest-irrelevant-files
 
 - job:
@@ -239,7 +241,6 @@
       - openstack-dev/grenade
       - openstack-infra/devstack-gate
       - openstack/neutron
-    nodeset: ubuntu-xenial-2-node
     irrelevant-files: *tempest-irrelevant-files
 
 - job:
@@ -323,7 +324,7 @@
     vars:
       tempest_concurrency: 4
       devstack_plugins:
-        neutron: git://git.openstack.org/openstack/neutron.git
+        neutron: https://git.openstack.org/openstack/neutron.git
       devstack_services:
         tls-proxy: false
         tempest: true
@@ -372,7 +373,6 @@
     parent: neutron-tempest-iptables_hybrid
     nodeset: devstack-single-node-fedora-latest
     irrelevant-files: *tempest-irrelevant-files
-    voting: false
 
 - job:
     name: neutron-grenade
@@ -418,18 +418,10 @@
 
 - job:
     name: neutron-functional-with-uwsgi
-    parent: legacy-dsvm-base
-    run: playbooks/legacy/neutron-functional-with-uwsgi/run.yaml
-    post-run: playbooks/legacy/neutron-functional-with-uwsgi/post.yaml
-    timeout: 7800
-    required-projects:
-      - openstack-infra/devstack-gate
-      - openstack/neutron
-    irrelevant-files:
-      - ^.*\.rst$
-      - ^doc/.*$
-      - ^neutron/locale/.*$
-      - ^releasenotes/.*$
+    parent: neutron-functional
+    vars:
+      devstack_localrc:
+        NEUTRON_DEPLOY_MOD_WSGI: true
     voting: false
 
 - job:

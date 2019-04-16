@@ -34,7 +34,7 @@ from neutron._i18n import _
 from neutron.agent.common import ip_lib
 from neutron.agent.common import utils
 from neutron.agent.ovsdb import impl_idl
-from neutron.common import constants as common_constants
+from neutron.common import _constants as common_constants
 from neutron.common import utils as common_utils
 from neutron.conf.agent import ovs_conf
 from neutron.plugins.ml2.drivers.openvswitch.agent.common \
@@ -468,10 +468,14 @@ class OVSBridge(BaseOVS):
             #执行流表修改，删除，更新操作
             flow_strs = [_build_flow_expr_str(kw, action, strict)
                          for kw in kwargs_list]
+            LOG.debug("Processing %d OpenFlow rules.", len(flow_strs))
             if use_bundle:
                 extra_param.append('--bundle')
-            self.run_ofctl('%s-flows' % action, extra_param + ['-'],
-                           '\n'.join(flow_strs))
+
+            step = common_constants.AGENT_RES_PROCESSING_STEP
+            for i in range(0, len(flow_strs), step):
+                self.run_ofctl('%s-flows' % action, extra_param + ['-'],
+                               '\n'.join(flow_strs[i:i + step]))
 
     #添加流
     def add_flow(self, **kwargs):
@@ -862,8 +866,8 @@ class OVSBridge(BaseOVS):
 
     def update_ingress_bw_limit_for_port(self, port_name, max_kbps,
                                          max_burst_kbps):
-        max_bw_in_bits = max_kbps * common_constants.SI_BASE
-        max_burst_in_bits = max_burst_kbps * common_constants.SI_BASE
+        max_bw_in_bits = max_kbps * p_const.SI_BASE
+        max_burst_in_bits = max_burst_kbps * p_const.SI_BASE
         port_type = self._get_port_val(port_name, "type")
         if port_type in constants.OVS_DPDK_PORT_TYPES:
             self._update_ingress_bw_limit_for_dpdk_port(
@@ -883,18 +887,18 @@ class OVSBridge(BaseOVS):
             other_config = qos_res['other_config']
             max_bw_in_bits = other_config.get('max-rate')
             if max_bw_in_bits is not None:
-                qos_max_kbps = int(max_bw_in_bits) / common_constants.SI_BASE
+                qos_max_kbps = int(max_bw_in_bits) / p_const.SI_BASE
 
         queue_res = self.find_queue(port_name, QOS_DEFAULT_QUEUE)
         if queue_res:
             other_config = queue_res['other_config']
             max_bw_in_bits = other_config.get('max-rate')
             if max_bw_in_bits is not None:
-                queue_max_kbps = int(max_bw_in_bits) / common_constants.SI_BASE
+                queue_max_kbps = int(max_bw_in_bits) / p_const.SI_BASE
             max_burst_in_bits = other_config.get('burst')
             if max_burst_in_bits is not None:
                 max_burst_kbit = (
-                    int(max_burst_in_bits) / common_constants.SI_BASE)
+                    int(max_burst_in_bits) / p_const.SI_BASE)
 
         if qos_max_kbps == queue_max_kbps:
             max_kbps = qos_max_kbps
@@ -915,12 +919,12 @@ class OVSBridge(BaseOVS):
             if max_bw_in_bytes is not None:
                 max_kbps = common_utils.bits_to_kilobits(
                     common_utils.bytes_to_bits(int(float(max_bw_in_bytes))),
-                    common_constants.SI_BASE)
+                    p_const.SI_BASE)
             max_burst_in_bytes = other_config.get("cbs")
             if max_burst_in_bytes is not None:
                 max_burst_kbit = common_utils.bits_to_kilobits(
                     common_utils.bytes_to_bits(int(float(max_burst_in_bytes))),
-                    common_constants.SI_BASE)
+                    p_const.SI_BASE)
         return max_kbps, max_burst_kbit
 
     def delete_ingress_bw_limit_for_port(self, port_name):

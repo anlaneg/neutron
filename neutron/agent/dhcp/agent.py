@@ -39,7 +39,6 @@ from neutron.agent.linux import dhcp
 from neutron.agent.linux import external_process
 from neutron.agent.metadata import driver as metadata_driver
 from neutron.agent import rpc as agent_rpc
-from neutron.common import constants as n_const
 from neutron.common import utils
 from neutron import manager
 
@@ -47,6 +46,9 @@ LOG = logging.getLogger(__name__)
 _SYNC_STATE_LOCK = lockutils.ReaderWriterLock()
 
 DEFAULT_PRIORITY = 255
+
+DHCP_PROCESS_GREENLET_MAX = 32
+DHCP_PROCESS_GREENLET_MIN = 8
 
 
 def _sync_lock(f):
@@ -107,6 +109,8 @@ class DhcpAgent(manager.Manager):
         self._process_monitor = external_process.ProcessMonitor(
             config=self.conf,
             resource_type='dhcp')
+        self._pool_size = DHCP_PROCESS_GREENLET_MIN
+        self._pool = eventlet.GreenPool(size=self._pool_size)
         self._queue = queue.ResourceProcessingQueue()
 
     def init_host(self):
@@ -340,6 +344,8 @@ class DhcpAgent(manager.Manager):
                     self.dhcp_ready_ports |= {p.id for p in network.ports}
                 break
 
+        self._resize_process_pool()
+
     def disable_dhcp_helper(self, network_id):
         """Disable DHCP for a network known to the agent."""
         network = self.cache.get_network_by_id(network_id)
@@ -354,6 +360,8 @@ class DhcpAgent(manager.Manager):
             self.disable_isolated_metadata_proxy(network)
             if self.call_driver('disable', network):
                 self.cache.remove(network)
+
+        self._resize_process_pool()
 
     def refresh_dhcp_helper(self, network_id):
         """Refresh or disable DHCP for a network depending on the current state
@@ -492,12 +500,23 @@ class DhcpAgent(manager.Manager):
             return
         self.refresh_dhcp_helper(network.id)
 
+    @lockutils.synchronized('resize_greenpool')
+    def _resize_process_pool(self):
+        num_nets = len(self.cache.get_network_ids())
+        pool_size = max([DHCP_PROCESS_GREENLET_MIN,
+                         min([DHCP_PROCESS_GREENLET_MAX, num_nets])])
+        if pool_size == self._pool_size:
+            return
+        LOG.info("Resizing dhcp processing queue green pool size to: %d",
+                 pool_size)
+        self._pool.resize(pool_size)
+        self._pool_size = pool_size
+
     def _process_loop(self):
         LOG.debug("Starting _process_loop")
 
-        pool = eventlet.GreenPool(size=8)
         while True:
-            pool.spawn_n(self._process_resource_update)
+            self._pool.spawn_n(self._process_resource_update)
 
     def _process_resource_update(self):
         for tmp, update in self._queue.each_update_to_next_resource():
@@ -704,7 +723,7 @@ class DhcpPluginApi(object):
         self.host = host
         target = oslo_messaging.Target(
                 topic=topic,
-                namespace=n_const.RPC_NAMESPACE_DHCP_PLUGIN,
+                namespace=constants.RPC_NAMESPACE_DHCP_PLUGIN,
                 version='1.0')
         self.client = n_rpc.get_client(target)
 

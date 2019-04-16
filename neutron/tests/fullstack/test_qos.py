@@ -23,9 +23,9 @@ import testscenarios
 from neutron.agent.common import ovs_lib
 from neutron.agent.linux import tc_lib
 from neutron.common import utils
-from neutron.tests import base as tests_base
 from neutron.tests.common.agents import l2_extensions
 from neutron.tests.fullstack import base
+from neutron.tests.fullstack.resources import config as fullstack_config
 from neutron.tests.fullstack.resources import environment
 from neutron.tests.fullstack.resources import machine
 from neutron.tests.fullstack import utils as fullstack_utils
@@ -50,6 +50,7 @@ DSCP_MARK = 16
 class BaseQoSRuleTestCase(object):
     of_interface = None
     number_of_hosts = 1
+    physical_network = None
 
     @property
     def reverse_direction(self):
@@ -75,8 +76,12 @@ class BaseQoSRuleTestCase(object):
             agent_type=self.l2_agent_type)['agents'][0]
 
         self.tenant_id = uuidutils.generate_uuid()
-        self.network = self.safe_client.create_network(self.tenant_id,
-                                                       'network-test')
+        network_args = {}
+        if self.physical_network:
+            network_args = {'physical_network': self.physical_network,
+                            'network_type': 'vlan'}
+        self.network = self.safe_client.create_network(
+            self.tenant_id, name='network-test', **network_args)
         self.subnet = self.safe_client.create_subnet(
             self.tenant_id, self.network['id'],
             cidr='10.0.0.0/24',
@@ -616,6 +621,7 @@ class TestQoSPolicyIsDefault(base.BaseFullStackTestCase):
 class _TestMinBwQoS(BaseQoSRuleTestCase):
 
     number_of_hosts = 1
+    physical_network = fullstack_config.PHYSICAL_NETWORK_NAME
 
     def _wait_for_min_bw_rule_removed(self, vm, direction):
         # No values are provided when port doesn't have qos policy
@@ -630,7 +636,6 @@ class _TestMinBwQoS(BaseQoSRuleTestCase):
         rule['qos_policy_id'] = qos_policy_id
         qos_policy['rules'].append(rule)
 
-    @tests_base.unstable_test('bug 1819125')
     def test_min_bw_qos_policy_rule_lifecycle(self):
         new_limit = MIN_BANDWIDTH - 100
 
@@ -680,7 +685,6 @@ class TestMinBwQoSOvs(_TestMinBwQoS, base.BaseFullStackTestCase):
             self.fail('"%s" direction not implemented'
                       % constants.INGRESS_DIRECTION)
 
-    @tests_base.unstable_test('bug 1819125')
     def test_bw_limit_qos_port_removed(self):
         """Test if rate limit config is properly removed when whole port is
         removed.

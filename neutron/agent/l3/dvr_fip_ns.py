@@ -29,7 +29,6 @@ from neutron.agent.l3 import namespaces
 from neutron.agent.l3 import router_info
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_manager
-from neutron.common import constants
 from neutron.common import utils as common_utils
 from neutron.ipam import utils as ipam_utils
 
@@ -71,7 +70,7 @@ class FipNamespace(namespaces.Namespace):
             use_ipv6=self.use_ipv6)
         path = os.path.join(agent_conf.state_path, 'fip-linklocal-networks')
         self.local_subnets = lla.LinkLocalAllocator(
-            path, constants.DVR_FIP_LL_CIDR)
+            path, lib_constants.DVR_FIP_LL_CIDR)
         self.destroyed = False
         self._stale_fips_checked = False
 
@@ -456,14 +455,15 @@ class FipNamespace(namespaces.Namespace):
             rtr_2_fip_dev, fip_2_rtr_dev = ip_wrapper.add_veth(rtr_2_fip_name,
                                                                fip_2_rtr_name,
                                                                fip_ns_name)
-            mtu = ri.get_ex_gw_port().get('mtu')
-            if mtu:
-                #设置相同的mtu
-                rtr_2_fip_dev.link.set_mtu(mtu)
-                fip_2_rtr_dev.link.set_mtu(mtu)
             #设置admin up
             rtr_2_fip_dev.link.set_up()
             fip_2_rtr_dev.link.set_up()
+
+        mtu = ri.get_ex_gw_port().get('mtu')
+        if mtu:
+            #设置相同的mtu
+            rtr_2_fip_dev.link.set_mtu(mtu)
+            fip_2_rtr_dev.link.set_mtu(mtu)
 
         #为veth设置ip地址
         self._add_cidr_to_device(rtr_2_fip_dev, str(rtr_2_fip))
