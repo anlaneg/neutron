@@ -247,7 +247,6 @@ class NeutronManager(object):
                   "Description: %(desc)s",
                   {"type": plugin_type,
                    "desc": plugin_inst.get_plugin_description()})
->>>>>>> upstream/master
 
     @classmethod
     @runtime.synchronized("manager")
