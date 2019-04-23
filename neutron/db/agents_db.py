@@ -403,6 +403,7 @@ class AgentDbMixin(ext_agent.AgentPluginBase, AgentAvailabilityZoneMixin):
                         # _update_local_agent_resource_versions() will call
                         # version_manager and bring it up to date
                         agent_state['resource_versions'] = self._get_dict(
+                            agent, 'resource_versions', ignore_missing=True)
                 #更新心跳收到时间
                 res['heartbeat_timestamp'] = current_time
                 if agent_state.get('start_flag'):
