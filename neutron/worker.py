@@ -28,12 +28,14 @@ class NeutronBaseWorker(worker.BaseWorker):
         super(NeutronBaseWorker, self).start(name=name, desc=desc)
 
 
+#周期性worker
 class PeriodicWorker(NeutronBaseWorker):
     """A worker that runs a function at a fixed interval."""
 
     def __init__(self, check_func, interval, initial_delay):
         super(PeriodicWorker, self).__init__(worker_process_count=0)
 
+        #周期性要调用的函数
         self._check_func = check_func
         self._loop = None
         self._interval = interval
@@ -42,6 +44,7 @@ class PeriodicWorker(NeutronBaseWorker):
     def start(self):
         super(PeriodicWorker, self).start(desc="periodic worker")
         if self._loop is None:
+            #创建周期性事件
             self._loop = loopingcall.FixedIntervalLoopingCall(self._check_func)
         self._loop.start(interval=self._interval,
                          initial_delay=self._initial_delay)

@@ -115,6 +115,7 @@ class NeutronManager(object):
     def __init__(self, options=None, config_file=None):
         # Store instances of already loaded plugins to avoid instantiate same
         # plugin more than once
+        #记录已加载的plugins
         self._loaded_plugins = {}
         # If no options have been provided, create an empty dict
         if not options:
@@ -143,6 +144,7 @@ class NeutronManager(object):
 
         # load services from the core plugin first
         self._load_services_from_core_plugin(plugin)
+        #加载服务插件
         self._load_service_plugins()
         # Used by pecan WSGI
         self.resource_plugin_mappings = {}
@@ -170,9 +172,11 @@ class NeutronManager(object):
         return self.load_class_for_provider(namespace, plugin_provider)
 
     def _get_plugin_instance(self, namespace, plugin_provider):
+        #获取指定plugin的实例
         plugin_class = self._get_plugin_class(namespace, plugin_provider)
         plugin_inst = self._loaded_plugins.get(plugin_class)
         if not plugin_inst:
+            #实例化plugin
             plugin_inst = plugin_class()
             self._loaded_plugins[plugin_class] = plugin_inst
         return plugin_inst
@@ -209,32 +213,37 @@ class NeutronManager(object):
         plugin_providers.extend(self._get_default_service_plugins())
         LOG.debug("Loading service plugins: %s", plugin_providers)
         for provider in plugin_providers:
+            #遍历所有provider,跳过空的provider
             if provider == '':
                 continue
 
             LOG.info("Loading Plugin: %s", provider)
             plugin_class = self._get_plugin_class(
                 'neutron.service_plugins', provider)
+            #取此plugin依赖的其它插件
             required_plugins = getattr(
                 plugin_class, "required_service_plugins", [])
             for req_plugin in required_plugins:
                 LOG.info("Loading service plugin %s, it is required by %s",
                          req_plugin, provider)
-            	#指明插件被加载
+                #加载被依赖的plugin
                 self._create_and_add_service_plugin(req_plugin)
             # NOTE(liuyulong): adding one plugin multiple times does not have
             # bad effect for it. Since all the plugin has its own specific
             # unique name.
+            # 加载plugin
             self._create_and_add_service_plugin(provider)
 
     def _create_and_add_service_plugin(self, provider):
         plugin_inst = self._get_plugin_instance('neutron.service_plugins',
                                                 provider)
+        #添加plugin_type 与plugin的映射
         plugin_type = plugin_inst.get_plugin_type()
         directory.add_plugin(plugin_type, plugin_inst)
 
         # search for possible agent notifiers declared in service plugin
         # (needed by agent management extension)
+        #合并plugin的agent_notifierrs集合
         plugin = directory.get_plugin()
         if (hasattr(plugin, 'agent_notifiers') and
                 hasattr(plugin_inst, 'agent_notifiers')):

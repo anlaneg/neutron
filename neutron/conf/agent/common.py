@@ -119,6 +119,7 @@ AGENT_STATE_OPTS = [
 ]
 
 INTERFACE_DRIVER_OPTS = [
+    #注册接口驱动
     cfg.StrOpt('interface_driver',
                help=_("The driver used to manage the virtual interface.")),
 ]

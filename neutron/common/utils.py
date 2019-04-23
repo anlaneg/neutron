@@ -837,6 +837,7 @@ def bits_to_kilobits(value, base):
 
 
 def disable_extension_by_service_plugin(core_plugin, service_plugin):
+    #移除掉service_plugin不支持的core_plugin
     if ('filter-validation' in core_plugin.supported_extension_aliases and
             not api_common.is_filter_validation_supported(service_plugin)):
         core_plugin.supported_extension_aliases.remove('filter-validation')

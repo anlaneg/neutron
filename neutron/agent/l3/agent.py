@@ -338,6 +338,7 @@ class L3NATAgent(ha.AgentMixin,
         The actual values are not verified for correctness.
         """
         if not self.conf.interface_driver:
+            #必须配置接口driver
             msg = 'An interface driver must be specified'
             LOG.error(msg)
             raise SystemExit(1)

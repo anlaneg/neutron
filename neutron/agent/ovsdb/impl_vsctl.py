@@ -296,6 +296,7 @@ class OvsdbVsctl(ovsdb_api.API):
         return DbCommand(self.context, 'find', args=args, columns=columns)
 
     def set_controller(self, bridge, controllers):
+        #指定controller
         return BaseCommand(self.context, 'set-controller',
                            args=[bridge] + list(controllers))
 
@@ -315,6 +316,7 @@ class OvsdbVsctl(ovsdb_api.API):
         return BaseCommand(self.context, 'add-port', opts, [bridge, port])
 
     def del_port(self, port, bridge=None, if_exists=True):
+        #删除指定的port
         opts = ['--if-exists'] if if_exists else None
         args = filter(None, [bridge, port])
         return BaseCommand(self.context, 'del-port', opts, args)

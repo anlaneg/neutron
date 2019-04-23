@@ -25,6 +25,7 @@ class StandardAttrDescriptionMixin(object):
     @resource_extend.extends(
         list(standard_attr.get_standard_attr_resource_model_map()))
     def _extend_standard_attr_description(res, db_object):
+        #如果有description属性，则取其属性值
         if not hasattr(db_object, 'description'):
             return
         res['description'] = db_object.description

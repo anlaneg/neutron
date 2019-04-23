@@ -33,6 +33,7 @@ class Agent(api_extensions.APIExtensionDescriptor):
     @classmethod
     def get_resources(cls):
         """Returns Ext Resources."""
+        #取core 插件
         plugin = directory.get_plugin()
         params = apidef.RESOURCE_ATTRIBUTE_MAP.get(apidef.COLLECTION_NAME)
         controller = base.create_resource(apidef.COLLECTION_NAME,

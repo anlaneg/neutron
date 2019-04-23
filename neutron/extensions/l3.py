@@ -44,6 +44,7 @@ class L3(extensions.APIExtensionDescriptor):
 
 @six.add_metaclass(abc.ABCMeta)
 class RouterPluginBase(object):
+    #router插件对外功能函数
 
     @abc.abstractmethod
     def create_router(self, context, router):

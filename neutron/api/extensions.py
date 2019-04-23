@@ -112,11 +112,13 @@ class ExtensionController(wsgi.Controller):
 
     def index(self, request):
         extensions = []
+        #遍历每个ext及其别名，收集其对应的ext_data(及各扩展信息）
         for _alias, ext in self.extension_manager.extensions.items():
             extensions.append(self._translate(ext))
         return dict(extensions=extensions)
 
     def show(self, request, id):
+        #显示具体扩展的ext_data
         # NOTE(dprince): the extensions alias is used as the 'id' for show
         ext = self.extension_manager.extensions.get(id, None)
         if not ext:
@@ -125,10 +127,12 @@ class ExtensionController(wsgi.Controller):
         return dict(extension=self._translate(ext))
 
     def delete(self, request, id):
+        #不支持删除
         msg = _('Resource not found.')
         raise webob.exc.HTTPNotFound(msg)
 
     def create(self, request):
+        #不支持新建
         msg = _('Resource not found.')
         raise webob.exc.HTTPNotFound(msg)
 
@@ -284,15 +288,20 @@ class ExtensionManager(object):
 
     def __init__(self, path):
         LOG.info('Initializing extension manager.')
+        #所有存放扩展的路径，以‘:'符进行分隔多个路径
         self.path = path
+        #记录 “扩展别名”与“扩展对象”的映射
         self.extensions = {}
+        #装载扩展
         self._load_all_extensions()
 
     def get_resources(self):
         """Returns a list of ResourceExtension objects."""
         resources = []
+        #添加extensions的controller
         resources.append(ResourceExtension('extensions',
                                            ExtensionController(self)))
+        #遍历调用.get_resources
         for ext in self.extensions.values():
             resources.extend(ext.get_resources())
         return resources
@@ -406,7 +415,7 @@ class ExtensionManager(object):
     def _check_extension(self, extension):
         """Checks for required methods in extension objects."""
         try:
-            #检查扩展是否提供了必要的属性
+            #检查扩展是否提供了必要的接口，例如get_name,get_alias,...
             LOG.debug('Ext name="%(name)s" alias="%(alias)s" '
                       'description="%(desc)s" updated="%(updated)s"',
                       {'name': extension.get_name(),
@@ -416,7 +425,8 @@ class ExtensionManager(object):
         except AttributeError:
             LOG.exception("Exception loading extension")
             return False
-        #确认是否为相应的子类
+        
+        #确认扩展是否为指定类型的子类
         return isinstance(extension, api_extensions.ExtensionDescriptor)
 
     def _load_all_extensions(self):
@@ -430,6 +440,7 @@ class ExtensionManager(object):
         implementation.
         """
 
+        #尝试加载所有所有path下的扩展
         for path in self.path.split(':'):
             if os.path.exists(path):
                 self._load_all_extensions_from_path(path)
@@ -440,14 +451,16 @@ class ExtensionManager(object):
         # Sorting the extension list makes the order in which they
         # are loaded predictable across a cluster of load-balanced
         # Neutron Servers
+        # 装载所有路径下的扩展
         for f in sorted(os.listdir(path)):
             try:
                 LOG.debug('Loading extension file: %s', f)
                 mod_name, file_ext = os.path.splitext(os.path.split(f)[-1])
                 ext_path = os.path.join(path, f)
                 if file_ext.lower() == '.py' and not mod_name.startswith('_'):
-                    #动态加载扩展模块
+                    #动态加载扩展模块必须以.py结尾且不能以'_'开头
                     mod = imp.load_source(mod_name, ext_path)
+                    #实例化与文件名同名的类
                     ext_name = mod_name.capitalize()
                     new_ext_class = getattr(mod, ext_name, None)
                     if not new_ext_class:
@@ -463,6 +476,7 @@ class ExtensionManager(object):
                             "%(exception)s",
                             {'f': f, 'exception': exception})
 
+    #加入扩展
     def add_extension(self, ext):
         # Do nothing if the extension doesn't check out
         if not self._check_extension(ext):
@@ -471,6 +485,7 @@ class ExtensionManager(object):
         alias = ext.get_alias()
         LOG.info('Loaded extension: %s', alias)
 
+        #将扩展加入
         if alias in self.extensions:
             raise exceptions.DuplicatedExtension(alias=alias)
         self.extensions[alias] = ext
@@ -482,6 +497,7 @@ class PluginAwareExtensionManager(ExtensionManager):
 
     def __init__(self, path, plugins):
         self.plugins = plugins
+        #加载所有扩展
         super(PluginAwareExtensionManager, self).__init__(path)
         self.check_if_plugin_extensions_loaded()
 
@@ -600,7 +616,9 @@ class ResourceExtension(object):
         collection_methods = collection_methods or {}
         member_actions = member_actions or {}
         attr_map = attr_map or {}
+        #资源名称
         self.collection = collection
+        #资源对应的controller
         self.controller = controller
         self.parent = parent
         self.collection_actions = collection_actions

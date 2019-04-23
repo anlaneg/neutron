@@ -62,6 +62,7 @@ def Resource(controller, faults=None, deserializers=None, serializers=None,
         #                it from the args if it is in the matchdict
         args.pop('controller', None)
         fmt = args.pop('format', None)
+        #获取请求中给出的action
         action = args.pop('action', None)
         content_type = format_types.get(fmt,
                                         request.best_match_content_type())
@@ -94,6 +95,7 @@ def Resource(controller, faults=None, deserializers=None, serializers=None,
                 request.context.set_transaction_constraint(
                     controller._collection, args['id'], revision_number)
 
+            #调用controller中的action
             method = getattr(controller, action)
             result = method(request=request, **args)
         except Exception as e:
@@ -118,6 +120,7 @@ def Resource(controller, faults=None, deserializers=None, serializers=None,
             content_type = ''
             body = None
 
+        #执行响应
         return webob.Response(request=request, status=status,
                               content_type=content_type,
                               body=body)

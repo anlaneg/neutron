@@ -141,6 +141,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         self.add_worker(janitor)
 
     def _clean_garbage(self):
+        #周期性被调起，处理clean工作
         if not hasattr(self, '_candidate_broken_fip_ports'):
             self._candidate_broken_fip_ports = set()
         context = n_ctx.get_admin_context()
@@ -179,12 +180,14 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
                             self, context=context, **fips[0])
 
     def _get_dead_floating_port_candidates(self, context):
+        #查询满足条件的port
         filters = {'device_id': ['PENDING'],
                    'device_owner': [DEVICE_OWNER_FLOATINGIP]}
         return {p['id'] for p in self._core_plugin.get_ports(context, filters)}
 
     def _get_router(self, context, router_id):
         try:
+            #查询指定id的路由器
             router = model_query.get_by_id(
                 context, l3_models.Router, router_id)
         except exc.NoResultFound:
@@ -213,6 +216,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         return lib_db_utils.resource_fields(res, fields)
 
     def _create_router_db(self, context, router, tenant_id):
+        #添加route的记录
         """Create the DB object."""
         router.setdefault('id', uuidutils.generate_uuid())
         router['tenant_id'] = tenant_id
@@ -242,6 +246,7 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
 
     @db_api.retry_if_session_inactive()
     def create_router(self, context, router):
+        #路由器创建
         r = router['router']
         gw_info = r.pop(EXTERNAL_GW_INFO, None)
         create = functools.partial(self._create_router_db, context, r,

@@ -35,17 +35,22 @@ NEUTRON_CONF_DIR = '/etc/neutron/'
 NEUTRON_PLUGIN_CONF = 'plugins/ml2/ml2_conf.ini'
 
 
+#返回配置文件列表
 def _get_config_files(env=None):
     if env is None:
         env = os.environ
+    #envrionment配置文件目录
     dirname = env.get('OS_NEUTRON_CONFIG_DIR', NEUTRON_CONF_DIR).strip()
 
+    #environment配置的文件列表
     files = [s.strip() for s in
              env.get('OS_NEUTRON_CONFIG_FILES', '').split(';') if s.strip()]
 
     if not files:
+        #默认配置文件名称
         files = [NEUTRON_CONF, NEUTRON_PLUGIN_CONF]
 
+    #添加上文件对应的目录
     return [os.path.join(dirname, fname) for fname in files]
 
 

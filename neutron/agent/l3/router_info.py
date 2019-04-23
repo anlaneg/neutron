@@ -476,14 +476,15 @@ class RouterInfo(object):
                                 interface_name, prefix, mtu=None):
         LOG.debug("adding internal network: prefix(%s), port(%s)",
                   prefix, port_id)
-        #调用驱动，在指定network_id中创建对应port
+        #调用interface驱动，在指定network_id中创建对应port
         self.driver.plug(network_id, port_id, interface_name, mac_address,
                          namespace=ns_name,
                          prefix=prefix, mtu=mtu)
 
         ip_cidrs = common_utils.fixed_ip_cidrs(fixed_ips)
+        #为此接口配置ip地址
         self.driver.init_router_port(
-            interface_name, ip_cidrs, namespace=ns_name)#配置ip地址
+            interface_name, ip_cidrs, namespace=ns_name)
         #发送地址通告
         for fixed_ip in fixed_ips:
             ip_lib.send_ip_addr_adv_notif(ns_name,
@@ -492,13 +493,16 @@ class RouterInfo(object):
 
     #内部口添加
     def internal_network_added(self, port):
+        #接口所属的network_id,port_id,fixed_ips,mac_address
         network_id = port['network_id']
         port_id = port['id']
         fixed_ips = port['fixed_ips']
         mac_address = port['mac_address']
 
+        #内部口为qr口
         interface_name = self.get_internal_device_name(port_id)
 
+        #添加内部口
         self._internal_network_added(self.ns_name,
                                      network_id,
                                      port_id,
@@ -510,9 +514,11 @@ class RouterInfo(object):
 
     #移除接口
     def internal_network_removed(self, port):
+        #返回对应的qr接口
         interface_name = self.get_internal_device_name(port['id'])
         LOG.debug("removing internal network: port(%s) interface(%s)",
                   port['id'], interface_name)
+        #如果此接口存在，则移除些接口
         if ip_lib.device_exists(interface_name, namespace=self.ns_name):
             self.driver.unplug(interface_name, namespace=self.ns_name,
                                prefix=INTERNAL_DEV_PREFIX)
@@ -532,9 +538,11 @@ class RouterInfo(object):
         # that.
         for index, p in enumerate(self.internal_ports):
             if p['id'] == port['id']:
+                #已存在，则更新
                 self.internal_ports[index] = port
                 break
         else:
+            #之前不存在，则加入此port至缓存，用于下次进行增删改更新
             self.internal_ports.append(port)
 
     @staticmethod
@@ -576,6 +584,7 @@ class RouterInfo(object):
             self.radvd.disable()
 
     def internal_network_updated(self, interface_name, ip_cidrs, mtu):
+        #更新mtu及接口ip
         self.driver.set_mtu(interface_name, mtu, namespace=self.ns_name,
                             prefix=INTERNAL_DEV_PREFIX)
         self.driver.init_router_port(
@@ -595,10 +604,13 @@ class RouterInfo(object):
         existing_port_ids = set(p['id'] for p in self.internal_ports)
 
         internal_ports = self.router.get(lib_constants.INTERFACE_KEY, [])
+        #配置中admin_up的所有接口id
         current_port_ids = set(p['id'] for p in internal_ports
                                if p['admin_state_up'])
 
+        #获得需要新增的port_id
         new_port_ids = current_port_ids - existing_port_ids
+        
         #确定create,delete,update的port
         new_ports = [p for p in internal_ports if p['id'] in new_port_ids]
         old_ports = [p for p in self.internal_ports
@@ -607,11 +619,12 @@ class RouterInfo(object):
                                                 internal_ports)
 
         enable_ra = False
-        #加入新接口
+        #对于需要新增的接口，则加入新接口
         for p in new_ports:
             self.internal_network_added(p)
             LOG.debug("appending port %s to internal_ports cache", p)
-            self._update_internal_ports_cache(p)#加入缓存port
+            #加入缓存port，用于下次执行增删改时使用
+            self._update_internal_ports_cache(p)
             enable_ra = enable_ra or self._port_has_ipv6_subnet(p)
             for subnet in p['subnets']:
                 if ipv6_utils.is_ipv6_pd_enabled(subnet):
@@ -638,8 +651,10 @@ class RouterInfo(object):
         #更新
         updated_cidrs = []
         for p in updated_ports:
+            #先更新cache
             self._update_internal_ports_cache(p)
             interface_name = self.get_internal_device_name(p['id'])
+            #取接口对应的固定ip
             ip_cidrs = common_utils.fixed_ip_cidrs(p['fixed_ips'])
             LOG.debug("updating internal network for port %s", p)
             updated_cidrs += ip_cidrs
@@ -677,6 +692,7 @@ class RouterInfo(object):
                                 for port_id in current_port_ids) #当前配置中要求adminup的口
         stale_devs = current_internal_devs - current_port_devs #不应存在的设备
         for stale_dev in stale_devs:
+            #移除掉不应存在的口
             LOG.debug('Deleting stale internal router device: %s',
                       stale_dev)
             self.agent.pd.remove_stale_ri_ifname(self.router_id, stale_dev)
@@ -689,6 +705,7 @@ class RouterInfo(object):
         # This avoids unnecessarily removing those addresses and
         # causing a momentarily network outage.
         floating_ips = self.get_floating_ips()
+        #返回所有配置的浮动ip
         return [common_utils.ip_to_cidr(ip['floating_ip_address'])
                 for ip in floating_ips]
 
@@ -878,7 +895,7 @@ class RouterInfo(object):
             for p in self.internal_ports:
                 interface_name = self.get_internal_device_name(p['id'])
                 self.gateway_redirect_cleanup(interface_name)
-
+        #删除不应存在的口
         self._delete_stale_external_devices(interface_name)
 
         # Process SNAT rules for external gateway
@@ -1224,8 +1241,10 @@ class RouterInfo(object):
         LOG.debug("Process updates, router %s", self.router['id'])
         self.centralized_port_forwarding_fip_set = set(self.router.get(
             'port_forwardings_fip_set', set()))
+        #内部接口增删改
         self._process_internal_ports()
         self.agent.pd.sync_router(self.router['id'])
+        #外部接口增删改
         self.process_external()
         self.process_address_scope()
         # Process static routes for router

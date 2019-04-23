@@ -126,6 +126,7 @@ class Controller(object):
         else:
             self._parent_id_name = None
             parent_part = ''
+        #初始化各action对应的function
         self._plugin_handlers = {
             self.LIST: 'get%s_%s' % (parent_part, self._collection),
             self.SHOW: 'get%s_%s' % (parent_part, self._resource)
@@ -300,6 +301,7 @@ class Controller(object):
         pagination_helper.update_fields(original_fields, fields_to_add)
         if parent_id:
             kwargs[self._parent_id_name] = parent_id
+        #自plugin中取list对应的functin
         obj_getter = getattr(self._plugin, self._plugin_handlers[self.LIST])
         obj_list = obj_getter(request.context, **kwargs)
         obj_list = sorting_helper.sort(obj_list)
@@ -412,6 +414,7 @@ class Controller(object):
         except Exception:
             with excutils.save_and_reraise_exception():
                 for obj in objs:
+                    #取delete对应在的function
                     obj_deleter = getattr(self._plugin,
                                           self._plugin_handlers[self.DELETE])
                     try:
@@ -445,6 +448,7 @@ class Controller(object):
                                                body, True,
                                                self._resource, self._attr_info,
                                                allow_bulk=self._allow_bulk)
+        #取create对应的function
         action = self._plugin_handlers[self.CREATE]
         # Check authz
         if self._collection in body:
@@ -631,6 +635,7 @@ class Controller(object):
                                                body, False,
                                                self._resource, self._attr_info,
                                                allow_bulk=self._allow_bulk)
+        #取update对应的function
         action = self._plugin_handlers[self.UPDATE]
         # Load object to check authz
         # but pass only attributes in the original body and required
@@ -812,9 +817,11 @@ class Controller(object):
 def create_resource(collection, resource, plugin, params, allow_bulk=False,
                     member_actions=None, parent=None, allow_pagination=False,
                     allow_sorting=False):
+    #创建resource对应的controller
     controller = Controller(plugin, collection, resource, params, allow_bulk,
                             member_actions=member_actions, parent=parent,
                             allow_pagination=allow_pagination,
                             allow_sorting=allow_sorting)
 
+    #产生可处理http请求的resource
     return wsgi_resource.Resource(controller, faults.FAULT_MAP)

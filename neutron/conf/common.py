@@ -38,6 +38,7 @@ core_opts = [
                help=_("The type of authentication to use")),
     cfg.StrOpt('core_plugin',
                help=_("The core plugin Neutron will use")),
+    #指明要使用的service_plugins
     cfg.ListOpt('service_plugins', default=[],
                 help=_("The service plugins Neutron will use")),
     cfg.StrOpt('base_mac', default="fa:16:3e:00:00:00",
