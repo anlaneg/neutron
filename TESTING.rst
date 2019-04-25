@@ -388,12 +388,12 @@ Some scenario tests require advanced ``Glance`` images (for example, ``Ubuntu``
 or ``CentOS``) in order to pass. Those tests are skipped by default. To enable
 them, include the following in ``tempest.conf``:
 
-   .. code-block:: ini
+.. code-block:: ini
 
-      [compute]
-      image_ref = <uuid of advanced image>
-      [neutron_plugin_options]
-      image_is_advanced = True
+   [compute]
+   image_ref = <uuid of advanced image>
+   [neutron_plugin_options]
+   image_is_advanced = True
 
 Specific test requirements for advanced images are:
 
@@ -515,10 +515,10 @@ specified in requirements.txt and lower-constraints.txt. To run tox tests
 against a different version of neutron-lib, use the TOX_ENV_SRC_MODULES
 environment variable to point at a local package repo.
 
-For example, to run against the 'master' branch of neutron-lib:
+For example, to run against the 'master' branch of neutron-lib::
 
     cd $SRC
-    git clone https://git.openstack.org/openstack/neutron-lib
+    git clone https://opendev.org/openstack/neutron-lib
     cd $NEUTRON_DIR
     env TOX_ENV_SRC_MODULES=$SRC/neutron-lib tox -r -e pep8,py27
 
@@ -526,12 +526,12 @@ To run against a change of your own, repeat the same steps, but use the
 directory with your changes, not a fresh clone.
 
 To run against a particular gerrit change of the lib (substituting the
-desired gerrit refs for this example):
+desired gerrit refs for this example)::
 
     cd $SRC
-    git clone https://git.openstack.org/openstack/neutron-lib
+    git clone https://opendev.org/openstack/neutron-lib
     cd neutron-lib
-    git fetch https://git.openstack.org/openstack/neutron-lib refs/changes/13/635313/6 && git checkout FETCH_HEAD
+    git fetch https://opendev.org/openstack/neutron-lib refs/changes/13/635313/6 && git checkout FETCH_HEAD
     cd $NEUTRON_DIR
     env TOX_ENV_SRC_MODULES=$SRC/neutron-lib tox -r -e pep8,py27
 
@@ -540,7 +540,7 @@ be needed to restore them to standard when not using this method.
 
 Any pip installable package can be overriden with this environment variable,
 not just neutron-lib. To specify multiple packages to override, specify them
-as a space separated list to TOX_ENV_SRC_MODULES. Example:
+as a space separated list to TOX_ENV_SRC_MODULES. Example::
 
     env TOX_ENV_SRC_MODULES="$SRC/neutron-lib $SRC/oslo.db" tox -r -e pep8,py27
 
@@ -562,7 +562,7 @@ script requires sudo privileges and it is recommended that the
 following commands be invoked only on a clean and disposable VM.
 A VM that has had DevStack previously installed on it is also fine. ::
 
-    git clone https://git.openstack.org/openstack-dev/devstack ../devstack
+    git clone https://opendev.org/openstack/devstack ../devstack
     ./tools/configure_for_func_testing.sh ../devstack -i
     tox -e dsvm-functional
 
@@ -675,9 +675,9 @@ doc/source/devref/testing_coverage.rst. You could also rely on Zuul
 logs, that are generated post-merge (not every project builds coverage
 results). To access them, do the following:
 
-* Check out the latest `merge commit <https://review.openstack.org/gitweb?p=openstack/neutron.git;a=search;s=Jenkins;st=author>`_
+* Check out the latest `merge commit <https://review.opendev.org/#/q/project:openstack/neutron+status:merged>`_
 * Go to: http://logs.openstack.org/<first-2-digits-of-sha1>/<sha1>/post/neutron-coverage/.
-* `Spec <https://review.openstack.org/#/c/221494/>`_ is a work in progress to
+* `Spec <https://review.opendev.org/#/c/221494/>`_ is a work in progress to
   provide a better landing page.
 
 Debugging

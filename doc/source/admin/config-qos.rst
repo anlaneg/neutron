@@ -30,7 +30,7 @@ Supported QoS rule types
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 QoS supported rule types are now available as ``VALID_RULE_TYPES`` in `QoS rule types
-<https://git.openstack.org/cgit/openstack/neutron-lib/tree/neutron_lib/services/qos/constants.py>`_:
+<https://opendev.org/openstack/neutron-lib/tree/neutron_lib/services/qos/constants.py>`_:
 
 * bandwidth_limit: Bandwidth limitations on networks, ports or floating IPs.
 
@@ -165,6 +165,11 @@ On the network and compute nodes:
       [agent]
       extensions = fip_qos
 
+.. note::
+
+   Floating IP associated to neutron port or to port forwarding
+   can all have bandwidth limit since Stein release. These neutron server
+   side and agent side extension configs will enable it once for all.
 
 #. Optionally, in order to enable QoS for router gateway IPs, set the
    ``extensions`` option in the ``[agent]`` section of

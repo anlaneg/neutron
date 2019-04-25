@@ -180,6 +180,9 @@ class RouterInfo(object):
     def floating_forward_rules(self, fip):
         fixed_ip = fip['fixed_ip_address']
         floating_ip = fip['floating_ip_address']
+        to_source = '-s %s/32 -j SNAT --to-source %s' % (fixed_ip, floating_ip)
+        if self.iptables_manager.random_fully:
+            to_source += ' --random-fully'
         #报文进来后在路由前，将所有目的地址为 $floating_ip/32 的报文，做dnat转换
         #转换后目的地址为fixed_ip {实现公网ip到私网ip的转换}
         return [('PREROUTING', '-d %s/32 -j DNAT --to-destination %s' %
@@ -189,8 +192,7 @@ class RouterInfo(object):
                  (floating_ip, fixed_ip)),
                 #在float-snat链上，将由$fixed_ip/32 的报文，做snat转换
                 #转换后目的地址为floating_ip{实现私网ip到公网ip的转换}，这个在路由完成后转换
-                ('float-snat', '-s %s/32 -j SNAT --to-source %s' %
-                 (fixed_ip, floating_ip))]
+                ('float-snat', to_source)]
 
     def floating_mangle_rules(self, floating_ip, fixed_ip, internal_mark):
         mark_traffic_to_floating_ip = (
@@ -914,19 +916,21 @@ class RouterInfo(object):
             self._prevent_snat_for_internal_traffic_rule(interface_name))
         # Makes replies come back through the router to reverse DNAT
         ext_in_mark = self.agent_conf.external_ingress_mark
-        snat_internal_traffic_to_floating_ip = (
-            'snat', '-m mark ! --mark %s/%s '
-                    '-m conntrack --ctstate DNAT '
-                    '-j SNAT --to-source %s'
-                    % (ext_in_mark, lib_constants.ROUTER_MARK_MASK, ex_gw_ip))
+        to_source = ('-m mark ! --mark %s/%s '
+                     '-m conntrack --ctstate DNAT '
+                     '-j SNAT --to-source %s'
+                     % (ext_in_mark, lib_constants.ROUTER_MARK_MASK, ex_gw_ip))
+        if self.iptables_manager.random_fully:
+            to_source += ' --random-fully'
+        snat_internal_traffic_to_floating_ip = ('snat', to_source)
         return [dont_snat_traffic_to_internal_ports_if_not_to_floating_ip,
                 snat_internal_traffic_to_floating_ip]
 
     def external_gateway_nat_snat_rules(self, ex_gw_ip, interface_name):
-        snat_normal_external_traffic = (
-            'snat', '-o %s -j SNAT --to-source %s' %
-                    (interface_name, ex_gw_ip))
-        return [snat_normal_external_traffic]
+        to_source = '-o %s -j SNAT --to-source %s' % (interface_name, ex_gw_ip)
+        if self.iptables_manager.random_fully:
+            to_source += ' --random-fully'
+        return [('snat', to_source)]
 
     def external_gateway_mangle_rules(self, interface_name):
         mark = self.agent_conf.external_ingress_mark

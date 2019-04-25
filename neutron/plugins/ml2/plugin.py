@@ -116,6 +116,7 @@ from neutron.objects import ports as ports_obj
 from neutron.plugins.ml2.common import exceptions as ml2_exc
 from neutron.plugins.ml2 import db
 from neutron.plugins.ml2 import driver_context
+from neutron.plugins.ml2.drivers import mech_agent
 from neutron.plugins.ml2.extensions import qos as qos_ext
 from neutron.plugins.ml2 import managers
 from neutron.plugins.ml2 import models
@@ -829,11 +830,13 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         vif_types = [portbindings.VIF_TYPE_UNBOUND,
                      portbindings.VIF_TYPE_BINDING_FAILED]
         for mech_driver in self.mechanism_manager.ordered_mech_drivers:
-            if (provider_net.SEGMENTATION_ID in mech_driver.obj.
+            if (isinstance(mech_driver.obj,
+                           mech_agent.AgentMechanismDriverBase) and
+                    provider_net.SEGMENTATION_ID in mech_driver.obj.
                     provider_network_attribute_updates_supported()):
                 agent_type = mech_driver.obj.agent_type
-                agents = self.get_agents(context,
-                                         filters={'agent_type': [agent_type]})
+                agents = self.get_agents(
+                    context, filters={'agent_type': [agent_type]})
                 for agent in agents:
                     vif_types.append(mech_driver.obj.get_vif_type(
                         context, agent, segments[0]))
@@ -1672,7 +1675,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                         updated_port[psec.PORTSECURITY]):
                 need_port_update_notify = True
             # TODO(QoS): Move out to the extension framework somehow.
-            # Follow https://review.openstack.org/#/c/169223 for a solution.
+            # Follow https://review.opendev.org/#/c/169223 for a solution.
             if (qos_consts.QOS_POLICY_ID in attrs and
                     original_port[qos_consts.QOS_POLICY_ID] !=
                     updated_port[qos_consts.QOS_POLICY_ID]):
