@@ -17,7 +17,6 @@ import collections
 
 import netaddr
 from neutron_lib import constants as lib_constants
-from neutron_lib import exceptions
 from oslo_log import log as logging
 from oslo_utils import excutils
 import six
@@ -26,6 +25,7 @@ from neutron.agent.l3 import dvr_fip_ns
 from neutron.agent.l3 import dvr_router_base
 from neutron.agent.linux import ip_lib
 from neutron.common import utils as common_utils
+from neutron.privileged.agent.linux import ip_lib as priv_ip_lib
 
 LOG = logging.getLogger(__name__)
 # xor-folding mask used for IPv6 rule index
@@ -188,7 +188,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
 
             device = ip_lib.IPDevice(fip_2_rtr_name, namespace=fip_ns_name)
 
-            device.route.delete_route(fip_cidr, str(rtr_2_fip.ip))
+            device.route.delete_route(fip_cidr, via=str(rtr_2_fip.ip))
             return device
 
     def floating_ip_moved_dist(self, fip):
@@ -340,7 +340,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                                          snat_idx):
         try:
             ns_ip_device.route.delete_gateway(gw_ip_addr, table=snat_idx)
-        except exceptions.DeviceNotFoundError:
+        except priv_ip_lib.NetworkInterfaceNotFound:
             pass
 
     def _stale_ip_rule_cleanup(self, namespace, ns_ipd, ip_version):
@@ -665,7 +665,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
 
     def process_external(self):
         if self.agent_conf.agent_mode != (
-            lib_constants.L3_AGENT_MODE_DVR_NO_EXTERNAL):
+                lib_constants.L3_AGENT_MODE_DVR_NO_EXTERNAL):
             ex_gw_port = self.get_ex_gw_port()
             if ex_gw_port:
                 #存在gateway,说明分布式路由器可以出外网了
@@ -720,7 +720,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                 return
             for subnet in router_port['subnets']:
                 rtr_port_cidr = subnet['cidr']
-                device.route.delete_route(rtr_port_cidr, str(rtr_2_fip_ip))
+                device.route.delete_route(rtr_port_cidr, via=str(rtr_2_fip_ip))
 
     def _add_interface_route_to_fip_ns(self, router_port):
         rtr_2_fip_ip, fip_2_rtr_name = self.get_rtr_fip_ip_and_interface_name()
@@ -804,8 +804,8 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                     operation, route, fip_ns_name, tbl_index)
         super(DvrLocalRouter, self).update_routing_table(operation, route)
 
-    def _update_fip_route_table_with_next_hop_routes(
-        self, operation, route, fip_ns_name, tbl_index):
+    def _update_fip_route_table_with_next_hop_routes(self, operation, route,
+                                                     fip_ns_name, tbl_index):
         cmd = ['ip', 'route', operation, 'to', route['destination'],
                'via', route['nexthop'], 'table', tbl_index]
         ip_wrapper = ip_lib.IPWrapper(namespace=fip_ns_name)
@@ -816,8 +816,8 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                       "router %(id)s",
                       {'ns': fip_ns_name, 'id': self.router_id})
 
-    def _check_if_route_applicable_to_fip_namespace(
-        self, route, agent_gateway_port):
+    def _check_if_route_applicable_to_fip_namespace(self, route,
+                                                    agent_gateway_port):
         ip_cidrs = common_utils.fixed_ip_cidrs(agent_gateway_port['fixed_ips'])
         nexthop_cidr = netaddr.IPAddress(route['nexthop'])
         for gw_cidr in ip_cidrs:

@@ -110,6 +110,11 @@ class AgentMechanismDriverBase(api.MechanismDriver):
         for agent in agents:
             LOG.debug("Checking agent: %s", agent)
             if agent['alive']:
+                if (vnic_type == portbindings.VNIC_SMARTNIC and not
+                        agent['configurations'].get('baremetal_smartnic')):
+                    LOG.debug('Agent on host %s can not bind SmartNIC '
+                              'port %s', agent['host'], context.current['id'])
+                    continue
                 #绑定需要agent是活着的
                 for segment in context.segments_to_bind:
                     if self.try_to_bind_segment_for_agent(context, segment,
@@ -266,7 +271,9 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase):
         super(SimpleAgentMechanismDriverBase, self).__init__(
             agent_type, supported_vnic_types)
         self.vif_type = vif_type
-        self.vif_details = vif_details
+        self.vif_details = {portbindings.VIF_DETAILS_CONNECTIVITY:
+                            portbindings.CONNECTIVITY_LEGACY}
+        self.vif_details.update(vif_details)
 
     def try_to_bind_segment_for_agent(self, context, segment, agent):
         if self.check_segment_for_agent(segment, agent):
@@ -280,6 +287,10 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase):
 
     def get_vif_details(self, context, agent, segment):
         return self.vif_details
+
+    def get_supported_vif_type(self, agent):
+        """Return supported vif type appropriate for the agent."""
+        return self.vif_type
 
     def get_vif_type(self, context, agent, segment):
         """Return the vif type appropriate for the agent and segment."""
@@ -377,14 +388,3 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase):
                 return False
 
         return True
-
-    @staticmethod
-    def provider_network_attribute_updates_supported():
-        """Returns the provider network attributes that can be updated
-
-        Possible values: neutron_lib.api.definitions.provider_net.ATTRIBUTES
-
-        :returns: (list) provider network attributes that can be updated in a
-                         live network using this driver.
-        """
-        return []

@@ -88,31 +88,23 @@ class QoSPlugin(qos.QoSPluginBase):
     @resource_extend.extends([port_def.COLLECTION_NAME])
     def _extend_port_resource_request(port_res, port_db):
         """Add resource request to a port."""
+        if isinstance(port_db, ports_object.Port):
+            qos_id = port_db.qos_policy_id or port_db.qos_network_policy_id
+        else:
+            qos_id = None
+            if port_db.get('qos_policy_binding'):
+                qos_id = port_db.qos_policy_binding.policy_id
+            elif port_db.get('qos_network_policy_binding'):
+                qos_id = port_db.qos_network_policy_binding.policy_id
+
         port_res['resource_request'] = None
-        qos_policy = policy_object.QosPolicy.get_port_policy(
-            context.get_admin_context(), port_res['id'])
-        # Note(lajoskatona): QosPolicyPortBinding is not ready for some
-        # reasons, so let's try and fetch the QoS policy directly if there is a
-        # qos_policy_id in port_res.
-        if (not qos_policy and 'qos_policy_id' in port_res and
-                port_res['qos_policy_id']):
-            qos_policy = policy_object.QosPolicy.get_policy_obj(
-                context.get_admin_context(), port_res['qos_policy_id']
-            )
-
-        # Note(lajoskatona): handle the case when the port inherits qos-policy
-        # from the network.
-        if not qos_policy:
-            net = network_object.Network.get_object(
-                context.get_admin_context(), id=port_res['network_id'])
-            if net and net.qos_policy_id:
-                qos_policy = policy_object.QosPolicy.get_network_policy(
-                    context.get_admin_context(), net.id)
-
-        if not qos_policy:
+        if not qos_id:
             return port_res
+        qos_policy = policy_object.QosPolicy.get_object(
+            context.get_admin_context(), id=qos_id)
 
         resources = {}
+        # NOTE(ralonsoh): we should move this translation dict to n-lib.
         rule_direction_class = {
             nl_constants.INGRESS_DIRECTION:
                 pl_constants.CLASS_NET_BW_INGRESS_KBPS,
@@ -125,6 +117,10 @@ class QoSPlugin(qos.QoSPluginBase):
         if not resources:
             return port_res
 
+        # NOTE(ralonsoh): we should not rely on the current execution order of
+        # the port extending functions. Although here we have
+        # port_res[VNIC_TYPE], we should retrieve this value from the port DB
+        # object instead.
         vnic_trait = pl_utils.vnic_type_trait(
             port_res[portbindings.VNIC_TYPE])
 
@@ -132,19 +128,16 @@ class QoSPlugin(qos.QoSPluginBase):
         # support will be available. See Placement spec:
         # https://review.opendev.org/565730
         first_segment = network_object.NetworkSegment.get_objects(
-            context.get_admin_context(),
-            network_id=port_res['network_id'])[0]
+            context.get_admin_context(), network_id=port_db.network_id)[0]
 
         if not first_segment or not first_segment.physical_network:
             return port_res
         physnet_trait = pl_utils.physnet_trait(
             first_segment.physical_network)
 
-        resource_request = {
+        port_res['resource_request'] = {
             'required': [physnet_trait, vnic_trait],
-            'resources': resources
-        }
-        port_res['resource_request'] = resource_request
+            'resources': resources}
         return port_res
 
     def _get_ports_with_policy(self, context, policy):
@@ -168,10 +161,8 @@ class QoSPlugin(qos.QoSPluginBase):
         context = kwargs['context']
         port_id = kwargs['port']['id']
         port = ports_object.Port.get_object(context, id=port_id)
-        network = network_object.Network.get_object(context,
-                                                    id=port.network_id)
 
-        policy_id = port.qos_policy_id or network.qos_policy_id
+        policy_id = port.qos_policy_id or port.qos_network_policy_id
         if policy_id is None:
             return
 
@@ -408,7 +399,7 @@ class QoSPlugin(qos.QoSPluginBase):
         rule_type = rule_cls.rule_type
         rule_data = rule_data[rule_type + '_rule']
 
-        with db_api.autonested_transaction(context.session):
+        with db_api.CONTEXT_WRITER.using(context):
             # Ensure that we have access to the policy.
             policy = policy_object.QosPolicy.get_policy_obj(context, policy_id)
             checker.check_bandwidth_rule_conflict(policy, rule_data)
@@ -447,7 +438,7 @@ class QoSPlugin(qos.QoSPluginBase):
         rule_type = rule_cls.rule_type
         rule_data = rule_data[rule_type + '_rule']
 
-        with db_api.autonested_transaction(context.session):
+        with db_api.CONTEXT_WRITER.using(context):
             # Ensure we have access to the policy.
             policy = policy_object.QosPolicy.get_policy_obj(context, policy_id)
             # Ensure the rule belongs to the policy.
@@ -512,7 +503,7 @@ class QoSPlugin(qos.QoSPluginBase):
 
         :returns: None
         """
-        with db_api.autonested_transaction(context.session):
+        with db_api.CONTEXT_WRITER.using(context):
             # Ensure we have access to the policy.
             policy = policy_object.QosPolicy.get_policy_obj(context, policy_id)
             rule = policy.get_rule_by_id(rule_id)
@@ -561,7 +552,7 @@ class QoSPlugin(qos.QoSPluginBase):
         :returns: a QoS policy rule object
         :raises: qos_exc.QosRuleNotFound
         """
-        with db_api.autonested_transaction(context.session):
+        with db_api.CONTEXT_READER.using(context):
             # Ensure we have access to the policy.
             policy_object.QosPolicy.get_policy_obj(context, policy_id)
             rule = rule_cls.get_object(context, id=rule_id)
@@ -604,7 +595,7 @@ class QoSPlugin(qos.QoSPluginBase):
 
         :returns: QoS policy rule objects meeting the search criteria
         """
-        with db_api.autonested_transaction(context.session):
+        with db_api.CONTEXT_READER.using(context):
             # Ensure we have access to the policy.
             policy_object.QosPolicy.get_policy_obj(context, policy_id)
             filters = filters or dict()

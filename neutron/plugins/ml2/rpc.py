@@ -23,8 +23,10 @@ from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api
 from neutron_lib import rpc as n_rpc
 from neutron_lib.services.qos import constants as qos_consts
+from oslo_config import cfg
 from oslo_log import log
 import oslo_messaging
+from osprofiler import profiler
 from sqlalchemy.orm import exc
 
 from neutron.api.rpc.handlers import dvr_rpc
@@ -51,7 +53,9 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
     #   1.4 tunnel_sync rpc signature upgrade to obtain 'host'
     #   1.5 Support update_device_list and
     #       get_devices_details_list_and_failed_devices
-    target = oslo_messaging.Target(version='1.5')
+    #   1.6 Support get_network_details
+    #   1.7 Support get_ports_by_vnic_type_and_host
+    target = oslo_messaging.Target(version='1.7')
 
     def __init__(self, notifier, type_manager):
         self.setup_tunnel_callback_mixin(notifier, type_manager)
@@ -69,7 +73,7 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
     def _get_request_details(kwargs):
         return (kwargs.get('agent_id'),
                 kwargs.get('host'),
-                kwargs.get('device'))
+                kwargs.get('device') or kwargs.get('network'))
 
     def get_device_details(self, rpc_context, **kwargs):
         """Agent requests device details."""
@@ -225,6 +229,16 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
         return {'devices': devices,
                 'failed_devices': failed_devices}
 
+    def get_network_details(self, rpc_context, **kwargs):
+        """Agent requests network details."""
+        agent_id, host, network = self._get_request_details(kwargs)
+        LOG.debug("Network %(network)s details requested by agent "
+                  "%(agent_id)s with host %(host)s",
+                  {'network': network, 'agent_id': agent_id, 'host': host})
+        plugin = directory.get_plugin()
+        return plugin.get_network(rpc_context, network)
+
+    @profiler.trace("rpc")
     #处理agent上报的接口down状态
     def update_device_down(self, rpc_context, **kwargs):
         """Device no longer exists on agent."""
@@ -257,9 +271,10 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
         return {'device': device,
                 'exists': port_exists}
 
+    @profiler.trace("rpc")
     def update_device_up(self, rpc_context, **kwargs):
         """Device is up on agent."""
-        agent_restarted = kwargs.pop('agent_restarted', None)
+        agent_restarted = kwargs.pop('agent_restarted', False)
         agent_id, host, device = self._get_request_details(kwargs)
         LOG.debug("Device %(device)s up at agent %(agent_id)s",
                   {'device': device, 'agent_id': agent_id})
@@ -284,8 +299,13 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
             else:
                 if port.device_owner.startswith(
                         n_const.DEVICE_OWNER_COMPUTE_PREFIX):
-                    #接口是vm对应的接口，通知nova,接口已出现在ovs上。
-                    plugin.nova_notifier.notify_port_active_direct(port)
+                    # NOTE(haleyb): It is possible for a test to override a
+                    # config option after the plugin has been initialized so
+                    # the nova_notifier attribute is not set on the plugin.
+                    if (cfg.CONF.notify_nova_on_port_status_changes and
+                            hasattr(plugin, 'nova_notifier')):
+                        #接口是vm对应的接口，通知nova,接口已出现在ovs上。
+                        plugin.nova_notifier.notify_port_active_direct(port)
                     return
         else:
             #已绑定，通知状态为active
@@ -316,7 +336,7 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
                 provisioning_blocks.L2_AGENT_ENTITY)
 
     def notify_l2pop_port_wiring(self, port_id, rpc_context,
-                                 status, host, agent_restarted=None):
+                                 status, host, agent_restarted=False):
         """Notify the L2pop driver that a port has been wired/unwired.
 
         The L2pop driver uses this notification to broadcast forwarding
@@ -339,8 +359,6 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
         # and so we don't need to update it again here. But, l2pop did not
         # handle DVR ports while restart neutron-*-agent, we need to handle
         # it here.
-        if agent_restarted is None:
-            agent_restarted = l2pop_driver.obj.agent_restarted(port_context)
         if (port['device_owner'] == n_const.DEVICE_OWNER_DVR_INTERFACE and
                 not agent_restarted):
             return
@@ -362,6 +380,7 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
         else:
             l2pop_driver.obj.update_port_down(port_context)
 
+    @profiler.trace("rpc")
     def update_device_list(self, rpc_context, **kwargs):
         devices_up = []
         failed_devices_up = []
@@ -401,6 +420,11 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
                 'failed_devices_up': failed_devices_up,
                 'devices_down': devices_down,
                 'failed_devices_down': failed_devices_down}
+
+    def get_ports_by_vnic_type_and_host(self, rpc_context, vnic_type, host):
+        plugin = directory.get_plugin()
+        return plugin.get_ports_by_vnic_type_and_host(
+            rpc_context, vnic_type=vnic_type, host=host)
 
 
 class AgentNotifierApi(dvr_rpc.DVRAgentRpcApiMixin,

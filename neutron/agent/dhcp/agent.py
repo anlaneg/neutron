@@ -31,6 +31,7 @@ import oslo_messaging
 from oslo_service import loopingcall
 from oslo_utils import fileutils
 from oslo_utils import importutils
+from oslo_utils import timeutils
 import six
 
 from neutron._i18n import _
@@ -49,6 +50,9 @@ DEFAULT_PRIORITY = 255
 
 DHCP_PROCESS_GREENLET_MAX = 32
 DHCP_PROCESS_GREENLET_MIN = 8
+DELETED_PORT_MAX_AGE = 86400
+
+DHCP_READY_PORTS_SYNC_MAX = 64
 
 
 def _sync_lock(f):
@@ -178,7 +182,8 @@ class DhcpAgent(manager.Manager):
             if (isinstance(e, oslo_messaging.RemoteError) and
                     e.exc_type == 'NetworkNotFound' or
                     isinstance(e, exceptions.NetworkNotFound)):
-                LOG.debug("Network %s has been deleted.", network.id)
+                LOG.debug("Network %s has been removed from the agent "
+                          "or deleted from DB.", network.id)
             else:
                 LOG.exception('Unable to %(action)s dhcp for %(net_id)s.',
                               {'net_id': network.id, 'action': action})
@@ -248,10 +253,15 @@ class DhcpAgent(manager.Manager):
             # this is just watching a set so we can do it really frequently
             eventlet.sleep(0.1)
             if self.dhcp_ready_ports:
-                ports_to_send = self.dhcp_ready_ports
-                self.dhcp_ready_ports = set()
+                ports_to_send = set()
+                for port_count in range(min(len(self.dhcp_ready_ports),
+                                            DHCP_READY_PORTS_SYNC_MAX)):
+                    ports_to_send.add(self.dhcp_ready_ports.pop())
+
                 try:
                     self.plugin_rpc.dhcp_ready_on_ports(ports_to_send)
+                    LOG.info("DHCP configuration for ports %s is completed",
+                             ports_to_send)
                     continue
                 except oslo_messaging.MessagingTimeout:
                     LOG.error("Timeout notifying server of ports ready. "
@@ -597,11 +607,14 @@ class DhcpAgent(manager.Manager):
             return
         new_ips = {i['ip_address'] for i in created_port['fixed_ips']}
         for port_cached in network.ports:
-            # if there are other ports cached with the same ip address in
-            # the same network this indicate that the cache is out of sync
+            # if in the same network there are ports cached with the same
+            # ip address but different MAC address and/or different id,
+            # this indicate that the cache is out of sync
             cached_ips = {i['ip_address']
                           for i in port_cached['fixed_ips']}
-            if new_ips.intersection(cached_ips):
+            if (new_ips.intersection(cached_ips) and
+                (created_port['id'] != port_cached['id'] or
+                 created_port['mac_address'] != port_cached['mac_address'])):
                 self.schedule_resync("Duplicate IP addresses found, "
                                      "DHCP cache is out of sync",
                                      created_port.network_id)
@@ -627,7 +640,7 @@ class DhcpAgent(manager.Manager):
             return
         port_id = payload['port_id']
         port = self.cache.get_port_by_id(port_id)
-        self.cache.deleted_ports.add(port_id)
+        self.cache.add_to_deleted_ports(port_id)
         if not port:
             return
         network = self.cache.get_network_by_id(port.network_id)
@@ -716,7 +729,8 @@ class DhcpPluginApi(object):
         1.1 - Added get_active_networks_info, create_dhcp_port,
               and update_dhcp_port methods.
         1.5 - Added dhcp_ready_on_ports
-
+        1.7 - Added get_networks
+        1.8 - Added get_dhcp_port
     """
 
     def __init__(self, topic, host):
@@ -774,11 +788,32 @@ class DhcpPluginApi(object):
                           network_id=network_id, device_id=device_id,
                           host=self.host)
 
+    def get_dhcp_port(self, port_id):
+        """Make a remote process call to retrieve the dhcp port."""
+        cctxt = self.client.prepare(version='1.8')
+        port = cctxt.call(self.context, 'get_dhcp_port', port_id=port_id)
+        if port:
+            return dhcp.DictModel(port)
+
     def dhcp_ready_on_ports(self, port_ids):
         """Notify the server that DHCP is configured for the port."""
         cctxt = self.client.prepare(version='1.5')
         return cctxt.call(self.context, 'dhcp_ready_on_ports',
                           port_ids=port_ids)
+
+    def get_networks(self, filters=None, fields=None):
+        """Get networks.
+
+        :param filters: The filters to apply.
+                        E.g {"id" : ["<uuid of a network>", ...]}
+        :param fields: A list of fields to collect, e.g ["id", "subnets"].
+        :return: A list of NetModel where each object represent a network.
+        """
+
+        cctxt = self.client.prepare(version='1.7')
+        nets = cctxt.call(self.context, 'get_networks', filters=filters,
+                          fields=fields)
+        return [dhcp.NetModel(net) for net in nets]
 
 
 class NetworkCache(object):
@@ -787,13 +822,18 @@ class NetworkCache(object):
         self.cache = {}
         self.subnet_lookup = {}
         self.port_lookup = {}
-        self.deleted_ports = set()
+        self._deleted_ports = set()
+        self._deleted_ports_ts = []
+        self.cleanup_loop = loopingcall.FixedIntervalLoopingCall(
+            self.cleanup_deleted_ports)
+        self.cleanup_loop.start(DELETED_PORT_MAX_AGE,
+                                initial_delay=DELETED_PORT_MAX_AGE)
 
     def is_port_message_stale(self, payload):
         orig = self.get_port_by_id(payload['id']) or {}
         if orig.get('revision_number', 0) > payload.get('revision_number', 0):
             return True
-        if payload['id'] in self.deleted_ports:
+        if payload['id'] in self._deleted_ports:
             return True
         return False
 
@@ -879,6 +919,29 @@ class NetworkCache(object):
         return {'networks': num_nets,
                 'subnets': num_subnets,
                 'ports': num_ports}
+
+    def add_to_deleted_ports(self, port_id):
+        if port_id not in self._deleted_ports:
+            self._deleted_ports.add(port_id)
+            self._deleted_ports_ts.append((timeutils.utcnow_ts(), port_id))
+
+    def cleanup_deleted_ports(self):
+        """Cleanup the "self._deleted_ports" set based on the current TS
+
+        The variable "self._deleted_ports_ts" contains a timestamp
+        ordered list of tuples (timestamp, port_id). Every port older than the
+        current timestamp minus "timestamp_delta" will be deleted from
+        "self._deleted_ports" and "self._deleted_ports_ts".
+        """
+        timestamp_min = timeutils.utcnow_ts() - DELETED_PORT_MAX_AGE
+        idx = None
+        for idx, (ts, port_id) in enumerate(self._deleted_ports_ts):
+            if ts > timestamp_min:
+                break
+            self._deleted_ports.remove(port_id)
+
+        if idx:
+            self._deleted_ports_ts = self._deleted_ports_ts[idx:]
 
 
 class DhcpAgentWithStateReport(DhcpAgent):

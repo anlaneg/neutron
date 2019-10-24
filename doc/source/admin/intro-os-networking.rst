@@ -15,8 +15,8 @@ define network connectivity and addressing in the cloud. The Networking
 service enables operators to leverage different networking technologies
 to power their cloud networking. The Networking service also provides an
 API to configure and manage a variety of network services ranging from L3
-forwarding and Network Address Translation (NAT) to load
-balancing, perimeter firewalls, and virtual private networks.
+forwarding and Network Address Translation (NAT) to perimeter firewalls, and
+virtual private networks.
 
 It includes the following components:
 
@@ -166,8 +166,7 @@ VLAN
     using VLAN IDs (802.1Q tagged) that correspond to VLANs present in the
     physical network. This allows instances to communicate with each other
     across the environment. They can also communicate with dedicated servers,
-    firewalls, load balancers, and other networking infrastructure on the
-    same layer 2 VLAN.
+    firewalls, and other networking infrastructure on the same layer 2 VLAN.
 
 GRE and VXLAN
     VXLAN and GRE are encapsulation protocols that create overlay networks
@@ -374,6 +373,5 @@ software load balancer. See the `Octavia project
 FWaaS
 ^^^^^
 
-The Firewall-as-a-Service (FWaaS) API is an experimental API that
-enables early adopters and vendors to test their networking
-implementations.
+The Firewall-as-a-Service (FWaaS) API allows to apply firewalls to OpenStack
+objects such as projects, routers, and router ports.

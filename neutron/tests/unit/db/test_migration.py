@@ -25,6 +25,7 @@ from alembic.operations import ops as alembic_ops
 from alembic import script as alembic_script
 import fixtures
 import mock
+from neutron_lib import fixture as lib_fixtures
 from neutron_lib.utils import helpers
 from oslo_utils import fileutils
 import pkg_resources
@@ -409,10 +410,10 @@ class TestCli(base.BaseTestCase):
                     heads[1]: FakeRevision(labels=cli.EXPAND_BRANCH)}
             fc.return_value.get_revision.side_effect = revs.__getitem__
             mock_open_con = self.useFixture(
-                tools.OpenFixture(cli._get_contract_head_file_path(
+                lib_fixtures.OpenFixture(cli._get_contract_head_file_path(
                     fake_config), contract_head + '\n')).mock_open
             mock_open_ex = self.useFixture(
-                tools.OpenFixture(cli._get_expand_head_file_path(
+                lib_fixtures.OpenFixture(cli._get_expand_head_file_path(
                     fake_config), expand_head + '\n')).mock_open
 
             if contract_head in heads and expand_head in heads:
@@ -452,10 +453,10 @@ class TestCli(base.BaseTestCase):
     def test_update_head_files_success(self, *mocks):
         heads = ['a', 'b']
         mock_open_con = self.useFixture(
-                    tools.OpenFixture(cli._get_contract_head_file_path(
+                    lib_fixtures.OpenFixture(cli._get_contract_head_file_path(
                         self.configs[0]))).mock_open
         mock_open_ex = self.useFixture(
-            tools.OpenFixture(cli._get_expand_head_file_path(
+            lib_fixtures.OpenFixture(cli._get_expand_head_file_path(
                 self.configs[0]))).mock_open
         with mock.patch('alembic.script.ScriptDirectory.from_config') as fc:
             fc.return_value.get_heads.return_value = heads
@@ -516,7 +517,7 @@ class TestCli(base.BaseTestCase):
 
     @mock.patch.object(cli, '_compare_labels')
     def test__validate_single_revision_labels_branchless_fail_different_labels(
-        self, compare_mock):
+            self, compare_mock):
 
         fake_down_revision = FakeRevision()
         fake_revision = FakeRevision(down_revision=fake_down_revision)
@@ -534,7 +535,7 @@ class TestCli(base.BaseTestCase):
 
     @mock.patch.object(cli, '_compare_labels')
     def test__validate_single_revision_labels_branches_fail_different_labels(
-        self, compare_mock):
+            self, compare_mock):
 
         fake_down_revision = FakeRevision()
         fake_revision = FakeRevision(down_revision=fake_down_revision)
@@ -562,7 +563,7 @@ class TestCli(base.BaseTestCase):
 
     @mock.patch.object(cli, '_validate_single_revision_labels')
     def test__validate_revision_validates_branchless_migrations(
-        self, validate_mock):
+            self, validate_mock):
 
         script_dir = mock.Mock()
         fake_revision = FakeRevision()
@@ -572,7 +573,7 @@ class TestCli(base.BaseTestCase):
     @mock.patch.object(cli, '_validate_revision')
     @mock.patch('alembic.script.ScriptDirectory.walk_revisions')
     def test_validate_revisions_walks_thru_all_revisions(
-        self, walk_mock, validate_mock):
+            self, walk_mock, validate_mock):
 
         revisions = [FakeRevision() for i in range(10)]
         walk_mock.return_value = revisions
@@ -584,7 +585,7 @@ class TestCli(base.BaseTestCase):
     @mock.patch.object(cli, '_validate_revision')
     @mock.patch('alembic.script.ScriptDirectory.walk_revisions')
     def test_validate_revisions_fails_on_multiple_branch_points(
-        self, walk_mock, validate_mock):
+            self, walk_mock, validate_mock):
 
         revisions = [FakeRevision(is_branch_point=True) for i in range(2)]
         walk_mock.return_value = revisions

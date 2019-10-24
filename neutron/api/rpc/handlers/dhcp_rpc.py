@@ -71,17 +71,19 @@ class DhcpRpcCallback(object):
     #     1.6 - Removed get_active_networks. It's not used by reference
     #           DHCP agent since Havana, so similar rationale for not bumping
     #           the major version as above applies here too.
+    #     1.7 - Add get_networks
+    #     1.8 - Add get_dhcp_port
 
     target = oslo_messaging.Target(
         namespace=constants.RPC_NAMESPACE_DHCP_PLUGIN,
-        version='1.6')
+        version='1.8')
 
     def _get_active_networks(self, context, **kwargs):
         """Retrieve and return a list of the active networks."""
         host = kwargs.get('host')
         plugin = directory.get_plugin()
         if extensions.is_extension_supported(
-            plugin, constants.DHCP_AGENT_SCHEDULER_EXT_ALIAS):
+                plugin, constants.DHCP_AGENT_SCHEDULER_EXT_ALIAS):
             if cfg.CONF.network_auto_schedule:
                 plugin.auto_schedule_networks(context, host)
             nets = plugin.list_active_networks_on_active_dhcp_agent(
@@ -280,6 +282,7 @@ class DhcpRpcCallback(object):
                                                          hosts=[host])
         return len(agents) != 0
 
+    @oslo_messaging.expected_exceptions(exceptions.NetworkNotFound)
     @oslo_messaging.expected_exceptions(exceptions.IpAddressGenerationFailure)
     @db_api.retry_db_errors
     def update_dhcp_port(self, context, **kwargs):
@@ -296,10 +299,14 @@ class DhcpRpcCallback(object):
             if (old_port['device_id'] !=
                     constants.DEVICE_ID_RESERVED_DHCP_PORT and
                 old_port['device_id'] !=
-                    utils.get_dhcp_agent_device_id(network_id, host) or
-                not self._is_dhcp_agent_hosting_network(plugin, context, host,
-                                                        network_id)):
-                raise exceptions.DhcpPortInUse(port_id=port['id'])
+                    utils.get_dhcp_agent_device_id(network_id, host)):
+                return
+            if not self._is_dhcp_agent_hosting_network(plugin, context, host,
+                                                       network_id):
+                LOG.warning("The DHCP agent on %(host)s does not host the "
+                            "network %(net_id)s.", {"host": host,
+                                                    "net_id": network_id})
+                raise exceptions.NetworkNotFound(net_id=network_id)
             LOG.debug('Update dhcp port %(port)s '
                       'from %(host)s.',
                       {'port': port,
@@ -309,7 +316,13 @@ class DhcpRpcCallback(object):
             LOG.debug('Host %(host)s tried to update port '
                       '%(port_id)s which no longer exists.',
                       {'host': host, 'port_id': port['id']})
-            return None
+
+    @db_api.retry_db_errors
+    def get_dhcp_port(self, context, **kwargs):
+        """Retrieve the DHCP port"""
+        port_id = kwargs.get('port_id')
+        plugin = directory.get_plugin()
+        return plugin.get_port(context, port_id)
 
     @db_api.retry_db_errors
     def dhcp_ready_on_ports(self, context, port_ids):
@@ -317,3 +330,12 @@ class DhcpRpcCallback(object):
             provisioning_blocks.provisioning_complete(
                 context, port_id, resources.PORT,
                 provisioning_blocks.DHCP_ENTITY)
+
+    def get_networks(self, context, filters=None, fields=None):
+        """Retrieve and return a list of networks."""
+        # NOTE(adrianc): This RPC is being used by out of tree interface
+        # drivers, MultiInterfaceDriver and IPoIBInterfaceDriver, located in
+        # networking-mlnx.
+        plugin = directory.get_plugin()
+        return plugin.get_networks(
+            context, filters=filters, fields=fields)

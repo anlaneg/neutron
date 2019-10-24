@@ -56,7 +56,7 @@ class FakePlugin(agents_db.AgentDbMixin):
 
 
 def _get_l3_agent_dict(host, agent_mode, internal_only=True,
-                       ext_net_id='', az=DEFAULT_AZ):
+                       az=DEFAULT_AZ):
     return {
         'agent_type': constants.AGENT_TYPE_L3,
         'binary': 'neutron-l3-agent',
@@ -64,22 +64,21 @@ def _get_l3_agent_dict(host, agent_mode, internal_only=True,
         'topic': topics.L3_AGENT,
         'availability_zone': az,
         'configurations': {'agent_mode': agent_mode,
-                           'handle_internal_only_routers': internal_only,
-                           'gateway_external_network_id': ext_net_id}}
+                           'handle_internal_only_routers': internal_only}}
 
 
 def _register_agent(agent, plugin=None):
     if not plugin:
         plugin = FakePlugin()
     admin_context = context.get_admin_context()
-    plugin.create_or_update_agent(admin_context, agent)
+    plugin.create_or_update_agent(admin_context, agent, timeutils.utcnow())
     return plugin._get_agent_by_type_and_host(
         admin_context, agent['agent_type'], agent['host'])
 
 
 def register_l3_agent(host=HOST, agent_mode=constants.L3_AGENT_MODE_LEGACY,
-                      internal_only=True, ext_net_id='', az=DEFAULT_AZ):
-    agent = _get_l3_agent_dict(host, agent_mode, internal_only, ext_net_id, az)
+                      internal_only=True, az=DEFAULT_AZ):
+    agent = _get_l3_agent_dict(host, agent_mode, internal_only, az)
     return _register_agent(agent)
 
 

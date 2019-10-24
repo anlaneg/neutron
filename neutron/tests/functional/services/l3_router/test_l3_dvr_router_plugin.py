@@ -328,7 +328,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
             test_agent_mode=None)
 
     def _test_create_floating_ip_agent_notification(
-        self, dvr=True, test_agent_mode=constants.L3_AGENT_MODE_DVR):
+            self, dvr=True, test_agent_mode=constants.L3_AGENT_MODE_DVR):
         with self.subnet() as ext_subnet,\
                 self.subnet(cidr='20.0.0.0/24') as int_subnet,\
                 self.port(subnet=int_subnet,
@@ -369,8 +369,8 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                 self.l3_plugin.create_floatingip(
                     self.context, {'floatingip': floating_ip})
                 if dvr:
-                    if test_agent_mode == (
-                        constants.L3_AGENT_MODE_DVR_NO_EXTERNAL):
+                    if (test_agent_mode ==
+                            constants.L3_AGENT_MODE_DVR_NO_EXTERNAL):
                         if router['ha']:
                             expected_calls = [
                                 mock.call(self.context,
@@ -400,7 +400,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         self._test_create_floating_ip_agent_notification()
 
     def test_create_floating_ip_agent_notification_for_dvr_no_external_agent(
-        self):
+            self):
         agent_mode = constants.L3_AGENT_MODE_DVR_NO_EXTERNAL
         self._test_create_floating_ip_agent_notification(
             test_agent_mode=agent_mode)
@@ -409,7 +409,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         self._test_create_floating_ip_agent_notification(dvr=False)
 
     def _test_update_floating_ip_agent_notification(
-        self, dvr=True, test_agent_mode=constants.L3_AGENT_MODE_DVR):
+            self, dvr=True, test_agent_mode=constants.L3_AGENT_MODE_DVR):
         with self.subnet() as ext_subnet,\
                 self.subnet(cidr='20.0.0.0/24') as int_subnet1,\
                 self.subnet(cidr='30.0.0.0/24') as int_subnet2,\
@@ -465,8 +465,8 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                     self.context, floating_ip['id'],
                     {'floatingip': updated_floating_ip})
                 if dvr:
-                    if test_agent_mode == (
-                        constants.L3_AGENT_MODE_DVR_NO_EXTERNAL):
+                    if (test_agent_mode ==
+                            constants.L3_AGENT_MODE_DVR_NO_EXTERNAL):
                         if router1['ha'] and router2['ha']:
                             self.assertEqual(
                                 4,
@@ -518,7 +518,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         self._test_update_floating_ip_agent_notification()
 
     def test_update_floating_ip_agent_notification_with_dvr_no_external_agents(
-        self):
+            self):
         agent_mode = constants.L3_AGENT_MODE_DVR_NO_EXTERNAL
         self._test_update_floating_ip_agent_notification(
             test_agent_mode=agent_mode)
@@ -531,7 +531,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
             test_agent_mode=None)
 
     def _test_delete_floating_ip_agent_notification(
-        self, dvr=True, test_agent_mode=constants.L3_AGENT_MODE_DVR):
+            self, dvr=True, test_agent_mode=constants.L3_AGENT_MODE_DVR):
         with self.subnet() as ext_subnet,\
                 self.subnet(cidr='20.0.0.0/24') as int_subnet,\
                 self.port(subnet=int_subnet,
@@ -611,7 +611,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
         self._test_delete_floating_ip_agent_notification()
 
     def test_delete_floating_ip_agent_notification_with_dvr_no_external_agents(
-        self):
+            self):
         agent_mode = constants.L3_AGENT_MODE_DVR_NO_EXTERNAL
         self._test_delete_floating_ip_agent_notification(
             test_agent_mode=agent_mode)
@@ -781,7 +781,6 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                     self.context, {'floatingip': floating_ip})
                 expected_routers_updated_calls = [
                     mock.call(self.context, mock.ANY, 'host0'),
-                    mock.call(self.context, mock.ANY, HOST1),
                     mock.call(self.context, mock.ANY, HOST1),
                     mock.call(self.context, mock.ANY, HOST2)]
                 l3_notifier.routers_updated_on_host.assert_has_calls(
@@ -1104,7 +1103,7 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                      {'port': {
                          'allowed_address_pairs': allowed_address_pairs}})
                 self.assertEqual(
-                    3, l3_notifier.routers_updated_on_host.call_count)
+                    2, l3_notifier.routers_updated_on_host.call_count)
                 updated_vm_port1 = self.core_plugin.get_port(
                     self.context, vm_port['id'])
                 updated_vm_port2 = self.core_plugin.get_port(
@@ -1154,7 +1153,6 @@ class L3DvrTestCase(L3DvrTestCaseBase):
                 expected_routers_updated_calls = [
                         mock.call(self.context, mock.ANY, HOST1),
                         mock.call(self.context, mock.ANY, HOST2),
-                        mock.call(self.context, mock.ANY, HOST1),
                         mock.call(self.context, mock.ANY, 'host0')]
                 l3_notifier.routers_updated_on_host.assert_has_calls(
                         expected_routers_updated_calls, any_order=True)

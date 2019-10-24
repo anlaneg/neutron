@@ -32,7 +32,7 @@ class TestIpamUtils(base.BaseTestCase):
         self.assertTrue(utils.check_subnet_ip('1.1.1.0/24', '1.1.1.254'))
 
     def test_check_subnet_ip_v6_network(self):
-        self.assertFalse(utils.check_subnet_ip('F111::0/64', 'F111::0'))
+        self.assertTrue(utils.check_subnet_ip('F111::0/64', 'F111::0'))
 
     def test_check_subnet_ip_v6_valid(self):
         self.assertTrue(utils.check_subnet_ip('F111::0/64', 'F111::1'))
@@ -87,3 +87,14 @@ class TestIpamUtils(base.BaseTestCase):
         cidr = '::/64'
         expected = [netaddr.IPRange('::1', '::FFFF:FFFF:FFFF:FFFF')]
         self.assertEqual(expected, utils.generate_pools(cidr, None))
+
+    def test_check_gateway_invalid_in_subnet(self):
+        data = [('10.0.0.1', '10.0.0.0/8', False),
+                ('10.255.255.255', '10.0.0.0/8', True),
+                ('10.0.0.0', '10.0.0.0/8', True),
+                ('192.168.100.10', '10.0.0.0/8', False),
+                ('2001:db8::1', '2001:db8::/64', False),
+                ]
+        for gw_ip, network_cidr, result in data:
+            self.assertEqual(result, utils.check_gateway_invalid_in_subnet(
+                network_cidr, gw_ip))

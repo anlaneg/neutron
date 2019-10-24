@@ -92,7 +92,7 @@ def _ovsdb_retry(fn):
         new_fn = tenacity.retry(
             reraise=True,
             retry=tenacity.retry_if_result(_ovsdb_result_pending),
-            wait=tenacity.wait_exponential(multiplier=0.01, max=1),
+            wait=tenacity.wait_exponential(multiplier=0.02, max=1),
             stop=tenacity.stop_after_delay(
                 self.ovsdb_timeout))(fn)
         return new_fn(*args, **kwargs)
@@ -386,24 +386,6 @@ class OVSBridge(BaseOVS):
                           port_name)
         return ofport
 
-    def get_port_external_ids(self, port_name):
-        """Get the port's assigned ofport, retrying if not yet assigned."""
-        port_external_ids = dict()
-        try:
-            port_external_ids = self._get_port_val(port_name, "external_ids")
-        except tenacity.RetryError:
-            LOG.exception("Timed out retrieving external_ids on port %s.",
-                          port_name)
-        return port_external_ids
-
-    def get_port_mac(self, port_name):
-        """Get the port's mac address.
-
-        This is especially useful when the port is not a neutron port.
-        E.g. networking-sfc needs the MAC address of "patch-tun
-        """
-        return self.db_get_val("Interface", port_name, "mac_in_use")
-
     @_ovsdb_retry
     def _get_datapath_id(self):
         #列出桥的datapath_id
@@ -536,6 +518,7 @@ class OVSBridge(BaseOVS):
         options['local_ip'] = local_ip
         options['in_key'] = 'flow'
         options['out_key'] = 'flow'
+        options['egress_pkt_mark'] = '0'
         if tunnel_csum:
             options['csum'] = str(tunnel_csum).lower()
         if tos:
@@ -726,6 +709,13 @@ class OVSBridge(BaseOVS):
         :param connection_mode: "out-of-band" or "in-band"
         """
         self.set_controller_field('connection_mode', connection_mode)
+
+    def set_controllers_inactivity_probe(self, interval):
+        """Set bridge controllers inactivity probe interval.
+
+        :param interval: inactivity_probe value in seconds.
+        """
+        self.set_controller_field('inactivity_probe', interval * 1000)
 
     def _set_egress_bw_limit_for_port(self, port_name, max_kbps,
                                       max_burst_kbps):

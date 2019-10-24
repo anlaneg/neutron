@@ -21,6 +21,7 @@ from neutron_lib.callbacks import exceptions
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
+from neutron_lib import context as context_lib
 from neutron_lib.db import api as db_api
 from neutron_lib.db import model_query
 from neutron_lib.db import resource_extend
@@ -28,19 +29,22 @@ from neutron_lib.db import utils as db_utils
 from neutron_lib import exceptions as n_exc
 from neutron_lib.utils import helpers
 from neutron_lib.utils import net
+from oslo_log import log as logging
 from oslo_utils import uuidutils
 import six
 from sqlalchemy.orm import scoped_session
 
 from neutron._i18n import _
 from neutron.common import _constants as const
-from neutron.common import utils
 from neutron.db.models import securitygroup as sg_models
 from neutron.db import rbac_db_mixin as rbac_mixin
 from neutron.extensions import securitygroup as ext_sg
 from neutron.objects import base as base_obj
 from neutron.objects import ports as port_obj
 from neutron.objects import securitygroup as sg_obj
+
+
+LOG = logging.getLogger(__name__)
 
 
 @resource_extend.has_resource_extenders
@@ -198,7 +202,8 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
                 if (fields is None or len(fields) == 0 or
                    'security_group_rules' in fields):
                     rules = self.get_security_group_rules(
-                        context, {'security_group_id': [id]})
+                        context_lib.get_admin_context(),
+                        {'security_group_id': [id]})
                     ret['security_group_rules'] = rules
 
         finally:
@@ -390,7 +395,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         rule_dict = security_group_rule['security_group_rule']
         remote_ip_prefix = rule_dict.get('remote_ip_prefix')
         if remote_ip_prefix:
-            remote_ip_prefix = utils.AuthenticIPNetwork(remote_ip_prefix)
+            remote_ip_prefix = net.AuthenticIPNetwork(remote_ip_prefix)
 
         protocol = rule_dict.get('protocol')
         if protocol:
@@ -454,10 +459,17 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             protocol = constants.IP_PROTOCOL_NAME_ALIASES[protocol]
         return int(constants.IP_PROTOCOL_MAP.get(protocol, protocol))
 
-    def _get_ip_proto_name_and_num(self, protocol):
+    def _get_ip_proto_name_and_num(self, protocol, ethertype=None):
         if protocol is None:
             return
         protocol = str(protocol)
+        # Force all legacy IPv6 ICMP protocol names to be 'ipv6-icmp', and
+        # protocol number 1 to be 58
+        if ethertype == constants.IPv6:
+            if protocol in const.IPV6_ICMP_LEGACY_PROTO_LIST:
+                protocol = constants.PROTO_NAME_IPV6_ICMP
+            elif protocol == str(constants.PROTO_NUM_ICMP):
+                protocol = str(constants.PROTO_NUM_IPV6_ICMP)
         if protocol in constants.IP_PROTOCOL_MAP:
             return [protocol, str(constants.IP_PROTOCOL_MAP.get(protocol))]
         elif protocol in constants.IP_PROTOCOL_NUM_TO_NAME_MAP:
@@ -549,8 +561,30 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
                 raise ext_sg.SecurityGroupRulesNotSingleTenant()
         return sg_groups.pop()
 
+    def _make_canonical_ipv6_icmp_protocol(self, rule):
+        if rule.get('ethertype') == constants.IPv6:
+            if rule.get('protocol') in const.IPV6_ICMP_LEGACY_PROTO_LIST:
+                LOG.info('Project %(project)s added a security group rule '
+                         'with legacy IPv6 ICMP protocol name %(protocol)s, '
+                         '%(new_protocol)s should be used instead. It was '
+                         'automatically converted.',
+                         {'project': rule['tenant_id'],
+                          'protocol': rule['protocol'],
+                          'new_protocol': constants.PROTO_NAME_IPV6_ICMP})
+                rule['protocol'] = constants.PROTO_NAME_IPV6_ICMP
+            elif rule.get('protocol') == str(constants.PROTO_NUM_ICMP):
+                LOG.info('Project %(project)s added a security group rule '
+                         'with legacy IPv6 ICMP protocol number %(protocol)s, '
+                         '%(new_protocol)s should be used instead. It was '
+                         'automatically converted.',
+                         {'project': rule['tenant_id'],
+                          'protocol': rule['protocol'],
+                          'new_protocol': str(constants.PROTO_NUM_IPV6_ICMP)})
+                rule['protocol'] = str(constants.PROTO_NUM_IPV6_ICMP)
+
     def _validate_security_group_rule(self, context, security_group_rule):
         rule = security_group_rule['security_group_rule']
+        self._make_canonical_ipv6_icmp_protocol(rule)
         self._validate_port_range(rule)
         self._validate_ip_prefix(rule)
         self._validate_ethertype_and_protocol(rule)
@@ -594,24 +628,6 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
                                     security_group_rule)
         return db_utils.resource_fields(res, fields)
 
-    def _make_security_group_rule_filter_dict(self, security_group_rule):
-        sgr = security_group_rule['security_group_rule']
-        res = {'tenant_id': [sgr['tenant_id']],
-               'security_group_id': [sgr['security_group_id']],
-               'direction': [sgr['direction']]}
-
-        include_if_present = ['protocol', 'port_range_max', 'port_range_min',
-                              'ethertype', 'remote_group_id']
-        for key in include_if_present:
-            value = sgr.get(key)
-            if value:
-                res[key] = [value]
-        # protocol field will get corresponding name and number
-        value = sgr.get('protocol')
-        if value:
-            res['protocol'] = self._get_ip_proto_name_and_num(value)
-        return res
-
     def _rule_to_key(self, rule):
         def _normalize_rule_value(key, value):
             # This string is used as a placeholder for str(None), but shorter.
@@ -624,7 +640,8 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             elif value is None:
                 return none_char
             elif key == 'protocol':
-                return str(self._get_ip_proto_name_and_num(value))
+                return str(self._get_ip_proto_name_and_num(
+                               value, ethertype=rule.get('ethertype')))
             return str(value)
 
         comparison_keys = [
@@ -779,7 +796,8 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             tenant_id = kwargs['original_' + resource]['tenant_id']
         else:
             tenant_id = kwargs[resource]['tenant_id']
-        self._ensure_default_security_group(context, tenant_id)
+        if tenant_id:
+            self._ensure_default_security_group(context, tenant_id)
 
     def _ensure_default_security_group(self, context, tenant_id):
         """Create a default security group if one doesn't exist.

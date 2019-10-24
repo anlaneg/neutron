@@ -52,11 +52,25 @@ filters_pattern = re.compile(r"police \w+ rate (\w+) burst (\w+)")
 tbf_pattern = re.compile(
     r"qdisc (\w+) \w+: \w+ refcnt \d rate (\w+) burst (\w+) \w*")
 
-TC_QDISC_TYPES = ['htb', 'tbf', 'ingress']
+TC_QDISC_TYPE_HTB = 'htb'
+TC_QDISC_TYPE_TBF = 'tbf'
+TC_QDISC_TYPE_INGRESS = 'ingress'
+TC_QDISC_TYPES = [TC_QDISC_TYPE_HTB, TC_QDISC_TYPE_TBF, TC_QDISC_TYPE_INGRESS]
 
 TC_QDISC_PARENT = {'root': rtnl.TC_H_ROOT,
                    'ingress': rtnl.TC_H_INGRESS}
 TC_QDISC_PARENT_NAME = {v: k for k, v in TC_QDISC_PARENT.items()}
+
+TC_CLASS_MAX_FLOWID = 0xffff
+
+# NOTE(ralonsoh): VXLAN header: +28 bytes from the outer MAC header (TC
+# initial offset)
+#   - VXLAN flags: 1 byte
+#   - Reserved: 3 bytes
+#   - VNI: 3 bytes --> VXLAN_VNI_OFFSET = 32 (+32 from the TC initial offset)
+#   - Reserved: 1 byte
+VXLAN_INNER_SRC_MAC_OFFSET = 42
+VXLAN_VNI_OFFSET = 32
 
 
 class InvalidKernelHzValue(exceptions.NeutronException):
@@ -66,6 +80,10 @@ class InvalidKernelHzValue(exceptions.NeutronException):
 
 class InvalidUnit(exceptions.NeutronException):
     message = _("Unit name '%(unit)s' is not valid.")
+
+
+class TcLibPolicyClassInvalidMinKbpsValue(exceptions.NeutronException):
+    message = _("'min_kbps' is mandatory in a TC class and must be >= 1.")
 
 
 def convert_to_kilobits(value, base):
@@ -152,8 +170,8 @@ def _handle_from_hex_to_string(handle):
     :param handle: (int) TC handle
     :return: (string) handle formatted to string: 0xMMMMmmmm -> "M:m"
     """
-    minor = str(handle & 0xFFFF)
-    major = str((handle & 0xFFFF0000) >> 16)
+    minor = format(handle & 0xFFFF, 'x')
+    major = format((handle & 0xFFFF0000) >> 16, 'x')
     return ':'.join([major, minor])
 
 
@@ -376,15 +394,13 @@ def delete_tc_qdisc(device, parent=None, is_ingress=False,
         raise_qdisc_not_found=raise_qdisc_not_found, namespace=namespace)
 
 
-def add_tc_policy_class(device, parent, classid, qdisc_type,
-                        min_kbps=None, max_kbps=None, burst_kb=None,
-                        namespace=None):
+def add_tc_policy_class(device, parent, classid, min_kbps=1, max_kbps=None,
+                        burst_kb=None, namespace=None):
     """Add a TC policy class
 
     :param device: (string) device name
     :param parent: (string) qdisc parent class ('root', 'ingress', '2:10')
     :param classid: (string) major:minor handler identifier ('10:20')
-    :param qdisc_type: (string) qdisc type ("sfq", "htb", "u32", etc)
     :param min_kbps: (int) (optional) minimum bandwidth in kbps
     :param max_kbps: (int) (optional) maximum bandwidth in kbps
     :param burst_kb: (int) (optional) burst size in kb
@@ -392,19 +408,19 @@ def add_tc_policy_class(device, parent, classid, qdisc_type,
     :return:
     """
     parent = TC_QDISC_PARENT.get(parent, parent)
-    args = {}
     # NOTE(ralonsoh): pyroute2 input parameters and units [1]:
     #   - rate (min bw): bytes/second
     #   - ceil (max bw): bytes/second
     #   - burst: bytes
     # [1] https://www.systutorials.com/docs/linux/man/8-tc/
-    if min_kbps:
-        args['rate'] = int(min_kbps * 1024 / 8)
+    if int(min_kbps) < 1:
+        raise TcLibPolicyClassInvalidMinKbpsValue()
+    args = {'rate': int(min_kbps * 1024 / 8)}
     if max_kbps:
         args['ceil'] = int(max_kbps * 1024 / 8)
     if burst_kb:
         args['burst'] = int(burst_kb * 1024 / 8)
-    priv_tc_lib.add_tc_policy_class(device, parent, classid, qdisc_type,
+    priv_tc_lib.add_tc_policy_class(device, parent, classid, 'htb',
                                     namespace=namespace, **args)
 
 
@@ -438,15 +454,19 @@ def list_tc_policy_class(device, namespace=None):
         qdisc_type = _get_attr(tc_class, 'TCA_KIND')
         tca_options = _get_attr(tc_class, 'TCA_OPTIONS')
         max_kbps, min_kbps, burst_kb = get_params(tca_options, qdisc_type)
-        classes.append({'device': device,
-                        'index': index,
-                        'namespace': namespace,
-                        'parent': parent,
-                        'classid': classid,
-                        'qdisc_type': qdisc_type,
-                        'min_kbps': min_kbps,
-                        'max_kbps': max_kbps,
-                        'burst_kb': burst_kb})
+        tc_class_data = {'device': device,
+                         'index': index,
+                         'namespace': namespace,
+                         'parent': parent,
+                         'classid': classid,
+                         'qdisc_type': qdisc_type,
+                         'min_kbps': min_kbps,
+                         'max_kbps': max_kbps,
+                         'burst_kb': burst_kb}
+        tca_stats = _get_attr(tc_class, 'TCA_STATS')
+        if tca_stats:
+            tc_class_data['stats'] = tca_stats
+        classes.append(tc_class_data)
 
     return classes
 
@@ -461,6 +481,24 @@ def delete_tc_policy_class(device, parent, classid, namespace=None):
     """
     priv_tc_lib.delete_tc_policy_class(device, parent, classid,
                                        namespace=namespace)
+
+
+def add_tc_filter_vxlan(device, parent, classid, src_mac, vxlan_id,
+                        namespace=None):
+    """Add a TC filter to match VXLAN traffic based on the VM mac and the VNI.
+
+    :param device: (string) device name
+    :param parent: (string) qdisc parent class ('root', 'ingress', '2:10')
+    :param classid: (string) major:minor handler identifier ('10:20')
+    :param src_mac: (string) source MAC address to match (VM mac)
+    :param vxlan_id: (int) VXLAN ID (VNI)
+    :param namespace: (string) (optional) namespace name
+    """
+    keys = [hex(int(vxlan_id << 8)) + '/0xffffff00+' + str(VXLAN_VNI_OFFSET)]
+    keys += [key['key'] for key in
+             _mac_to_pyroute2_keys(src_mac, VXLAN_INNER_SRC_MAC_OFFSET)]
+    priv_tc_lib.add_tc_filter_match32(device, parent, 1, classid, keys,
+                                      namespace=namespace)
 
 
 def add_tc_filter_match_mac(device, parent, classid, mac, offset=0, priority=0,

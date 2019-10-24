@@ -153,6 +153,17 @@ def _build_subattr_match_rule(attr_name, attr, action, target):
     return policy.AndCheck(sub_attr_rules)
 
 
+def _build_list_of_subattrs_rule(attr_name, attribute_value, action):
+    rules = []
+    for sub_attr in attribute_value:
+        if isinstance(sub_attr, dict):
+            for k in sub_attr:
+                rules.append(policy.RuleCheck(
+                    'rule', '%s:%s:%s' % (action, attr_name, k)))
+    if rules:
+        return policy.AndCheck(rules)
+
+
 def _process_rules_list(rules, match_rule):
     """Recursively walk a policy rule to extract a list of match entries."""
     if isinstance(match_rule, policy.RuleCheck):
@@ -188,8 +199,8 @@ def _build_match_rule(action, target, pluralized):
                                                 target, action):
                     attribute = res_map[resource][attribute_name]
                     if 'enforce_policy' in attribute:
-                        attr_rule = policy.RuleCheck('rule', '%s:%s' %
-                                                     (action, attribute_name))
+                        attr_rule = policy.RuleCheck(
+                            'rule', '%s:%s' % (action, attribute_name))
                         # Build match entries for sub-attributes
                         if _should_validate_sub_attributes(
                                 attribute, target[attribute_name]):
@@ -197,6 +208,15 @@ def _build_match_rule(action, target, pluralized):
                                 [attr_rule, _build_subattr_match_rule(
                                     attribute_name, attribute,
                                     action, target)])
+
+                        attribute_value = target[attribute_name]
+                        if isinstance(attribute_value, list):
+                            subattr_rule = _build_list_of_subattrs_rule(
+                                attribute_name, attribute_value, action)
+                            if subattr_rule:
+                                attr_rule = policy.AndCheck(
+                                    [attr_rule, subattr_rule])
+
                         match_rule = policy.AndCheck([match_rule, attr_rule])
     return match_rule
 
@@ -333,20 +353,44 @@ class FieldCheck(policy.Check):
             conv_func = lambda x: x
 
         self.field = field
+        self.resource = resource
         self.value = conv_func(value)
         self.regex = re.compile(value[1:]) if value.startswith('~') else None
 
     def __call__(self, target_dict, cred_dict, enforcer):
-        target_value = target_dict.get(self.field)
+        target_value = self._get_target_value(target_dict)
         # target_value might be a boolean, explicitly compare with None
         if target_value is None:
-            LOG.debug("Unable to find requested field: %(field)s in target: "
-                      "%(target_dict)s",
-                      {'field': self.field, 'target_dict': target_dict})
             return False
         if self.regex:
             return bool(self.regex.match(target_value))
         return target_value == self.value
+
+    def _get_target_value(self, target_dict):
+        if self.field in target_dict:
+            return target_dict[self.field]
+        # NOTE(slaweq): In case that target field is "networks:shared" we need
+        # to treat it in "special" way as it may be used for resources other
+        # than network, e.g. for port or subnet
+        target_value = None
+        if self.resource == "networks" and self.field == constants.SHARED:
+            target_network_id = target_dict.get("network_id")
+            if not target_network_id:
+                LOG.debug("Unable to find network_id field in target: "
+                          "%(target_dict)s",
+                          {'field': self.field, 'target_dict': target_dict})
+                return
+            project_id = target_dict.get('project_id')
+            ctx = (context.Context(tenant_id=project_id) if project_id
+                   else context.get_admin_context())
+            plugin = directory.get_plugin()
+            network = plugin.get_network(ctx, target_network_id)
+            target_value = network.get(self.field)
+        if target_value is None:
+            LOG.debug("Unable to find requested field: %(field)s in target: "
+                      "%(target_dict)s",
+                      {'field': self.field, 'target_dict': target_dict})
+        return target_value
 
 
 def _prepare_check(context, action, target, pluralized):

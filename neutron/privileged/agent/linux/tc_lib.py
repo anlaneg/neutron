@@ -98,13 +98,13 @@ def delete_tc_qdisc(device, parent=None, kind=None, namespace=None,
 
 
 @privileged.default.entrypoint
-def add_tc_policy_class(device, parent, classid, qdisc_type, namespace=None,
+def add_tc_policy_class(device, parent, classid, class_type, namespace=None,
                         **kwargs):
     """Add/replace TC policy class"""
     try:
         index = ip_lib.get_link_id(device, namespace)
         with ip_lib.get_iproute(namespace) as ip:
-            ip.tc('replace-class', kind=qdisc_type, index=index,
+            ip.tc('replace-class', kind=class_type, index=index,
                   handle=classid, parent=parent, **kwargs)
     except OSError as e:
         if e.errno == errno.ENOENT:
@@ -154,7 +154,7 @@ def add_tc_filter_match32(device, parent, priority, class_id, keys,
         index = ip_lib.get_link_id(device, namespace)
         with ip_lib.get_iproute(namespace) as ip:
             ip.tc('add-filter', kind='u32', index=index,
-                  parent=parent, priority=priority, target=class_id,
+                  parent=parent, prio=priority, target=class_id,
                   protocol=protocol, keys=keys, **kwargs)
     except OSError as e:
         if e.errno == errno.ENOENT:
@@ -180,7 +180,7 @@ def add_tc_filter_policy(device, parent, priority, rate, burst, mtu, action,
         index = ip_lib.get_link_id(device, namespace)
         with ip_lib.get_iproute(namespace) as ip:
             ip.tc('add-filter', kind='u32', index=index,
-                  parent=parent, priority=priority, protocol=protocol,
+                  parent=parent, prio=priority, protocol=protocol,
                   rate=rate, burst=burst, mtu=mtu, action=action,
                   keys=keys, target=flowid, **kwargs)
     except OSError as e:

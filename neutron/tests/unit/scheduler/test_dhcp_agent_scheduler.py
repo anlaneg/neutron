@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import datetime
+from operator import attrgetter
 import random
 
 import mock
@@ -498,7 +499,7 @@ class TestNetworksFailover(TestDhcpSchedulerBaseTestCase,
     def test_filter_bindings(self):
         self.ctx = context.get_admin_context()
         dhcp_agt_ids = self._create_dhcp_agents()
-        network_ids = self._create_test_networks(num_net=4)
+        network_ids = sorted(self._create_test_networks(num_net=4))
         ndab_obj1 = network_obj.NetworkDhcpAgentBinding(self.ctx,
             network_id=network_ids[0], dhcp_agent_id=dhcp_agt_ids[0])
         ndab_obj1.create()
@@ -511,8 +512,9 @@ class TestNetworksFailover(TestDhcpSchedulerBaseTestCase,
         ndab_obj4 = network_obj.NetworkDhcpAgentBinding(self.ctx,
             network_id=network_ids[3], dhcp_agent_id=dhcp_agt_ids[1])
         ndab_obj4.create()
-        bindings_objs = network_obj.NetworkDhcpAgentBinding.get_objects(
-            self.ctx)
+        bindings_objs = sorted(network_obj.NetworkDhcpAgentBinding.get_objects(
+            self.ctx), key=attrgetter('network_id'))
+
         with mock.patch.object(self, 'agent_starting_up',
                                side_effect=[True, False]):
             res = [b for b in self._filter_bindings(None, bindings_objs)]
@@ -525,9 +527,8 @@ class TestNetworksFailover(TestDhcpSchedulerBaseTestCase,
     def test_reschedule_network_from_down_agent_failed_on_unexpected(self):
         agents = self._create_and_set_agents_down(['host-a'], 1)
         self._test_schedule_bind_network([agents[0]], self.network_id)
-        with mock.patch.object(
-            self, '_filter_bindings',
-            side_effect=Exception()):
+        with mock.patch.object(self, '_filter_bindings',
+                               side_effect=Exception()):
             # just make sure that no exception is raised
             self.remove_networks_from_down_agents()
 
@@ -542,8 +543,7 @@ class TestNetworksFailover(TestDhcpSchedulerBaseTestCase,
     def test_reschedule_doesnt_occur_if_no_agents(self):
         agents = self._create_and_set_agents_down(['host-a', 'host-b'], 2)
         self._test_schedule_bind_network([agents[0]], self.network_id)
-        with mock.patch.object(
-            self, 'remove_network_from_dhcp_agent') as rn:
+        with mock.patch.object(self, 'remove_network_from_dhcp_agent') as rn:
             self.remove_networks_from_down_agents()
             self.assertFalse(rn.called)
 

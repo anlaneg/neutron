@@ -113,6 +113,8 @@ class PluginApi(object):
         1.4 - tunnel_sync rpc signature upgrade to obtain 'host'
         1.5 - Support update_device_list and
               get_devices_details_list_and_failed_devices
+        1.6 - Support get_network_details
+        1.7 - Support get_ports_by_vnic_type_and_host
     '''
 
     def __init__(self, topic):
@@ -130,7 +132,8 @@ class PluginApi(object):
                           devices=devices, agent_id=agent_id, host=host)
 
     def get_devices_details_list_and_failed_devices(self, context, devices,
-                                                    agent_id, host=None):
+                                                    agent_id, host=None,
+                                                    **kwargs):
         """Get devices details and the list of devices that failed.
 
         This method returns the devices details. If an error is thrown when
@@ -142,6 +145,11 @@ class PluginApi(object):
             context,
             'get_devices_details_list_and_failed_devices',
             devices=devices, agent_id=agent_id, host=host)
+
+    def get_network_details(self, context, network, agent_id, host=None):
+        cctxt = self.client.prepare(version='1.6')
+        return cctxt.call(context, 'get_network_details', network=network,
+                          agent_id=agent_id, host=host)
 
     #知会neutron device状态down
     def update_device_down(self, context, device, agent_id, host=None):
@@ -190,28 +198,24 @@ class PluginApi(object):
         return cctxt.call(context, 'tunnel_sync', tunnel_ip=tunnel_ip,
                           tunnel_type=tunnel_type, host=host)
 
-
-def create_cache_for_l2_agent():
-    """Create a push-notifications cache for L2 agent related resources."""
-
-    objects.register_objects()
-    resource_types = [
-        resources.PORT,
-        resources.SECURITYGROUP,
-        resources.SECURITYGROUPRULE,
-        resources.NETWORK,
-        resources.SUBNET
-    ]
-    rcache = resource_cache.RemoteResourceCache(resource_types)
-    rcache.start_watcher()
-    return rcache
+    def get_ports_by_vnic_type_and_host(self, context, vnic_type, host):
+        cctxt = self.client.prepare(version='1.7')
+        return cctxt.call(context, 'get_ports_by_vnic_type_and_host',
+                          vnic_type=vnic_type, host=host)
 
 
 class CacheBackedPluginApi(PluginApi):
 
+    RESOURCE_TYPES = [resources.PORT,
+                      resources.SECURITYGROUP,
+                      resources.SECURITYGROUPRULE,
+                      resources.NETWORK,
+                      resources.SUBNET]
+
     def __init__(self, *args, **kwargs):
         super(CacheBackedPluginApi, self).__init__(*args, **kwargs)
-        self.remote_resource_cache = create_cache_for_l2_agent()
+        self.remote_resource_cache = None
+        self._create_cache_for_l2_agent()
 
     def register_legacy_notification_callbacks(self, legacy_interface):
         """Emulates the server-side notifications from ml2 AgentNotifierApi.
@@ -232,6 +236,7 @@ class CacheBackedPluginApi(PluginApi):
         the payloads the handlers are expecting (an ID).
         """
         rtype = rtype.lower()  # all legacy handlers don't camelcase
+        agent_restarted = kwargs.pop("agent_restarted", None)
         method, host_with_activation, host_with_deactivation = (
             self._get_method_host(rtype, event, **kwargs))
         if not hasattr(self._legacy_interface, method):
@@ -248,6 +253,9 @@ class CacheBackedPluginApi(PluginApi):
         else:
             payload = {rtype: {'id': resource_id},
                        '%s_id' % rtype: resource_id}
+            if method == "port_update" and agent_restarted is not None:
+                # Mark ovs-agent restart for local port_update
+                payload["agent_restarted"] = agent_restarted
             getattr(self._legacy_interface, method)(context, **payload)
 
     def _get_method_host(self, rtype, event, **kwargs):
@@ -292,13 +300,15 @@ class CacheBackedPluginApi(PluginApi):
         return method, host_with_activation, host_with_deactivation
 
     def get_devices_details_list_and_failed_devices(self, context, devices,
-                                                    agent_id, host=None):
+                                                    agent_id, host=None,
+                                                    agent_restarted=False):
         result = {'devices': [], 'failed_devices': []}
         for device in devices:
             try:
                 #按个取每个device的详细情况（来源于缓存）
                 result['devices'].append(
-                    self.get_device_details(context, device, agent_id, host))
+                    self.get_device_details(context, device, agent_id, host,
+                                            agent_restarted))
             except Exception:
                 #取设备device时失败，记录在失败集合中
                 LOG.exception("Failed to get details for device %s", device)
@@ -306,9 +316,10 @@ class CacheBackedPluginApi(PluginApi):
         return result
 
     #自缓存中提取设备详情
-    def get_device_details(self, context, device, agent_id, host=None):
+    def get_device_details(self, context, device, agent_id, host=None,
+                           agent_restarted=False):
         port_obj = self.remote_resource_cache.get_resource_by_id(
-            resources.PORT, device)
+            resources.PORT, device, agent_restarted)
         if not port_obj:
             #缓存中不存在
             LOG.debug("Device %s does not exist in cache.", device)
@@ -339,6 +350,7 @@ class CacheBackedPluginApi(PluginApi):
                                    dialect=netaddr.mac_unix_expanded))
         entry = {
             'device': device,
+            'device_id': port_obj.device_id,
             'network_id': port_obj.network_id,
             'port_id': port_obj.id,
             'mac_address': mac_addr,
@@ -358,6 +370,8 @@ class CacheBackedPluginApi(PluginApi):
             'qos_policy_id': port_obj.qos_policy_id,
             'network_qos_policy_id': net_qos_policy_id,
             'profile': binding.profile,
+            'vif_type': binding.vif_type,
+            'vnic_type': binding.vnic_type,
             'security_groups': list(port_obj.security_group_ids)
         }
         LOG.debug("Returning: %s", entry)
@@ -367,3 +381,10 @@ class CacheBackedPluginApi(PluginApi):
         #返回请求的所有设备的详情
         return [self.get_device_details(context, device, agent_id, host)
                 for device in devices]
+
+    def _create_cache_for_l2_agent(self):
+        """Create a push-notifications cache for L2 agent related resources."""
+        objects.register_objects()
+        rcache = resource_cache.RemoteResourceCache(self.RESOURCE_TYPES)
+        rcache.start_watcher()
+        self.remote_resource_cache = rcache

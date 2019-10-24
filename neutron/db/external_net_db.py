@@ -132,8 +132,8 @@ class External_net_db_mixin(object):
             # (and thus, possible floating IPs) on this network before
             # allow it to be update to external=False
             if context.session.query(models_v2.Port.id).filter_by(
-                device_owner=constants.DEVICE_OWNER_ROUTER_GW,
-                network_id=net_data['id']).first():
+                    device_owner=constants.DEVICE_OWNER_ROUTER_GW,
+                    network_id=net_data['id']).first():
                 raise extnet_exc.ExternalNetworkInUse(net_id=net_id)
 
             net_obj.ExternalNetwork.delete_objects(
@@ -155,8 +155,12 @@ class External_net_db_mixin(object):
             return nets[0]['id'] if nets else None
 
     @registry.receives(resources.RBAC_POLICY, [events.BEFORE_CREATE])
-    def _process_ext_policy_create(self, resource, event, trigger, context,
-                                   object_type, policy, **kwargs):
+    def _process_ext_policy_create(self, resource, event, trigger,
+                                   payload=None):
+        object_type = payload.metadata.get('object_type')
+        policy = payload.request_body
+        context = payload.context
+
         if (object_type != 'network' or
                 policy['action'] != 'access_as_external'):
             return
@@ -172,8 +176,12 @@ class External_net_db_mixin(object):
                                     allow_all=False)
 
     @registry.receives(resources.RBAC_POLICY, [events.AFTER_DELETE])
-    def _process_ext_policy_delete(self, resource, event, trigger, context,
-                                   object_type, policy, **kwargs):
+    def _process_ext_policy_delete(self, resource, event, trigger,
+                                   payload=None):
+        object_type = payload.metadata.get('object_type')
+        policy = payload.latest_state
+        context = payload.context
+
         if (object_type != 'network' or
                 policy['action'] != 'access_as_external'):
             return
@@ -189,14 +197,17 @@ class External_net_db_mixin(object):
     @registry.receives(resources.RBAC_POLICY, (events.BEFORE_UPDATE,
                                                events.BEFORE_DELETE))
     def _validate_ext_not_in_use_by_tenant(self, resource, event, trigger,
-                                           context, object_type, policy,
-                                           **kwargs):
+                                           payload=None):
+        object_type = payload.metadata.get('object_type')
+        policy = payload.latest_state
+        context = payload.context
+
         if (object_type != 'network' or
                 policy['action'] != 'access_as_external'):
             return
         new_project = None
         if event == events.BEFORE_UPDATE:
-            new_project = kwargs['policy_update']['target_tenant']
+            new_project = payload.request_body['target_tenant']
             if new_project == policy['target_tenant']:
                 # nothing to validate if the tenant didn't change
                 return

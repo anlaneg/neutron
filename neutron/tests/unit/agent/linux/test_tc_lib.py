@@ -101,6 +101,18 @@ class TestIECUnitConversions(BaseUnitConversionTest, base.BaseTestCase):
     base_unit = constants.IEC_BASE
 
 
+class TestHandleFromHexToString(base.BaseTestCase):
+
+    def test_run(self):
+        test_cases = [(0x1, '0:1'),
+                      (0x2a003f, '2a:3f'),
+                      (0xf0000, 'f:0'),
+                      (0xffffffff, 'ffff:ffff'),
+                      (0x12345678, '1234:5678')]
+        for _in, expected in test_cases:
+            self.assertEqual(expected, tc_lib._handle_from_hex_to_string(_in))
+
+
 class TestTcCommand(base.BaseTestCase):
     def setUp(self):
         super(TestTcCommand, self).setUp()
@@ -330,10 +342,10 @@ class TcPolicyClassTestCase(base.BaseTestCase):
 
     def test_add_tc_policy_class(self):
         tc_lib.add_tc_policy_class(
-            'device', 'root', '1:10', 'qdisc_type', min_kbps=1000,
-            max_kbps=2000, burst_kb=1600, namespace=self.namespace)
+            'device', 'root', '1:10', min_kbps=1000, max_kbps=2000,
+            burst_kb=1600, namespace=self.namespace)
         self.mock_add_tc_policy_class.assert_called_once_with(
-            'device', rtnl.TC_H_ROOT, '1:10', 'qdisc_type', rate=1000 * 128,
+            'device', rtnl.TC_H_ROOT, '1:10', 'htb', rate=1000 * 128,
             ceil=2000 * 128, burst=1600 * 128, namespace=self.namespace)
 
     @mock.patch('pyroute2.netlink.rtnl.tcmsg.common.tick_in_usec', 15.625)
@@ -376,3 +388,12 @@ class TcFilterTestCase(base.BaseTestCase):
                'key': '0x89ab0000/0xffff0000+14'}
         self.assertEqual(high, keys[0])
         self.assertEqual(low, keys[1])
+
+    @mock.patch.object(priv_tc_lib, 'add_tc_filter_match32')
+    def test_add_tc_filter_vxlan(self, mock_add_filter):
+        tc_lib.add_tc_filter_vxlan('device', 'parent', 'classid',
+                                   '12:34:56:78:90:ab', 52, namespace='ns')
+        keys = ['0x3400/0xffffff00+32', '0x12345678/0xffffffff+42',
+                '0x90ab0000/0xffff0000+46']
+        mock_add_filter.assert_called_once_with(
+            'device', 'parent', 1, 'classid', keys, namespace='ns')

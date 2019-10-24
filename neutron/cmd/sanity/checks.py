@@ -19,6 +19,7 @@ import tempfile
 
 import netaddr
 from neutron_lib import constants as n_consts
+from neutron_lib import exceptions
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import uuidutils
@@ -42,6 +43,7 @@ LOG = logging.getLogger(__name__)
 MINIMUM_DNSMASQ_VERSION = 2.67
 DNSMASQ_VERSION_DHCP_RELEASE6 = 2.76
 MINIMUM_DIBBLER_VERSION = '1.0.1'
+CONNTRACK_GRE_MODULE = 'nf_conntrack_proto_gre'
 
 
 def ovs_vxlan_supported(from_ip='192.0.2.1', to_ip='192.0.2.2'):
@@ -362,7 +364,7 @@ def keepalived_ipv6_supported():
 
             default_gw = gw_dev.route.get_gateway(ip_version=6)
             if default_gw:
-                default_gw = default_gw['gateway']
+                default_gw = default_gw['via']
 
     return expected_default_gw == default_gw
 
@@ -485,3 +487,11 @@ def ip_nonlocal_bind():
     finally:
         ip_lib.delete_network_namespace(nsname1)
     return ns1_value == 0
+
+
+def gre_conntrack_supported():
+    cmd = ['modinfo', CONNTRACK_GRE_MODULE]
+    try:
+        return agent_utils.execute(cmd, log_fail_as_error=False)
+    except exceptions.ProcessExecutionError:
+        return False

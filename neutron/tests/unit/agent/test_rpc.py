@@ -44,6 +44,11 @@ class AgentRPCPluginApi(base.BaseTestCase):
             func_obj = getattr(agent, method)
             if method == 'tunnel_sync':
                 actual_val = func_obj(ctxt, 'fake_tunnel_ip')
+            elif method == 'get_ports_by_vnic_type_and_host':
+                actual_val = func_obj(ctxt, 'fake_vnic_type', 'fake_host')
+                mock_call.assert_called_once_with(
+                    ctxt, 'get_ports_by_vnic_type_and_host',
+                    host='fake_host', vnic_type='fake_vnic_type')
             else:
                 actual_val = func_obj(ctxt, 'fake_device', 'fake_agent_id')
         self.assertEqual(actual_val, expect_val)
@@ -54,11 +59,17 @@ class AgentRPCPluginApi(base.BaseTestCase):
     def test_get_devices_details_list(self):
         self._test_rpc_call('get_devices_details_list')
 
+    def test_get_network_details(self):
+        self._test_rpc_call('get_network_details')
+
     def test_update_device_down(self):
         self._test_rpc_call('update_device_down')
 
     def test_tunnel_sync(self):
         self._test_rpc_call('tunnel_sync')
+
+    def test_get_ports_by_vnic_type_and_host(self):
+        self._test_rpc_call('get_ports_by_vnic_type_and_host')
 
 
 class AgentPluginReportState(base.BaseTestCase):
@@ -123,8 +134,8 @@ class AgentPluginReportState(base.BaseTestCase):
 
 class AgentRPCMethods(base.BaseTestCase):
 
-    def _test_create_consumers(
-        self, endpoints, method, expected, topics, listen):
+    def _test_create_consumers(self, endpoints, method, expected, topics,
+                               listen):
         with mock.patch.object(n_rpc, 'Connection') as create_connection:
             rpc.create_consumers(
                 endpoints, method, topics, start_listening=listen)
@@ -188,6 +199,7 @@ class TestCacheBackedPluginApi(base.BaseTestCase):
                                         segments=[self._segment])
         self._port = ports.Port(
             id=self._port_id, network_id=self._network_id,
+            device_id='vm_uuid',
             mac_address=netaddr.EUI('fa:16:3e:ec:c7:d9'), admin_state_up=True,
             security_group_ids=set([uuidutils.generate_uuid()]),
             fixed_ips=[], allowed_address_pairs=[],
@@ -195,7 +207,9 @@ class TestCacheBackedPluginApi(base.BaseTestCase):
             bindings=[ports.PortBinding(port_id=self._port_id,
                                         host='host1',
                                         status=constants.ACTIVE,
-                                        profile={})],
+                                        profile={},
+                                        vif_type='vif_type',
+                                        vnic_type='vnic_type')],
             binding_levels=[ports.PortBindingLevel(port_id=self._port_id,
                                                    host='host1',
                                                    level=0,
@@ -301,3 +315,29 @@ class TestCacheBackedPluginApi(base.BaseTestCase):
         self.assertNotIn('port_id', entry)
         self.assertNotIn('network_id', entry)
         self.assertIn(constants.NO_ACTIVE_BINDING, entry)
+
+    @mock.patch('neutron.agent.resource_cache.RemoteResourceCache')
+    def test_initialization_with_default_resources(self, rcache_class):
+        rcache_obj = mock.MagicMock()
+        rcache_class.return_value = rcache_obj
+
+        rpc.CacheBackedPluginApi(lib_topics.PLUGIN)
+
+        rcache_class.assert_called_once_with(
+            rpc.CacheBackedPluginApi.RESOURCE_TYPES)
+        rcache_obj.start_watcher.assert_called_once_with()
+
+    @mock.patch('neutron.agent.resource_cache.RemoteResourceCache')
+    def test_initialization_with_custom_resource(self, rcache_class):
+        CUSTOM = 'test'
+        rcache_obj = mock.MagicMock()
+        rcache_class.return_value = rcache_obj
+
+        class CustomCacheBackedPluginApi(rpc.CacheBackedPluginApi):
+            RESOURCE_TYPES = [resources.PORT, CUSTOM]
+
+        CustomCacheBackedPluginApi(lib_topics.PLUGIN)
+
+        rcache_class.assert_called_once_with(
+            CustomCacheBackedPluginApi.RESOURCE_TYPES)
+        rcache_obj.start_watcher.assert_called_once_with()

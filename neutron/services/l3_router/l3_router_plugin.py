@@ -17,6 +17,7 @@
 from neutron_lib.agent import topics
 from neutron_lib.api.definitions import dvr
 from neutron_lib.api.definitions import extraroute
+from neutron_lib.api.definitions import extraroute_atomic
 from neutron_lib.api.definitions import fip_port_details
 from neutron_lib.api.definitions import floatingip_pools
 from neutron_lib.api.definitions import l3 as l3_apidef
@@ -49,6 +50,7 @@ from neutron.db import l3_gateway_ip_qos
 from neutron.db import l3_hamode_db
 from neutron.db import l3_hascheduler_db
 from neutron.db.models import l3 as l3_models
+from neutron.extensions import _admin_state_down_before_update_lib
 from neutron.quota import resource_registry
 from neutron import service
 from neutron.services.l3_router.service_providers import driver_controller
@@ -94,6 +96,7 @@ class L3RouterPlugin(service_base.ServicePluginBase,
     _supported_extension_aliases = [dvr.ALIAS, l3_apidef.ALIAS,
                                     l3_ext_gw_mode.ALIAS,
                                     extraroute.ALIAS,
+                                    extraroute_atomic.ALIAS,
                                     n_const.L3_AGENT_SCHEDULER_EXT_ALIAS,
                                     l3_ext_ha_mode.ALIAS,
                                     router_availability_zone.ALIAS,
@@ -101,7 +104,8 @@ class L3RouterPlugin(service_base.ServicePluginBase,
                                     fip_port_details.ALIAS,
                                     floatingip_pools.ALIAS,
                                     qos_gateway_ip.ALIAS,
-                                    l3_port_ip_change_not_allowed.ALIAS]
+                                    l3_port_ip_change_not_allowed.ALIAS,
+                                    _admin_state_down_before_update_lib.ALIAS]
 
     __native_pagination_support = True
     __native_sorting_support = True

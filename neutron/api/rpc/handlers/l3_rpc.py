@@ -46,7 +46,8 @@ class L3RpcCallback(object):
     # 1.9 Added get_router_ids
     # 1.10 Added update_all_ha_network_port_statuses
     # 1.11 Added get_host_ha_router_count
-    target = oslo_messaging.Target(version='1.11')
+    # 1.12 Added get_networks
+    target = oslo_messaging.Target(version='1.12')
 
     @property
     def plugin(self):
@@ -74,7 +75,7 @@ class L3RpcCallback(object):
         calling update_device_up.
         """
         if not extensions.is_extension_supported(
-            self.plugin, constants.PORT_BINDING_EXT_ALIAS):
+                self.plugin, constants.PORT_BINDING_EXT_ALIAS):
             return
         device_filter = {
             'device_owner': [constants.DEVICE_OWNER_ROUTER_HA_INTF],
@@ -115,20 +116,27 @@ class L3RpcCallback(object):
         router_ids = kwargs.get('router_ids')
         host = kwargs.get('host')
         context = neutron_context.get_admin_context()
+        LOG.debug('Sync routers for ids %(router_ids)s in %(host)s',
+                  {'router_ids': router_ids,
+                   'host': host})
         routers = self._routers_to_sync(context, router_ids, host)
         if extensions.is_extension_supported(
-            self.plugin, constants.PORT_BINDING_EXT_ALIAS):
+                self.plugin, constants.PORT_BINDING_EXT_ALIAS):
             self._ensure_host_set_on_ports(context, host, routers)
             # refresh the data structure after ports are bound
             routers = self._routers_to_sync(context, router_ids, host)
         pf_plugin = directory.get_plugin(plugin_constants.PORTFORWARDING)
         if pf_plugin:
             pf_plugin.sync_port_forwarding_fip(context, routers)
+        LOG.debug('The sync data for ids %(router_ids)s in %(host)s is: '
+                  '%(routers)s', {'router_ids': router_ids,
+                                  'host': host,
+                                  'routers': routers})
         return routers
 
     def _routers_to_sync(self, context, router_ids, host=None):
         if extensions.is_extension_supported(
-            self.l3plugin, constants.L3_AGENT_SCHEDULER_EXT_ALIAS):
+                self.l3plugin, constants.L3_AGENT_SCHEDULER_EXT_ALIAS):
             routers = (
                 self.l3plugin.list_active_sync_routers_on_active_l3_agent(
                     context, host, router_ids))
@@ -147,7 +155,8 @@ class L3RpcCallback(object):
                 self._ensure_host_set_on_port(context,
                                               gw_port_host,
                                               router.get('gw_port'),
-                                              router['id'])
+                                              router['id'],
+                                              ha_router_port=router.get('ha'))
                 for p in router.get(constants.SNAT_ROUTER_INTF_KEY, []):
                     self._ensure_host_set_on_port(
                         context, gw_port_host, p, router['id'],
@@ -187,6 +196,10 @@ class L3RpcCallback(object):
                 # All ports, including ports created for SNAT'ing for
                 # DVR are handled here
                 try:
+                    LOG.debug("Updating router %(router)s port %(port)s "
+                              "binding host %(host)s",
+                              {"router": router_id, "port": port['id'],
+                               "host": host})
                     self.plugin.update_port(
                         context,
                         port['id'],
@@ -213,6 +226,10 @@ class L3RpcCallback(object):
                     # port binding will be corrected when an active is
                     # elected.
                     try:
+                        LOG.debug("Updating router %(router)s port %(port)s "
+                                  "binding host %(host)s",
+                                  {"router": router_id, "port": port['id'],
+                                   "host": host})
                         self.plugin.update_port(
                             context,
                             port['id'],
@@ -254,7 +271,7 @@ class L3RpcCallback(object):
     @db_api.retry_db_errors
     def update_floatingip_statuses(self, context, router_id, fip_statuses):
         """Update operational status for a floating IP."""
-        with context.session.begin(subtransactions=True):
+        with db_api.CONTEXT_WRITER.using(context):
             for (floatingip_id, status) in fip_statuses.items():
                 LOG.debug("New status for floating IP %(floatingip_id)s: "
                           "%(status)s", {'floatingip_id': floatingip_id,
@@ -285,8 +302,8 @@ class L3RpcCallback(object):
         """DVR: RPC called by dvr-agent to get all ports for subnet."""
         subnet_id = kwargs.get('subnet_id')
         LOG.debug("DVR: subnet_id: %s", subnet_id)
-        filters = {'fixed_ips': {'subnet_id': [subnet_id]}}
-        return self.plugin.get_ports(context, filters=filters)
+        return self.l3plugin.get_ports_under_dvr_connected_subnet(
+            context, subnet_id)
 
     @db_api.retry_db_errors
     def get_agent_gateway_port(self, context, **kwargs):
@@ -339,3 +356,11 @@ class L3RpcCallback(object):
         admin_ctx = neutron_context.get_admin_context()
         self.l3plugin.delete_floatingip_agent_gateway_port(
             admin_ctx, host, network_id)
+
+    def get_networks(self, context, filters=None, fields=None):
+        """Retrieve and return a list of networks."""
+        # NOTE(adrianc): This RPC is being used by out of tree interface
+        # drivers, MultiInterfaceDriver and IPoIBInterfaceDriver, located in
+        # networking-mlnx.
+        return self.plugin.get_networks(
+            context, filters=filters, fields=fields)

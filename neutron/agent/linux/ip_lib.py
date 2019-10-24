@@ -23,7 +23,7 @@ from neutron_lib import constants
 from neutron_lib import exceptions
 from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_utils import excutils
+from pyroute2.netlink import exceptions as netlink_exceptions
 from pyroute2.netlink import rtnl
 from pyroute2.netlink.rtnl import ifaddrmsg
 from pyroute2.netlink.rtnl import ifinfmsg
@@ -48,6 +48,8 @@ IP_RULE_TABLES = {'default': 253,
                   'main': 254,
                   'local': 255}
 
+IP_RULE_TABLES_NAMES = {v: k for k, v in IP_RULE_TABLES.items()}
+
 # Rule indexes: pyroute2.netlink.rtnl
 # Rule names: https://www.systutorials.com/docs/linux/man/8-ip-rule/
 # NOTE(ralonsoh): 'masquerade' type is printed as 'nat' in 'ip rule' command
@@ -64,6 +66,9 @@ IP_ADDRESS_SCOPE = {rtnl.rtscopes['RT_SCOPE_UNIVERSE']: 'global',
                     rtnl.rtscopes['RT_SCOPE_HOST']: 'host'}
 
 IP_ADDRESS_SCOPE_NAME = {v: k for k, v in IP_ADDRESS_SCOPE.items()}
+
+IP_ADDRESS_EVENTS = {'RTM_NEWADDR': 'added',
+                     'RTM_DELADDR': 'removed'}
 
 SYS_NET_PATH = '/sys/class/net'
 DEFAULT_GW_PATTERN = re.compile(r"via (\S+)")
@@ -497,6 +502,10 @@ class IpLinkCommand(IpDeviceCommandBase):
         return self.attributes.get('alias')
 
     @property
+    def link_kind(self):
+        return self.attributes.get('link_kind')
+
+    @property
     def attributes(self):
         return privileged.get_link_attributes(self.name,
                                               self._parent.namespace)
@@ -582,144 +591,53 @@ class IpRouteCommand(IpDeviceCommandBase):
         super(IpRouteCommand, self).__init__(parent)
         self._table = table
 
-    def table(self, table):
-        """Return an instance of IpRouteCommand which works on given table"""
-        return IpRouteCommand(self._parent, table)
+    def add_gateway(self, gateway, metric=None, table=None, scope='global'):
+        self.add_route(None, via=gateway, table=table, metric=metric,
+                       scope=scope)
 
-    def _table_args(self, override=None):
-        if override:
-            return ['table', override]
-        return ['table', self._table] if self._table else []
+    def delete_gateway(self, gateway, table=None, scope=None):
+        self.delete_route(None, device=self.name, via=gateway, table=table,
+                          scope=scope)
 
-    def _dev_args(self):
-        return ['dev', self.name] if self.name else []
-
-    #添加默认路由
-    def add_gateway(self, gateway, metric=None, table=None):
-        ip_version = common_utils.get_ip_version(gateway)
-        args = ['replace', 'default', 'via', gateway]
-        if metric:
-            args += ['metric', metric]
-        args += self._dev_args()
-        args += self._table_args(table)
-        self._as_root([ip_version], tuple(args))
-
-    def _run_as_root_detect_device_not_found(self, options, args):
-        try:
-            return self._as_root(options, tuple(args))
-        except RuntimeError as rte:
-            with excutils.save_and_reraise_exception() as ctx:
-                if "Cannot find device" in str(rte):
-                    ctx.reraise = False
-                    raise exceptions.DeviceNotFoundError(device_name=self.name)
-
-    def delete_gateway(self, gateway, table=None):
-        ip_version = common_utils.get_ip_version(gateway)
-        args = ['del', 'default',
-                'via', gateway]
-        args += self._dev_args()
-        args += self._table_args(table)
-        self._run_as_root_detect_device_not_found([ip_version], args)
-
-    def _parse_routes(self, ip_version, output, **kwargs):
-        for line in output.splitlines():
-            parts = line.split()
-
-            # Format of line is: "<cidr>|default [<key> <value>] ..."
-            route = {k: v for k, v in zip(parts[1::2], parts[2::2])}
-            route['cidr'] = parts[0]
-            # Avoids having to explicitly pass around the IP version
-            if route['cidr'] == 'default':
-                route['cidr'] = constants.IP_ANY[ip_version]
-
-            # ip route drops things like scope and dev from the output if it
-            # was specified as a filter.  This allows us to add them back.
-            if self.name:
-                route['dev'] = self.name
-            if self._table:
-                route['table'] = self._table
-            # Callers add any filters they use as kwargs
-            route.update(kwargs)
-
-            yield route
-
-    def list_routes(self, ip_version, **kwargs):
-        args = ['list']
-        args += self._dev_args()
-        args += self._table_args()
-        for k, v in kwargs.items():
-            args += [k, v]
-
-        output = self._run([ip_version], tuple(args))
-        return [r for r in self._parse_routes(ip_version, output, **kwargs)]
+    def list_routes(self, ip_version, scope=None, via=None, table=None,
+                    **kwargs):
+        table = table or self._table
+        return list_ip_routes(self._parent.namespace, ip_version, scope=scope,
+                              via=via, table=table, device=self.name, **kwargs)
 
     def list_onlink_routes(self, ip_version):
         routes = self.list_routes(ip_version, scope='link')
-        return [r for r in routes if 'src' not in r]
+        return [r for r in routes if not r['source_prefix']]
 
     def add_onlink_route(self, cidr):
         self.add_route(cidr, scope='link')
 
     def delete_onlink_route(self, cidr):
-        self.delete_route(cidr, scope='link')
+        self.delete_route(cidr, device=self.name, scope='link')
 
-    def get_gateway(self, scope=None, filters=None, ip_version=None):
-        options = [ip_version] if ip_version else []
-
-        args = ['list']
-        args += self._dev_args()
-        args += self._table_args()
-        if filters:
-            args += filters
-
-        retval = None
-
-        if scope:
-            args += ['scope', scope]
-
-        route_list_lines = self._run(options, tuple(args)).split('\n')
-        default_route_line = next((x.strip() for x in
-                                   route_list_lines if
-                                   x.strip().startswith('default')), None)
-        if default_route_line:
-            retval = dict()
-            gateway = DEFAULT_GW_PATTERN.search(default_route_line)
-            if gateway:
-                retval.update(gateway=gateway.group(1))
-            metric = METRIC_PATTERN.search(default_route_line)
-            if metric:
-                retval.update(metric=int(metric.group(1)))
-
-        return retval
+    def get_gateway(self, scope=None, table=None,
+                    ip_version=constants.IP_VERSION_4):
+        routes = self.list_routes(ip_version, scope=scope, table=table)
+        for route in routes:
+            if route['via'] and route['cidr'] in constants.IP_ANY.values():
+                return route
 
     def flush(self, ip_version, table=None, **kwargs):
-        args = ['flush']
-        args += self._table_args(table)
-        for k, v in kwargs.items():
-            args += [k, v]
-        self._as_root([ip_version], tuple(args))
+        for route in self.list_routes(ip_version, table=table):
+            self.delete_route(route['cidr'], device=route['device'],
+                              via=route['via'], table=table, **kwargs)
 
-    def add_route(self, cidr, via=None, table=None, **kwargs):
-        ip_version = common_utils.get_ip_version(cidr)
-        args = ['replace', cidr]
-        if via:
-            args += ['via', via]
-        args += self._dev_args()
-        args += self._table_args(table)
-        for k, v in kwargs.items():
-            args += [k, v]
-        self._run_as_root_detect_device_not_found([ip_version], args)
+    def add_route(self, cidr, via=None, table=None, metric=None, scope=None,
+                  **kwargs):
+        table = table or self._table
+        add_ip_route(self._parent.namespace, cidr, device=self.name, via=via,
+                     table=table, metric=metric, scope=scope, **kwargs)
 
-    def delete_route(self, cidr, via=None, table=None, **kwargs):
-        ip_version = common_utils.get_ip_version(cidr)
-        args = ['del', cidr]
-        if via:
-            args += ['via', via]
-        args += self._dev_args()
-        args += self._table_args(table)
-        for k, v in kwargs.items():
-            args += [k, v]
-        self._run_as_root_detect_device_not_found([ip_version], args)
+    def delete_route(self, cidr, device=None, via=None, table=None, scope=None,
+                     **kwargs):
+        table = table or self._table
+        delete_ip_route(self._parent.namespace, cidr, device=device, via=via,
+                        table=table, scope=scope, **kwargs)
 
 
 class IPRoute(SubProcessBase):
@@ -1014,6 +932,15 @@ def network_namespace_exists(namespace, try_is_ready=False, **kwargs):
     except (RuntimeError, OSError):
         pass
     return False
+
+
+def list_namespace_pids(namespace):
+    """List namespace process PIDs
+
+    :param namespace: (string) the name of the namespace
+    :return: (tuple)
+    """
+    return privileged.list_ns_pids(namespace)
 
 
 def ensure_device_is_ready(device_name, namespace=None):
@@ -1377,6 +1304,26 @@ def get_attr(pyroute2_obj, attr_name):
         return attr[1]
 
 
+def _parse_ip_address(pyroute2_address, device_name):
+    ip = get_attr(pyroute2_address, 'IFA_ADDRESS')
+    ip_length = pyroute2_address['prefixlen']
+    event = IP_ADDRESS_EVENTS.get(pyroute2_address.get('event'))
+    cidr = common_utils.ip_to_cidr(ip, prefix=ip_length)
+    flags = get_attr(pyroute2_address, 'IFA_FLAGS')
+    dynamic = not bool(flags & ifaddrmsg.IFA_F_PERMANENT)
+    tentative = bool(flags & ifaddrmsg.IFA_F_TENTATIVE)
+    dadfailed = bool(flags & ifaddrmsg.IFA_F_DADFAILED)
+    scope = IP_ADDRESS_SCOPE[pyroute2_address['scope']]
+    return {'name': device_name,
+            'cidr': cidr,
+            'scope': scope,
+            'broadcast': get_attr(pyroute2_address, 'IFA_BROADCAST'),
+            'dynamic': dynamic,
+            'tentative': tentative,
+            'dadfailed': dadfailed,
+            'event': event}
+
+
 def _parse_link_device(namespace, device, **kwargs):
     """Parse pytoute2 link device information
 
@@ -1390,21 +1337,7 @@ def _parse_link_device(namespace, device, **kwargs):
                                                index=device['index'],
                                                **kwargs)
     for ip_address in ip_addresses:
-        ip = get_attr(ip_address, 'IFA_ADDRESS')
-        ip_length = ip_address['prefixlen']
-        cidr = common_utils.ip_to_cidr(ip, prefix=ip_length)
-        flags = get_attr(ip_address, 'IFA_FLAGS')
-        dynamic = not bool(flags & ifaddrmsg.IFA_F_PERMANENT)
-        tentative = bool(flags & ifaddrmsg.IFA_F_TENTATIVE)
-        dadfailed = bool(flags & ifaddrmsg.IFA_F_DADFAILED)
-        scope = IP_ADDRESS_SCOPE[ip_address['scope']]
-        retval.append({'name': name,
-                       'cidr': cidr,
-                       'scope': scope,
-                       'broadcast': get_attr(ip_address, 'IFA_BROADCAST'),
-                       'dynamic': dynamic,
-                       'tentative': tentative,
-                       'dadfailed': dadfailed})
+        retval.append(_parse_ip_address(ip_address, name))
     return retval
 
 
@@ -1458,3 +1391,136 @@ def get_devices_info(namespace, **kwargs):
                 retval[device['vxlan_link_index']]['name'])
 
     return list(retval.values())
+
+
+def ip_monitor(namespace, queue, event_stop, event_started):
+    """Monitor IP address changes
+
+    If namespace is not None, this function must be executed as root user, but
+    cannot use privsep because is a blocking function and can exhaust the
+    number of working threads.
+    """
+    def get_device_name(index):
+        try:
+            with privileged.get_iproute(namespace) as ip:
+                device = ip.link('get', index=index)
+                if device:
+                    attrs = device[0].get('attrs', [])
+                    for attr in (attr for attr in attrs
+                                 if attr[0] == 'IFLA_IFNAME'):
+                        return attr[1]
+        except netlink_exceptions.NetlinkError as e:
+            if e.code == errno.ENODEV:
+                return
+            raise
+
+    def read_ip_updates(_queue):
+        """Read Pyroute2.IPRoute input socket
+
+        The aim of this function is to open and bind an IPRoute socket only for
+        reading the netlink changes; no other operations are done with this
+        opened socket. This function is executed in a separate thread,
+        dedicated only to this task.
+        """
+        with privileged.get_iproute(namespace) as ip:
+            ip.bind()
+            while True:
+                eventlet.sleep(0)
+                ip_addresses = ip.get()
+                for ip_address in ip_addresses:
+                    _queue.put(ip_address)
+
+    _queue = eventlet.Queue()
+    try:
+        cache_devices = {}
+        with privileged.get_iproute(namespace) as ip:
+            for device in ip.get_links():
+                cache_devices[device['index']] = get_attr(device,
+                                                          'IFLA_IFNAME')
+        pool = eventlet.GreenPool(1)
+        ip_updates_thread = pool.spawn(read_ip_updates, _queue)
+        event_started.send()
+        while not event_stop.ready():
+            eventlet.sleep(0)
+            try:
+                ip_address = _queue.get(timeout=2)
+            except eventlet.queue.Empty:
+                continue
+            if 'index' in ip_address and 'prefixlen' in ip_address:
+                index = ip_address['index']
+                name = (get_device_name(index) or
+                        cache_devices.get(index))
+                if not name:
+                    continue
+
+                cache_devices[index] = name
+                queue.put(_parse_ip_address(ip_address, name))
+
+        ip_updates_thread.kill()
+
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            raise privileged.NetworkNamespaceNotFound(netns_name=namespace)
+        raise
+
+
+def add_ip_route(namespace, cidr, device=None, via=None, table=None,
+                 metric=None, scope=None, **kwargs):
+    """Add an IP route"""
+    if table:
+        table = IP_RULE_TABLES.get(table, table)
+    ip_version = common_utils.get_ip_version(cidr or via)
+    privileged.add_ip_route(namespace, cidr, ip_version,
+                            device=device, via=via, table=table,
+                            metric=metric, scope=scope, **kwargs)
+
+
+def list_ip_routes(namespace, ip_version, scope=None, via=None, table=None,
+                   device=None, **kwargs):
+    """List IP routes"""
+    def get_device(index, devices):
+        for device in (d for d in devices if d['index'] == index):
+            return get_attr(device, 'IFLA_IFNAME')
+
+    table = table if table else 'main'
+    table = IP_RULE_TABLES.get(table, table)
+    routes = privileged.list_ip_routes(namespace, ip_version, device=device,
+                                       table=table, **kwargs)
+    devices = privileged.get_link_devices(namespace)
+    ret = []
+    for route in routes:
+        cidr = get_attr(route, 'RTA_DST')
+        if cidr:
+            cidr = '%s/%s' % (cidr, route['dst_len'])
+        else:
+            cidr = constants.IP_ANY[ip_version]
+        table = int(get_attr(route, 'RTA_TABLE'))
+        value = {
+            'table': IP_RULE_TABLES_NAMES.get(table, table),
+            'source_prefix': get_attr(route, 'RTA_PREFSRC'),
+            'cidr': cidr,
+            'scope': IP_ADDRESS_SCOPE[int(route['scope'])],
+            'device': get_device(int(get_attr(route, 'RTA_OIF')), devices),
+            'via': get_attr(route, 'RTA_GATEWAY'),
+            'priority': get_attr(route, 'RTA_PRIORITY'),
+        }
+
+        ret.append(value)
+
+    if scope:
+        ret = [route for route in ret if route['scope'] == scope]
+    if via:
+        ret = [route for route in ret if route['via'] == via]
+
+    return ret
+
+
+def delete_ip_route(namespace, cidr, device=None, via=None, table=None,
+                    scope=None, **kwargs):
+    """Delete an IP route"""
+    if table:
+        table = IP_RULE_TABLES.get(table, table)
+    ip_version = common_utils.get_ip_version(cidr or via)
+    privileged.delete_ip_route(namespace, cidr, ip_version,
+                               device=device, via=via, table=table,
+                               scope=scope, **kwargs)

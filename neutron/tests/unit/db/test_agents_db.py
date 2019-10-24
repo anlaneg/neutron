@@ -20,6 +20,7 @@ import datetime
 import mock
 from neutron_lib import constants
 from neutron_lib import context
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as n_exc
 from oslo_config import cfg
 from oslo_db import exception as exc
@@ -125,15 +126,19 @@ class TestAgentsDbMixin(TestAgentsDbBase):
             self.assertEqual(value, result[field], field)
 
     def test_create_or_update_agent_new_entry(self):
-        self.plugin.create_or_update_agent(self.context, self.agent_status)
+        self.plugin.create_or_update_agent(self.context, self.agent_status,
+                                           timeutils.utcnow())
 
         agent = self.plugin.get_agents(self.context)[0]
         self._assert_ref_fields_are_equal(self.agent_status, agent)
 
     def test_create_or_update_agent_existing_entry(self):
-        self.plugin.create_or_update_agent(self.context, self.agent_status)
-        self.plugin.create_or_update_agent(self.context, self.agent_status)
-        self.plugin.create_or_update_agent(self.context, self.agent_status)
+        self.plugin.create_or_update_agent(self.context, self.agent_status,
+                                           timeutils.utcnow())
+        self.plugin.create_or_update_agent(self.context, self.agent_status,
+                                           timeutils.utcnow())
+        self.plugin.create_or_update_agent(self.context, self.agent_status,
+                                           timeutils.utcnow())
 
         agents = self.plugin.get_agents(self.context)
         self.assertEqual(len(agents), 1)
@@ -146,11 +151,13 @@ class TestAgentsDbMixin(TestAgentsDbBase):
         status['configurations'] = {'log_agent_heartbeats': True}
 
         with mock.patch.object(agents_db.LOG, 'info') as info:
-            self.plugin.create_or_update_agent(self.context, status)
+            self.plugin.create_or_update_agent(self.context, status,
+                                               timeutils.utcnow())
             self.assertTrue(info.called)
             status['configurations'] = {'log_agent_heartbeats': False}
             info.reset_mock()
-            self.plugin.create_or_update_agent(self.context, status)
+            self.plugin.create_or_update_agent(self.context, status,
+                                               timeutils.utcnow())
             self.assertFalse(info.called)
 
     def test_create_or_update_agent_concurrent_insert(self):
@@ -171,14 +178,16 @@ class TestAgentsDbMixin(TestAgentsDbBase):
 
         with mock.patch('neutron.objects.db.api.create_object') as add_mock:
             add_mock.side_effect = create_obj_side_effect
-            self.plugin.create_or_update_agent(self.context, self.agent_status)
+            self.plugin.create_or_update_agent(self.context, self.agent_status,
+                                               'any_timestamp')
 
             self.assertEqual(add_mock.call_count, 2,
                              "Agent entry creation hasn't been retried")
 
     def test_create_or_update_agent_disable_new_agents(self):
         cfg.CONF.set_override('enable_new_agents', False)
-        self.plugin.create_or_update_agent(self.context, self.agent_status)
+        self.plugin.create_or_update_agent(self.context, self.agent_status,
+                                           'any_timestamp')
         agent = self.plugin.get_agents(self.context)[0]
         self.assertFalse(agent['admin_state_up'])
 
@@ -365,7 +374,7 @@ class TestAgentExtRpcCallback(TestAgentsDbBase):
                 mock.ANY, mock.ANY, mock.ANY, TEST_RESOURCE_VERSIONS)
 
     def _take_down_agent(self):
-        with self.context.session.begin(subtransactions=True):
+        with db_api.CONTEXT_WRITER.using(self.context):
             pager = base.Pager(limit=1)
             agent_objs = agent_obj.Agent.get_objects(self.context,
                                                      _pager=pager)

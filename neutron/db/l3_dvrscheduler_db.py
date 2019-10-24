@@ -22,11 +22,13 @@ from neutron_lib import constants as n_const
 from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
+from oslo_config import cfg
+from oslo_log import helpers as log_helpers
 from oslo_log import log as logging
 from sqlalchemy import or_
 
 from neutron.common import utils as n_utils
-
+from neutron.conf.db import l3_dvr_db as l3_dvr_db_conf
 from neutron.db import agentschedulers_db
 from neutron.db import l3_agentschedulers_db as l3agent_sch_db
 from neutron.db import l3_dvr_db
@@ -37,6 +39,7 @@ from neutron.plugins.ml2 import db as ml2_db
 from neutron.plugins.ml2 import models as ml2_models
 
 LOG = logging.getLogger(__name__)
+l3_dvr_db_conf.register_db_l3_dvr_opts()
 
 
 class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
@@ -83,7 +86,8 @@ class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
     """
 
     def dvr_handle_new_service_port(self, context, port,
-                                    dest_host=None, unbound_migrate=False):
+                                    dest_host=None, unbound_migrate=False,
+                                    router_id=None):
         """Handle new dvr service port creation.
 
         When a new dvr service port is created, this function will
@@ -100,15 +104,20 @@ class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
         if not l3_agent_on_host:
             return
 
-        if dest_host:
+        if dest_host and router_id is not None:
             # Make sure we create the floatingip agent gateway port
             # for the destination node if fip is associated with this
             # fixed port
             l3plugin = directory.get_plugin(plugin_constants.L3)
-            (
-                l3plugin.
-                check_for_fip_and_create_agent_gw_port_on_host_if_not_exists(
-                    context, port, dest_host))
+            router = l3plugin._get_router(context, router_id)
+            if l3_dvr_db.is_distributed_router(router):
+                (l3plugin.
+                 check_for_fip_and_create_agent_gw_port_on_host_if_not_exists(
+                     context, port, dest_host))
+            else:
+                LOG.debug("Port-in-Migration: Floating IP has a non-"
+                          "distributed router %(router_id)s",
+                          {'router_id': router_id})
 
         subnet_ids = [ip['subnet_id'] for ip in port['fixed_ips']]
         router_ids = self.get_dvr_routers_by_subnet_ids(context, subnet_ids)
@@ -131,23 +140,18 @@ class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
                 if agent.host == port_host:
                     agent_port_host_match = True
         if not agent_port_host_match:
-            hosts = set([port_host])
+            connected_router_ids = set(router_ids)
             for router_id in router_ids:
-                hosts |= set(self.get_hosts_to_notify(context, router_id))
+                connected_router_ids.update(
+                    self._get_other_dvr_router_ids_connected_router(
+                        context, router_id))
 
-            for host in hosts:
-                updated_routers = set()
-                for router_id in router_ids:
-                    LOG.debug('DVR: Handle new service port, host %(host)s, '
-                              'router ids %(router_id)s',
-                              {'host': host, 'router_id': router_id})
-                    if self._check_for_rtr_serviceable_ports(
-                            context.elevated(), router_id, host):
-                        updated_routers.add(router_id)
-
-                if updated_routers:
-                    self.l3_rpc_notifier.routers_updated_on_host(
-                        context, updated_routers, host)
+            LOG.debug('DVR: Handle new service port, host %(host)s, '
+                      'router ids %(router_ids)s',
+                      {'host': port_host,
+                       'router_ids': connected_router_ids})
+            self.l3_rpc_notifier.routers_updated_on_host(
+                context, connected_router_ids, port_host)
 
     def get_dvr_snat_agent_list(self, context):
         agent_filters = {'agent_modes': [n_const.L3_AGENT_MODE_DVR_SNAT]}
@@ -339,6 +343,7 @@ class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
 
     def _get_dvr_hosts_for_subnets(self, context, subnet_ids):
         """Get a list of hosts with DVR servicable ports on subnet_ids."""
+        host_dvr_dhcp = cfg.CONF.host_dvr_for_dhcp
         Binding = ml2_models.PortBinding
         Port = models_v2.Port
         IPAllocation = models_v2.IPAllocation
@@ -350,12 +355,13 @@ class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
         owner_filter = or_(
             Port.device_owner.startswith(n_const.DEVICE_OWNER_COMPUTE_PREFIX),
             Port.device_owner.in_(
-                n_utils.get_other_dvr_serviced_device_owners()))
+                n_utils.get_other_dvr_serviced_device_owners(host_dvr_dhcp)))
         query = query.filter(owner_filter)
-        hosts = [item[0] for item in query]
+        hosts = [item[0] for item in query if item[0] != '']
         return hosts
 
     def _get_dvr_subnet_ids_on_host_query(self, context, host):
+        host_dvr_dhcp = cfg.CONF.host_dvr_for_dhcp
         query = context.session.query(
             models_v2.IPAllocation.subnet_id).distinct()
         query = query.join(models_v2.IPAllocation.port)
@@ -365,7 +371,7 @@ class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
             models_v2.Port.device_owner.startswith(
                 n_const.DEVICE_OWNER_COMPUTE_PREFIX),
             models_v2.Port.device_owner.in_(
-                n_utils.get_other_dvr_serviced_device_owners()))
+                n_utils.get_other_dvr_serviced_device_owners(host_dvr_dhcp)))
         query = query.filter(owner_filter)
         return query
 
@@ -398,10 +404,16 @@ class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
         query = query.filter(RouterPort.router_id != router_id)
         return [item[0] for item in query]
 
-    def _get_router_ids_for_agent(self, context, agent_db, router_ids):
+    def _get_router_ids_for_agent(self, context, agent_db, router_ids,
+                                  with_dvr=True):
         result_set = set(super(L3_DVRsch_db_mixin,
                                self)._get_router_ids_for_agent(
-            context, agent_db, router_ids))
+            context, agent_db, router_ids, with_dvr))
+        if not with_dvr:
+            return result_set
+        LOG.debug("Routers %(router_ids)s bound to L3 agent in host %(host)s",
+                  {'router_ids': result_set,
+                   'host': agent_db['host']})
         router_ids = set(router_ids or [])
         if router_ids and result_set == router_ids:
             # no need for extra dvr checks if requested routers are
@@ -428,13 +440,21 @@ class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
                                     list(subnet_ids))):
                         result_set.add(router_id)
 
+            LOG.debug("Routers %(router_ids)s are scheduled or have "
+                      "serviceable ports in host %(host)s",
+                      {'router_ids': result_set,
+                       'host': agent_db['host']})
             for dvr_router in dvr_routers:
                 result_set |= set(
                     self._get_other_dvr_router_ids_connected_router(
                         context, dvr_router))
 
+        LOG.debug("Router IDs %(router_ids)s for agent in host %(host)s",
+                  {'router_ids': result_set,
+                   'host': agent_db['host']})
         return list(result_set)
 
+    @log_helpers.log_method_call
     def _check_dvr_serviceable_ports_on_host(self, context, host, subnet_ids):
         """Check for existence of dvr serviceable ports on host
 
@@ -460,16 +480,19 @@ class L3_DVRsch_db_mixin(l3agent_sch_db.L3AgentSchedulerDbMixin):
         IPAllocation = models_v2.IPAllocation
         Port = models_v2.Port
 
+        host_dvr_dhcp = cfg.CONF.host_dvr_for_dhcp
         query = context.session.query(Binding)
         query = query.join(Binding.port)
         query = query.join(Port.fixed_ips)
         query = query.filter(
             IPAllocation.subnet_id.in_(subnet_ids))
+        query = query.filter(
+            ml2_models.PortBinding.status == n_const.ACTIVE)
         device_filter = or_(
             models_v2.Port.device_owner.startswith(
                 n_const.DEVICE_OWNER_COMPUTE_PREFIX),
             models_v2.Port.device_owner.in_(
-                n_utils.get_other_dvr_serviced_device_owners()))
+                n_utils.get_other_dvr_serviced_device_owners(host_dvr_dhcp)))
         query = query.filter(device_filter)
         host_filter = or_(
             ml2_models.PortBinding.host == host,
@@ -542,10 +565,25 @@ def _notify_l3_agent_port_update(resource, event, trigger, **kwargs):
     if new_port and original_port:
         l3plugin = directory.get_plugin(plugin_constants.L3)
         context = kwargs['context']
+        is_new_port_binding_changed = (
+            new_port[portbindings.HOST_ID] and
+            new_port[portbindings.HOST_ID] !=
+            original_port[portbindings.HOST_ID])
         is_bound_port_moved = (
             original_port[portbindings.HOST_ID] and
             original_port[portbindings.HOST_ID] !=
             new_port[portbindings.HOST_ID])
+        fip_router_id = None
+        dest_host = None
+        new_port_profile = new_port.get(portbindings.PROFILE)
+        if new_port_profile:
+            dest_host = new_port_profile.get('migrating_to')
+        if is_new_port_binding_changed or is_bound_port_moved or dest_host:
+            fips = l3plugin._get_floatingips_by_port_id(
+                    context, port_id=original_port['id'])
+            fip = fips[0] if fips else None
+            if fip:
+                fip_router_id = fip['router_id']
         if is_bound_port_moved:
             removed_routers = l3plugin.get_dvr_routers_to_remove(
                 context,
@@ -560,38 +598,23 @@ def _notify_l3_agent_port_update(resource, event, trigger, **kwargs):
                 }
                 _notify_port_delete(
                     event, resource, trigger, **removed_router_args)
-            fips = l3plugin._get_floatingips_by_port_id(
-                context, port_id=original_port['id'])
-            fip = fips[0] if fips else None
 
             def _should_notify_on_fip_update():
-                if not fip:
+                if not fip_router_id:
                     return False
                 for info in removed_routers:
-                    if info['router_id'] == fip['router_id']:
+                    if info['router_id'] == fip_router_id:
                         return False
                 try:
-                    router = l3plugin._get_router(context, fip['router_id'])
+                    router = l3plugin._get_router(context, fip_router_id)
                 except l3_exc.RouterNotFound:
                     return False
                 return l3_dvr_db.is_distributed_router(router)
 
             if _should_notify_on_fip_update():
                 l3plugin.l3_rpc_notifier.routers_updated_on_host(
-                    context, [fip['router_id']],
+                    context, [fip_router_id],
                     original_port[portbindings.HOST_ID])
-        is_new_port_binding_changed = (
-            new_port[portbindings.HOST_ID] and
-            (original_port[portbindings.HOST_ID] !=
-                new_port[portbindings.HOST_ID]))
-        dest_host = None
-        new_port_profile = new_port.get(portbindings.PROFILE)
-        if new_port_profile:
-            dest_host = new_port_profile.get('migrating_to')
-            # This check is required to prevent an arp update
-            # of the allowed_address_pair port.
-            if new_port_profile.get('original_owner'):
-                return
         # If dest_host is set, then the port profile has changed
         # and this port is in migration. The call below will
         # pre-create the router on the new host
@@ -603,8 +626,10 @@ def _notify_l3_agent_port_update(resource, event, trigger, **kwargs):
                 l3plugin.dvr_handle_new_service_port(context, new_port,
                                                      unbound_migrate=True)
             else:
-                l3plugin.dvr_handle_new_service_port(context, new_port,
-                                                     dest_host=dest_host)
+                l3plugin.dvr_handle_new_service_port(
+                    context, new_port,
+                    dest_host=dest_host,
+                    router_id=fip_router_id)
             l3plugin.update_arp_entry_for_dvr_service_port(
                 context, new_port)
             return

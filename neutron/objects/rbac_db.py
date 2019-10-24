@@ -89,35 +89,6 @@ class RbacNeutronDbObjectMixin(rbac_db_mixin.RbacPluginMixin,
                                           context.tenant_id))
 
     @classmethod
-    def get_object(cls, context, **kwargs):
-        # We want to get the policy regardless of its tenant id. We'll make
-        # sure the tenant has permission to access the policy later on.
-        admin_context = context.elevated()
-        with cls.db_context_reader(admin_context):
-            obj = super(RbacNeutronDbObjectMixin,
-                        cls).get_object(admin_context, **kwargs)
-            if (not obj or not cls.is_accessible(context, obj)):
-                return
-            return obj
-
-    @classmethod
-    def get_objects(cls, context, _pager=None, validate_filters=True,
-                    **kwargs):
-        # We want to get the policy regardless of its tenant id. We'll make
-        # sure the tenant has permission to access the policy later on.
-        admin_context = context.elevated()
-        with cls.db_context_reader(admin_context):
-            objs = super(RbacNeutronDbObjectMixin,
-                         cls).get_objects(admin_context, _pager,
-                                          validate_filters, **kwargs)
-            result = []
-            for obj in objs:
-                if not cls.is_accessible(context, obj):
-                    continue
-                result.append(obj)
-            return result
-
-    @classmethod
     def _get_db_obj_rbac_entries(cls, context, rbac_obj_id, rbac_action):
         rbac_db_model = cls.rbac_db_cls.db_model
         return db_utils.model_query(context, rbac_db_model).filter(
@@ -165,12 +136,15 @@ class RbacNeutronDbObjectMixin(rbac_db_mixin.RbacPluginMixin,
             raise_policy_in_use()
 
     @classmethod
-    def validate_rbac_policy_delete(cls, resource, event, trigger, context,
-                                    object_type, policy, **kwargs):
+    def validate_rbac_policy_delete(cls, resource, event, trigger,
+                                    payload=None):
         """Callback to handle RBAC_POLICY, BEFORE_DELETE callback.
 
         :raises: RbacPolicyInUse -- in case the policy is in use.
         """
+        context = payload.context
+        policy = payload.latest_state
+
         if policy['action'] != models.ACCESS_SHARED:
             return
         target_tenant = policy['target_tenant']
@@ -183,29 +157,36 @@ class RbacNeutronDbObjectMixin(rbac_db_mixin.RbacPluginMixin,
                                          target_tenant=target_tenant)
 
     @classmethod
-    def validate_rbac_policy_update(cls, resource, event, trigger, context,
-                                    object_type, policy, **kwargs):
+    def validate_rbac_policy_update(cls, resource, event, trigger,
+                                    payload=None):
         """Callback to handle RBAC_POLICY, BEFORE_UPDATE callback.
 
         :raises: RbacPolicyInUse -- in case the update is forbidden.
         """
+        policy = payload.latest_state
+
         prev_tenant = policy['target_tenant']
-        new_tenant = kwargs['policy_update']['target_tenant']
+        new_tenant = payload.request_body['target_tenant']
         if prev_tenant == new_tenant:
             return
         if new_tenant != '*':
             return cls.validate_rbac_policy_delete(
-                resource, event, trigger, context, object_type, policy)
+                resource, event, trigger, payload=payload)
 
     @classmethod
-    def validate_rbac_policy_change(cls, resource, event, trigger, context,
-                                    object_type, policy, **kwargs):
-        """Callback to validate RBAC_POLICY changes.
+    def validate_rbac_policy_change(cls, resource, event, trigger,
+                                    payload=None):
+        """Callback to validate  changes.
 
         This is the dispatching function for create, update and delete
         callbacks. On creation and update, verify that the creator is an admin
         or owns the resource being shared.
         """
+        object_type = payload.metadata.get('object_type')
+        context = payload.context
+        policy = (payload.request_body if event == events.BEFORE_CREATE
+                  else payload.latest_state)
+
         # TODO(hdaniel): As this code was shamelessly stolen from
         # NeutronDbPluginV2.validate_network_rbac_policy_change(), those pieces
         # should be synced and contain the same bugs, until Network RBAC logic
@@ -223,8 +204,8 @@ class RbacNeutronDbObjectMixin(rbac_db_mixin.RbacPluginMixin,
         callback_map = {events.BEFORE_UPDATE: cls.validate_rbac_policy_update,
                         events.BEFORE_DELETE: cls.validate_rbac_policy_delete}
         if event in callback_map:
-            return callback_map[event](resource, event, trigger, context,
-                                       object_type, policy, **kwargs)
+            return callback_map[event](resource, event, trigger,
+                                       payload=payload)
 
     def attach_rbac(self, obj_id, project_id, target_tenant='*'):
         obj_type = self.rbac_db_cls.db_model.object_type

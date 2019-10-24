@@ -19,18 +19,14 @@ from neutron_lib import exceptions
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api
-from oslo_config import cfg
 from oslo_log import log as logging
 
 from neutron._i18n import _
-from neutron.conf.plugins.ml2.drivers import l2pop as config
 from neutron.db import l3_hamode_db
 from neutron.plugins.ml2.drivers.l2pop import db as l2pop_db
 from neutron.plugins.ml2.drivers.l2pop import rpc as l2pop_rpc
 
 LOG = logging.getLogger(__name__)
-
-config.register_l2_population_opts()
 
 
 class L2populationMechanismDriver(api.MechanismDriver):
@@ -118,6 +114,13 @@ class L2populationMechanismDriver(api.MechanismDriver):
             agent_host = context.original_host
 
         if not agent_host:
+            return
+
+        # We should not add arp responder for non tunnel network type
+        port_context = context._plugin_context
+        agent = l2pop_db.get_agent_by_host(port_context, agent_host)
+        segment = context.bottom_bound_segment
+        if not self._validate_segment(segment, port['id'], agent):
             return
 
         agent_ip = l2pop_db.get_agent_ip_by_host(context._plugin_context,
@@ -246,26 +249,14 @@ class L2populationMechanismDriver(api.MechanismDriver):
 
         return agents
 
-    # This will be removed in next T release
-    def agent_restarted(self, context):
-        agent_host = context.host
-        port_context = context._plugin_context
-        agent = l2pop_db.get_agent_by_host(port_context, agent_host)
-        if l2pop_db.get_agent_uptime(agent) < cfg.CONF.l2pop.agent_boot_time:
-            LOG.warning("Agent on host '%s' did not supply 'agent_restarted' "
-                        "information in RPC message, determined it restarted "
-                        "based on deprecated 'agent_boot_time' config option.",
-                        agent_host)
-            return True
-        return False
-
     def update_port_down(self, context):
         port = context.current
         agent_host = context.host
         l3plugin = directory.get_plugin(plugin_constants.L3)
         # when agent transitions to backup, don't remove flood flows
-        if agent_host and l3plugin and getattr(
-            l3plugin, "list_router_ids_on_host", None):
+        if agent_host and l3plugin and getattr(l3plugin,
+                                               "list_router_ids_on_host",
+                                               None):
             admin_context = n_context.get_admin_context()
             port_context = context._plugin_context
             fdb_entries = self._get_agent_fdb(
@@ -280,7 +271,7 @@ class L2populationMechanismDriver(api.MechanismDriver):
             self.L2populationAgentNotify.remove_fdb_entries(
                 self.rpc_ctx, fdb_entries)
 
-    def update_port_up(self, context, agent_restarted=None):
+    def update_port_up(self, context, agent_restarted=False):
         port = context.current
         agent_host = context.host
         port_context = context._plugin_context
@@ -306,9 +297,6 @@ class L2populationMechanismDriver(api.MechanismDriver):
         # with high concurrency more than 1 port may be activated on an agent
         # at the same time (like VM port + a DVR port) so checking for 1 or 2
         is_first_port = agent_active_ports in (1, 2)
-        if agent_restarted is None:
-            # Only for backport compatibility, will be removed.
-            agent_restarted = self.agent_restarted(context)
         if is_first_port or agent_restarted:
             # First port(s) activated on current agent in this network,
             # we have to provide it with the whole list of fdb entries

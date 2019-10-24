@@ -78,7 +78,7 @@ function _init {
     FILES=$DEVSTACK_PATH/files
     TOP_DIR=$DEVSTACK_PATH
 
-    if [ -f source $DEVSTACK_PATH/local.conf ]; then
+    if [ -f $DEVSTACK_PATH/local.conf ]; then
         source $DEVSTACK_PATH/local.conf 2> /dev/null
     fi
 
@@ -90,7 +90,7 @@ function _init {
 
     GetDistro
     source $DEVSTACK_PATH/tools/fixup_stuff.sh
-    fixup_uca
+    fixup_ubuntu
 }
 
 function _install_base_deps {
@@ -164,7 +164,7 @@ GRANT ALL PRIVILEGES ON *.* TO 'openstack_citest'@'localhost';
 GRANT ALL PRIVILEGES ON *.* TO 'openstack_citest';
 FLUSH PRIVILEGES;
 EOF
-    /usr/bin/mysql -u root < $tmp_dir/mysql.sql
+    /usr/bin/mysql -u root -p"$MYSQL_PASSWORD" < $tmp_dir/mysql.sql
 
     if [[ "$install_pg" == "True" ]]; then
         cat << EOF > $tmp_dir/postgresql.sql

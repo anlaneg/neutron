@@ -78,6 +78,21 @@ def filter_fields(f):
     return inner_filter
 
 
+def make_result_with_fields(f):
+    @functools.wraps(f)
+    def inner(*args, **kwargs):
+        fields = kwargs.get('fields')
+        result = f(*args, **kwargs)
+        if fields is None:
+            return result
+        elif isinstance(result, list):
+            return [db_utils.resource_fields(r, fields) for r in result]
+        else:
+            return db_utils.resource_fields(result, fields)
+
+    return inner
+
+
 class DbBasePluginCommon(object):
     """Stores getters and helper methods for db_base_plugin_v2
 
@@ -204,7 +219,8 @@ class DbBasePluginCommon(object):
         return db_utils.resource_fields(res, fields)
 
     def _make_port_dict(self, port, fields=None,
-                        process_extensions=True):
+                        process_extensions=True,
+                        with_fixed_ips=True):
         mac = port["mac_address"]
         if isinstance(mac, netaddr.EUI):
             mac.dialect = netaddr.mac_unix_expanded
@@ -215,11 +231,13 @@ class DbBasePluginCommon(object):
                "mac_address": str(mac),
                "admin_state_up": port["admin_state_up"],
                "status": port["status"],
-               "fixed_ips": [{'subnet_id': ip["subnet_id"],
-                              'ip_address': ip["ip_address"]}
-                             for ip in port["fixed_ips"]],
                "device_id": port["device_id"],
                "device_owner": port["device_owner"]}
+        if with_fixed_ips:
+            res["fixed_ips"] = [
+                {'subnet_id': ip["subnet_id"],
+                 'ip_address': str(
+                     ip["ip_address"])} for ip in port["fixed_ips"]]
         # Call auxiliary extend functions, if any
         if process_extensions:
             port_data = port
@@ -288,6 +306,10 @@ class DbBasePluginCommon(object):
                      page_reverse=False):
         pager = base_obj.Pager(sorts, limit, page_reverse, marker)
         filters = filters or {}
+        # turn the CIDRs into a proper subnets
+        if filters.get('cidr'):
+            filters.update(
+                {'cidr': [netaddr.IPNetwork(x).cidr for x in filters['cidr']]})
         # TODO(ihrachys) remove explicit reader usage when subnet OVO switches
         # to engine facade by default
         with db_api.CONTEXT_READER.using(context):

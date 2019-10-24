@@ -13,6 +13,8 @@
 #    under the License.
 #
 
+import functools
+
 import eventlet
 import netaddr
 from neutron_lib.agent import constants as agent_consts
@@ -36,7 +38,6 @@ from oslo_utils import excutils
 from oslo_utils import timeutils
 from osprofiler import profiler
 
-from neutron._i18n import _
 from neutron.agent.common import resource_processing_queue as queue
 from neutron.agent.common import utils as common_utils
 from neutron.agent.l3 import dvr
@@ -113,6 +114,8 @@ class L3PluginApi(object):
         1.9 - Added get_router_ids
         1.10 Added update_all_ha_network_port_statuses
         1.11 Added get_host_ha_router_count
+        1.12 Added get_networks
+        1.13 Removed get_external_network_id
     """
 
     def __init__(self, topic, host):
@@ -120,78 +123,127 @@ class L3PluginApi(object):
         target = oslo_messaging.Target(topic=topic, version='1.0')
         self.client = n_rpc.get_client(target)
 
+    @utils.timecost
     def get_routers(self, context, router_ids=None):
         """Make a remote process call to retrieve the sync data for routers."""
         cctxt = self.client.prepare()
         return cctxt.call(context, 'sync_routers', host=self.host,
                           router_ids=router_ids)
 
+    @utils.timecost
     def update_all_ha_network_port_statuses(self, context):
         """Make a remote process call to update HA network port status."""
         cctxt = self.client.prepare(version='1.10')
         return cctxt.call(context, 'update_all_ha_network_port_statuses',
                           host=self.host)
 
+    @utils.timecost
     def get_router_ids(self, context):
         """Make a remote process call to retrieve scheduled routers ids."""
         cctxt = self.client.prepare(version='1.9')
         return cctxt.call(context, 'get_router_ids', host=self.host)
 
-    def get_external_network_id(self, context):
-        """Make a remote process call to retrieve the external network id.
-
-        @raise oslo_messaging.RemoteError: with TooManyExternalNetworks as
-                                           exc_type if there are more than one
-                                           external network
-        """
-        cctxt = self.client.prepare()
-        return cctxt.call(context, 'get_external_network_id', host=self.host)
-
+    @utils.timecost
     def update_floatingip_statuses(self, context, router_id, fip_statuses):
         """Call the plugin update floating IPs's operational status."""
         cctxt = self.client.prepare(version='1.1')
         return cctxt.call(context, 'update_floatingip_statuses',
                           router_id=router_id, fip_statuses=fip_statuses)
 
+    @utils.timecost
     def get_ports_by_subnet(self, context, subnet_id):
         """Retrieve ports by subnet id."""
         cctxt = self.client.prepare(version='1.2')
         return cctxt.call(context, 'get_ports_by_subnet', host=self.host,
                           subnet_id=subnet_id)
 
+    @utils.timecost
     def get_agent_gateway_port(self, context, fip_net):
         """Get or create an agent_gateway_port."""
         cctxt = self.client.prepare(version='1.2')
         return cctxt.call(context, 'get_agent_gateway_port',
                           network_id=fip_net, host=self.host)
 
+    @utils.timecost
     def get_service_plugin_list(self, context):
         """Make a call to get the list of activated services."""
         cctxt = self.client.prepare(version='1.3')
         return cctxt.call(context, 'get_service_plugin_list')
 
+    @utils.timecost
     def update_ha_routers_states(self, context, states):
         """Update HA routers states."""
         cctxt = self.client.prepare(version='1.5')
-        return cctxt.call(context, 'update_ha_routers_states',
+        return cctxt.cast(context, 'update_ha_routers_states',
                           host=self.host, states=states)
 
+    @utils.timecost
     def process_prefix_update(self, context, prefix_update):
         """Process prefix update whenever prefixes get changed."""
         cctxt = self.client.prepare(version='1.6')
         return cctxt.call(context, 'process_prefix_update',
                           subnets=prefix_update)
 
+    @utils.timecost
     def delete_agent_gateway_port(self, context, fip_net):
         """Delete Floatingip_agent_gateway_port."""
         cctxt = self.client.prepare(version='1.7')
         return cctxt.call(context, 'delete_agent_gateway_port',
                           host=self.host, network_id=fip_net)
 
+    @utils.timecost
     def get_host_ha_router_count(self, context):
         """Make a call to get the count of HA router."""
         cctxt = self.client.prepare(version='1.11')
         return cctxt.call(context, 'get_host_ha_router_count', host=self.host)
+
+    def get_networks(self, context, filters=None, fields=None):
+        """Get networks.
+
+        :param context: Security context
+        :param filters: The filters to apply.
+                        E.g {"id" : ["<uuid of a network>", ...]}
+        :param fields: A list of fields to collect, e.g ["id", "subnets"].
+        :return: A list of dicts where each dict represent a network object.
+        """
+
+        cctxt = self.client.prepare(version='1.12')
+        return cctxt.call(
+            context, 'get_networks', filters=filters, fields=fields)
+
+
+class RouterFactory(object):
+
+    def __init__(self):
+        self._routers = {}
+
+    def register(self, features, router_cls):
+        """Register router class which implements BaseRouterInfo
+
+        Features which is a list of strings converted to frozenset internally
+        for key uniqueness.
+
+        :param features: a list of strings of router's features
+        :param router_cls: a router class which implements BaseRouterInfo
+        """
+        self._routers[frozenset(features)] = router_cls
+
+    def create(self, features, **kwargs):
+        """Create router instance with registered router class
+
+        :param features: a list of strings of router's features
+        :param kwargs: arguments for router class
+        :returns: a router instance which implements BaseRouterInfo
+        :raises: n_exc.RouterNotFoundInRouterFactory
+        """
+        try:
+            router = self._routers[frozenset(features)]
+            return router(**kwargs)
+        except KeyError:
+            exc = l3_exc.RouterNotFoundInRouterFactory(
+                router_id=kwargs['router_id'], features=features)
+            LOG.exception(exc.msg)
+            raise exc
 
 
 @profiler.trace_cls("l3-agent")
@@ -223,6 +275,8 @@ class L3NATAgent(ha.AgentMixin,
         else:
             self.conf = cfg.CONF
         self.router_info = {}
+        self.router_factory = RouterFactory()
+        self._register_router_cls(self.router_factory)
 
         self._check_config_params()
 
@@ -231,11 +285,15 @@ class L3NATAgent(ha.AgentMixin,
             config=self.conf,
             resource_type='router')
 
-        #interface 驱动
-        self.driver = common_utils.load_interface_driver(self.conf)
-
         self._context = n_context.get_admin_context_without_session()
         self.plugin_rpc = L3PluginApi(topics.L3PLUGIN, host)
+
+        #interface 驱动
+        self.driver = common_utils.load_interface_driver(
+            self.conf,
+            get_networks_callback=functools.partial(
+                self.plugin_rpc.get_networks, self.context))
+
         self.fullsync = True
         self.sync_routers_chunk_size = SYNC_ROUTERS_MAX_CHUNK_SIZE
 
@@ -331,6 +389,21 @@ class L3NATAgent(ha.AgentMixin,
             except Exception:
                 LOG.exception('update_all_ha_network_port_statuses failed')
 
+    def _register_router_cls(self, factory):
+        factory.register([], legacy_router.LegacyRouter)
+        factory.register(['ha'], ha_router.HaRouter)
+
+        if self.conf.agent_mode == lib_const.L3_AGENT_MODE_DVR_SNAT:
+            factory.register(['distributed'],
+                             dvr_router.DvrEdgeRouter)
+            factory.register(['ha', 'distributed'],
+                             dvr_edge_ha_router.DvrEdgeHaRouter)
+        else:
+            factory.register(['distributed'],
+                             dvr_local_router.DvrLocalRouter)
+            factory.register(['ha', 'distributed'],
+                             dvr_local_router.DvrLocalRouter)
+
     def _check_config_params(self):
         """Check items in configuration files.
 
@@ -356,33 +429,7 @@ class L3NATAgent(ha.AgentMixin,
                 LOG.error(msg, self.conf.ipv6_gateway)
                 raise SystemExit(1)
 
-    def _fetch_external_net_id(self, force=False):
-        """Find UUID of single external network for this agent."""
-        #如果配置了gateway network id,则返回
-        if self.conf.gateway_external_network_id:
-            return self.conf.gateway_external_network_id
-
-        #如果非强制，则使用缓存的net_id
-        if not force and self.target_ex_net_id:
-            return self.target_ex_net_id
-
-        #从neutron上获取，外部network_id
-        try:
-            self.target_ex_net_id = self.plugin_rpc.get_external_network_id(
-                self.context)
-            return self.target_ex_net_id
-        except oslo_messaging.RemoteError as e:
-            with excutils.save_and_reraise_exception() as ctx:
-                if e.exc_type == 'TooManyExternalNetworks':
-                    ctx.reraise = False
-                    msg = _(
-                        "The 'gateway_external_network_id' option must be "
-                        "configured for this agent as Neutron has more than "
-                        "one external network.")
-                    raise Exception(msg)
-
     def _create_router(self, router_id, router):
-        args = []
         kwargs = {
             'agent': self,#agent自身
             'router_id': router_id,#路由器编号
@@ -392,8 +439,14 @@ class L3NATAgent(ha.AgentMixin,
             'interface_driver': self.driver,#接口操作驱动
         }
 
+        features = []
         if router.get('distributed'):
+            features.append('distributed')
             kwargs['host'] = self.host
+
+        if router.get('ha'):
+            features.append('ha')
+            kwargs['state_change_callback'] = self.enqueue_state_change
 
         if router.get('distributed') and router.get('ha'):
             # Case 1: If the router contains information about the HA interface
@@ -405,26 +458,12 @@ class L3NATAgent(ha.AgentMixin,
             # that needs to provision a router namespace because of a DVR
             # service port (e.g. DHCP). So go ahead and create a regular DVR
             # edge router.
-            #创建分布式ha路由器
-            if (self.conf.agent_mode == lib_const.L3_AGENT_MODE_DVR_SNAT and
-                    router.get(lib_const.HA_INTERFACE_KEY) is not None):
-                kwargs['state_change_callback'] = self.enqueue_state_change
-                return dvr_edge_ha_router.DvrEdgeHaRouter(*args, **kwargs) #ha功能的snat路由器
+            if (not router.get(lib_const.HA_INTERFACE_KEY) or
+                    self.conf.agent_mode != lib_const.L3_AGENT_MODE_DVR_SNAT):
+                features.remove('ha')
+                kwargs.pop('state_change_callback')
 
-        if router.get('distributed'):
-            #创建分布式路由器
-            if self.conf.agent_mode == lib_const.L3_AGENT_MODE_DVR_SNAT:
-                return dvr_router.DvrEdgeRouter(*args, **kwargs) #snat路由器
-            else:
-                return dvr_local_router.DvrLocalRouter(*args, **kwargs) #普通dvr路由器
-
-        if router.get('ha'):
-            #集中ha路由器
-            kwargs['state_change_callback'] = self.enqueue_state_change
-            return ha_router.HaRouter(*args, **kwargs) #普通ha路由器
-
-        #创建传统路由器
-        return legacy_router.LegacyRouter(*args, **kwargs) #普通路由器
+        return self.router_factory.create(features, **kwargs)
 
     @lockutils.synchronized('resize_greenpool')
     def _resize_process_pool(self):
@@ -482,6 +521,15 @@ class L3NATAgent(ha.AgentMixin,
         return True
 
     def _router_removed(self, ri, router_id):
+        """Delete the router and stop the auxiliary processes
+
+        This stops the auxiliary processes (keepalived, keepvalived-state-
+        change, radvd, etc) and deletes the router ports and the namespace.
+        The "router_info" cache is updated too at the beginning of the process,
+        to avoid any other concurrent process to handle the router being
+        deleted. If an exception is raised, the "router_info" cache is
+        restored.
+        """
         if ri is None:
             #收到了router_id的删除事件，但本机没有此路由器的缓存信息
             #这种情况可能发生成agent重启后，采用namespace_manager将其删除，且不引发事件
@@ -495,16 +543,20 @@ class L3NATAgent(ha.AgentMixin,
                              self.context, states=(ri,),
                              resource_id=router_id))
 
-        #调用delete函数，将其删除
-        ri.delete()
         del self.router_info[router_id]
+        try:
+            ri.delete()
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                self.router_info[router_id] = ri
 
         registry.notify(resources.ROUTER, events.AFTER_DELETE, self, router=ri)
 
     def init_extension_manager(self, connection):
         # l3 agent扩展管理
         l3_ext_manager.register_opts(self.conf)
-        self.agent_api = l3_ext_api.L3AgentExtensionAPI(self.router_info)
+        self.agent_api = l3_ext_api.L3AgentExtensionAPI(self.router_info,
+                                                        self.router_factory)
         self.l3_ext_manager = (
             l3_ext_manager.L3AgentExtensionsManager(self.conf))
         self.l3_ext_manager.initialize(
@@ -569,17 +621,6 @@ class L3NATAgent(ha.AgentMixin,
         #路由器有qg口，但本agent仅容许内部routers,扔异常
         if not ex_net_id and not self.conf.handle_internal_only_routers:
             raise l3_exc.RouterNotCompatibleWithAgent(router_id=router['id'])
-
-        # If target_ex_net_id and ex_net_id are set they must be equal
-        #先不强制从neutron-server上获取，一旦发现不同，则强制从neutron－server上获取
-        #防止每次配置均需要向neutron-server请求
-        target_ex_net_id = self._fetch_external_net_id()
-        if (target_ex_net_id and ex_net_id and ex_net_id != target_ex_net_id):
-            # Double check that our single external_net_id has not changed
-            # by forcing a check by RPC.
-            if ex_net_id != self._fetch_external_net_id(force=True):
-                raise l3_exc.RouterNotCompatibleWithAgent(
-                    router_id=router['id'])
 
         #如果要配置的路由器信息在本地无缓存，则处理为add_router
         #如果要配置的路由器信息在本地已缓存，则处理为update_router
@@ -651,11 +692,17 @@ class L3NATAgent(ha.AgentMixin,
     def _process_router_update(self):
         #路由器配置处理，针对每个rp,update处理
         for rp, update in self._queue.each_update_to_next_resource():
-            LOG.info("Starting router update for %s, action %s, priority %s",
-                     update.id, update.action, update.priority)
+            LOG.info("Starting router update for %s, action %s, priority %s, "
+                     "update_id %s. Wait time elapsed: %.3f",
+                     update.id, update.action, update.priority,
+                     update.update_id,
+                     update.time_elapsed_since_create)
             if update.action == PD_UPDATE:
                 self.pd.process_prefix_update()
-                LOG.info("Finished a router update for %s", update.id)
+                LOG.info("Finished a router update for %s IPv6 PD, "
+                         "update_id. %s. Time elapsed: %.3f",
+                         update.id, update.update_id,
+                         update.time_elapsed_since_start)
                 continue
 
             routers = [update.resource] if update.resource else []
@@ -696,7 +743,10 @@ class L3NATAgent(ha.AgentMixin,
                     # prevent deleted router re-creation
                     #设置更新后时间
                     rp.fetched_and_processed(update.timestamp)
-                LOG.info("Finished a router update for %s", update.id)
+                LOG.info("Finished a router update for %s, update_id %s. "
+                         "Time elapsed: %.3f",
+                         update.id, update.update_id,
+                         update.time_elapsed_since_start)
                 continue
 
             if not self._process_routers_if_compatible(routers, update):
@@ -704,7 +754,10 @@ class L3NATAgent(ha.AgentMixin,
                 continue
 
             rp.fetched_and_processed(update.timestamp)
-            LOG.info("Finished a router update for %s", update.id)
+            LOG.info("Finished a router update for %s, update_id %s. "
+                     "Time elapsed: %.3f",
+                     update.id, update.update_id,
+                     update.time_elapsed_since_start)
 
     def _process_routers_if_compatible(self, routers, update):
         process_result = True
@@ -821,7 +874,7 @@ class L3NATAgent(ha.AgentMixin,
         except oslo_messaging.MessagingTimeout:
             if self.sync_routers_chunk_size > SYNC_ROUTERS_MIN_CHUNK_SIZE:
                 self.sync_routers_chunk_size = max(
-                    self.sync_routers_chunk_size / 2,
+                    self.sync_routers_chunk_size // 2,
                     SYNC_ROUTERS_MIN_CHUNK_SIZE)
                 LOG.error('Server failed to return info for routers in '
                           'required time, decreasing chunk size to: %s',
@@ -897,8 +950,6 @@ class L3NATAgentWithStateReport(L3NATAgent):
                 'agent_mode': self.conf.agent_mode,
                 'handle_internal_only_routers':
                 self.conf.handle_internal_only_routers,
-                'gateway_external_network_id':
-                self.conf.gateway_external_network_id,
                 'interface_driver': self.conf.interface_driver,
                 'log_agent_heartbeats': self.conf.AGENT.log_agent_heartbeats},
             'start_flag': True,

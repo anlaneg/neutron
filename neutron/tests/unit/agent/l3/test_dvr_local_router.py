@@ -187,7 +187,7 @@ class TestDvrRouterOperations(base.BaseTestCase):
         self._setup_create_dvr_fip_interfaces_for_setting_routing_rules()
 
     def _setup_create_dvr_fip_interfaces_for_setting_routing_rules(
-        self, address_scopes_match=False):
+            self, address_scopes_match=False):
         ri = self._create_router()
         ri.get_floating_agent_gw_interface = mock.Mock()
         ri.fip_ns = mock.Mock()
@@ -386,7 +386,8 @@ class TestDvrRouterOperations(base.BaseTestCase):
         ri.floating_ip_removed_dist(fip_cidr)
         self.mock_delete_ip_rule.assert_called_with(
             ri.router_namespace.name, ip=fixed_ip, table=16, priority=FIP_PRI)
-        mIPDevice().route.delete_route.assert_called_with(fip_cidr, str(s.ip))
+        mIPDevice().route.delete_route.assert_called_with(fip_cidr,
+                                                          via=str(s.ip))
         ri.fip_ns.local_subnets.allocate.assert_not_called()
 
     @mock.patch.object(ip_lib, 'add_ip_rule')

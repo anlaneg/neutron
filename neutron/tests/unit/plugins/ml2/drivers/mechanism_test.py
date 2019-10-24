@@ -267,11 +267,6 @@ class TestMechanismDriver(api.MechanismDriver):
     def get_standard_device_mappings(self, agent):
         return {}
 
-    # NOTE(ralonsoh): to be removed with neutron-lib >= 1.26.0
-    @staticmethod
-    def provider_network_attribute_updates_supported():
-        return []
-
 
 class TestMechanismDriverWithAgent(mech_agent.AgentMechanismDriverBase,
                                    TestMechanismDriver):
@@ -281,6 +276,9 @@ class TestMechanismDriverWithAgent(mech_agent.AgentMechanismDriverBase,
         super(TestMechanismDriverWithAgent, self).__init__('test_agent_type')
         self.bound_ports = set()
         self._agent_type = 'test_mechanism_driver_agent'
+
+    def get_supported_vif_type(self, agent):
+        return VIF_TYPE_TEST
 
     def get_vif_type(self, context, agent, segment):
         return VIF_TYPE_TEST

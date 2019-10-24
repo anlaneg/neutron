@@ -19,6 +19,7 @@ from operator import itemgetter
 
 from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib import constants
+from neutron_lib.db import api as db_api
 from neutron_lib.objects import exceptions
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -41,7 +42,9 @@ class AutoScheduler(object):
         agents_per_network = cfg.CONF.dhcp_agents_per_network
         # a list of (agent, net_ids) tuples
         bindings_to_add = []
-        with context.session.begin(subtransactions=True):
+        # NOTE(ralonsoh) use writer manager to call get_network. See
+        # https://review.opendev.org/#/c/483518/. Must be changed to READER.
+        with db_api.CONTEXT_WRITER.using(context):
             fields = ['network_id', 'enable_dhcp', 'segment_id']
             subnets = plugin.get_subnets(context, fields=fields)
             net_ids = {}
@@ -65,8 +68,7 @@ class AutoScheduler(object):
             segments_on_host = {s.segment_id for s in segment_host_mapping}
 
             for dhcp_agent in dhcp_agents:
-                if agent_utils.is_agent_down(
-                    dhcp_agent.heartbeat_timestamp):
+                if agent_utils.is_agent_down(dhcp_agent.heartbeat_timestamp):
                     LOG.warning('DHCP agent %s is not active', dhcp_agent.id)
                     continue
                 for net_id, is_routed_network in net_ids.items():
@@ -90,8 +92,13 @@ class AutoScheduler(object):
                     bindings_to_add.append((dhcp_agent, net_id))
         # do it outside transaction so particular scheduling results don't
         # make other to fail
+        debug_data = []
         for agent, net_id in bindings_to_add:
             self.resource_filter.bind(context, [agent], net_id)
+            debug_data.append('(%s, %s, %s)' % (agent['agent_type'],
+                                                agent['host'], net_id))
+        LOG.debug('Resources bound (agent type, host, resource id): %s',
+                  ', '.join(debug_data))
         return True
 
 
@@ -225,7 +232,7 @@ class DhcpFilter(base_resource_filter.BaseResourceFilter):
         agents_per_network = cfg.CONF.dhcp_agents_per_network
         # TODO(gongysh) don't schedule the networks with only
         # subnets whose enable_dhcp is false
-        with context.session.begin(subtransactions=True):
+        with db_api.CONTEXT_READER.using(context):
             network_hosted_agents = plugin.get_dhcp_agents_hosting_networks(
                 context, [network['id']], hosts=network.get('candidate_hosts'))
             if len(network_hosted_agents) >= agents_per_network:
@@ -236,7 +243,7 @@ class DhcpFilter(base_resource_filter.BaseResourceFilter):
 
     def _get_active_agents(self, plugin, context, az_hints):
         """Return a list of active dhcp agents."""
-        with context.session.begin(subtransactions=True):
+        with db_api.CONTEXT_READER.using(context):
             filters = {'agent_type': [constants.AGENT_TYPE_DHCP],
                        'admin_state_up': [True]}
             if az_hints:
@@ -275,8 +282,17 @@ class DhcpFilter(base_resource_filter.BaseResourceFilter):
             plugin, context, network, hostable_dhcp_agents)
 
         if not hostable_dhcp_agents:
-            return {'n_agents': 0, 'hostable_agents': [],
-                    'hosted_agents': hosted_agents}
-        n_agents = min(len(hostable_dhcp_agents), n_agents)
-        return {'n_agents': n_agents, 'hostable_agents': hostable_dhcp_agents,
-                'hosted_agents': hosted_agents}
+            result = {'n_agents': 0, 'hostable_agents': [],
+                      'hosted_agents': hosted_agents}
+        else:
+            result = {'n_agents': min(len(hostable_dhcp_agents), n_agents),
+                      'hostable_agents': hostable_dhcp_agents,
+                      'hosted_agents': hosted_agents}
+        hostable_agents_ids = [a['id'] for a in result['hostable_agents']]
+        hosted_agents_ids = [a['id'] for a in result['hosted_agents']]
+        LOG.debug('Network hostable DHCP agents. Network: %(network)s, '
+                  'hostable agents: %(hostable_agents)s, hosted agents: '
+                  '%(hosted_agents)s', {'network': network['id'],
+                                        'hostable_agents': hostable_agents_ids,
+                                        'hosted_agents': hosted_agents_ids})
+        return result

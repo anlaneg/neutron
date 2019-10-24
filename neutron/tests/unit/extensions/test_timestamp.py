@@ -21,6 +21,7 @@ from oslo_utils import timeutils
 from oslo_utils import uuidutils
 import six
 
+from neutron.common import utils
 from neutron.db import db_base_plugin_v2
 from neutron.extensions import timestamp
 from neutron import manager
@@ -245,25 +246,44 @@ class TimeStampDBMixinTestCase(TimeStampChangedsinceTestCase):
         ctx = context.get_admin_context()
         obj = net_obj.Network(ctx, id=network_id)
         obj.create()
-        return obj.standard_attr_id
+        return obj
 
     # Use tag as non StandardAttribute object
     def _save_tag(self, tags, standard_attr_id):
         ctx = context.get_admin_context()
+        ret = []
         for tag in tags:
-            tag_obj.Tag(ctx, standard_attr_id=standard_attr_id,
-                        tag=tag).create()
+            _tag_obj = tag_obj.Tag(ctx, standard_attr_id=standard_attr_id,
+                                  tag=tag)
+            _tag_obj.create()
+            ret.append(_tag_obj)
+        return ret
 
     def test_update_timpestamp(self):
+        self._network = None
+        self._tags = []
+
+        def save_network():
+            if self._network:
+                self._network.delete()
+            timenow.reset_mock()
+            self._network = self._save_network(network_id)
+            return 1 == timenow.call_count
+
+        def save_tag():
+            for tag in self._tags:
+                tag.delete()
+            timenow.reset_mock()
+            self._tags = self._save_tag(tags, self._network.standard_attr_id)
+            return 0 == timenow.call_count
+
         network_id = uuidutils.generate_uuid()
         tags = ["red", "blue"]
-        with mock.patch('oslo_utils.timeutils.utcnow') as timenow:
+        with mock.patch.object(timeutils, 'utcnow') as timenow:
             timenow.return_value = datetime.datetime(2016, 3, 11, 0, 0)
 
             # Test to update StandardAttribute object
-            standard_attr_id = self._save_network(network_id)
-            self.assertEqual(1, timenow.call_count)
+            utils.wait_until_true(save_network, timeout=5, sleep=0.1)
 
             # Test not to update non StandardAttribute object
-            self._save_tag(tags, standard_attr_id)
-            self.assertEqual(1, timenow.call_count)
+            utils.wait_until_true(save_tag, timeout=5, sleep=0.1)

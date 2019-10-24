@@ -1,16 +1,18 @@
+# NOTE: In doc/source/contributor/testing/ci_scenario_jobs.rst file there is
+# document with summary of all tempest, neutron-tempest-plugin and grenade jobs
+# summary.
+# Please update this document always when any changes to jobs are made.
 - project:
     templates:
       - neutron-tempest-plugin-jobs
       - openstack-cover-jobs
       - openstack-lower-constraints-jobs
       - openstack-python-jobs
-      - openstack-python36-jobs
-      - openstack-python37-jobs
+      - openstack-python3-train-jobs
       - publish-openstack-docs-pti
       - periodic-stable-jobs
       - check-requirements
-      - integrated-gate
-      - integrated-gate-py3
+      - integrated-gate-networking
       - release-notes-jobs-python3
     check:
       jobs:
@@ -42,24 +44,26 @@
         - ironic-tempest-ipa-wholedisk-bios-agent_ipmitool-tinyipa:
             voting: false
             irrelevant-files: *tempest-irrelevant-files
-        - tempest-full:
-            timeout: 10800
-            irrelevant-files: *tempest-irrelevant-files
-        - tempest-full-py3:
-            timeout: 10800
-            irrelevant-files: *tempest-irrelevant-files
         - tempest-slow-py3:
             irrelevant-files: *tempest-irrelevant-files
         - networking-ovn-tempest-dsvm-ovs-release:
-            voting: false
             irrelevant-files: *tempest-irrelevant-files
         - networking-midonet-tempest-aio-ml2-centos-7:
             voting: false
             irrelevant-files: *tempest-irrelevant-files
         - grenade-py3:
             irrelevant-files: *tempest-irrelevant-files
+        - tempest-ipv6-only:
+            irrelevant-files: *tempest-irrelevant-files
         - openstacksdk-functional-devstack-networking:
             voting: false
+        - neutron-functional-with-uwsgi:
+            voting: false
+        - neutron-fullstack-with-uwsgi:
+            voting: false
+        - neutron-tempest-with-uwsgi:
+            voting: false
+        - neutron-centos-7-tripleo-standalone
     gate:
       jobs:
         - neutron-functional
@@ -71,13 +75,11 @@
         - neutron-grenade-multinode
         - neutron-grenade-dvr-multinode
         - neutron-grenade
-        - tempest-full:
-            timeout: 10800
-        - tempest-full-py3:
-            timeout: 10800
         - tempest-slow-py3:
             irrelevant-files: *tempest-irrelevant-files
         - grenade-py3:
+            irrelevant-files: *tempest-irrelevant-files
+        - tempest-ipv6-only:
             irrelevant-files: *tempest-irrelevant-files
     periodic:
       jobs:
@@ -86,9 +88,6 @@
         - neutron-tempest-with-os-ken-master
     experimental:
       jobs:
-        - neutron-functional-with-uwsgi
-        - neutron-fullstack-with-uwsgi
-        - neutron-tempest-with-uwsgi
 
         # TODO(slaweq): we should consider to convert this job to "non-legacy"
         # one and move it to check queue, at least as non-voting
@@ -110,6 +109,7 @@
     required-projects:
       - opendev.org/openstack/devstack
       - openstack/neutron
+      - openstack/requirements
     roles:
       - zuul: openstack/devstack
     pre-run: playbooks/configure_functional_job.yaml
@@ -130,6 +130,7 @@
         DATABASE_PASSWORD: stackdb
       tox_envlist: dsvm-functional
       tox_install_siblings: false
+      tox_constraints_file: '{{ ansible_user_dir }}/src/opendev.org/openstack/requirements/upper-constraints.txt'
       zuul_copy_output:
         # We need to copy directory with logs to have it in job artifacts also,
         # /opt/stack/logs is default logs directory defined in neutron's
@@ -159,18 +160,23 @@
 - job:
     name: neutron-rally-task
     parent: rally-task-neutron
-    timeout: 7800
+    timeout: 10800
     vars:
       devstack_localrc:
         USE_PYTHON3: true
+        OSPROFILER_COLLECTOR: redis
+        OSPROFILER_HMAC_KEYS: "neutron-hmac-key-used-in-zuul-ci"
+      rally_task: rally-jobs/task-neutron.yaml
       devstack_plugins:
+        osprofiler: https://opendev.org/openstack/osprofiler
         rally-openstack: https://opendev.org/openstack/rally-openstack
         neutron: https://opendev.org/openstack/neutron
       devstack_services:
         neutron-trunk: true
-      rally_task: rally-jobs/task-neutron.yaml
     required-projects:
+      - openstack/rally
       - openstack/rally-openstack
+      - openstack/osprofiler
     irrelevant-files:
       - ^.*\.rst$
       - ^doc/.*$
@@ -182,7 +188,7 @@
 
 - job:
     name: neutron-tempest-dvr
-    parent: tempest-full-py3
+    parent: tempest-integrated-networking
     timeout: 10800
     required-projects:
       - openstack/devstack-gate
@@ -196,7 +202,7 @@
 
 - job:
     name: neutron-tempest-linuxbridge
-    parent: tempest-full-py3
+    parent: tempest-integrated-networking
     timeout: 10800
     required-projects:
       - openstack/devstack-gate
@@ -244,7 +250,7 @@
 
 - job:
     name: neutron-tempest-dvr-ha-multinode-full
-    parent: tempest-multinode-full
+    parent: tempest-multinode-full-py3
     nodeset: openstack-three-node-bionic
     timeout: 10800
     roles:
@@ -273,6 +279,7 @@
               enable_distributed_routing: True
               l2_population: True
               tunnel_types: vxlan
+              arp_responder: True
             ovs:
               tunnel_bridge: br-tun
               bridge_mappings: public:br-ex
@@ -290,6 +297,8 @@
           q-agt: true
           q-l3: true
           q-meta: true
+        devstack_localrc:
+          USE_PYTHON3: true
         devstack_local_conf:
           post-config:
             $NEUTRON_CONF:
@@ -303,6 +312,7 @@
                 enable_distributed_routing: True
                 l2_population: True
                 tunnel_types: vxlan
+                arp_responder: True
               ovs:
                 tunnel_bridge: br-tun
                 bridge_mappings: public:br-ex
@@ -314,7 +324,7 @@
 
 - job:
     name: neutron-tempest-iptables_hybrid
-    parent: tempest-full-py3
+    parent: tempest-integrated-networking
     timeout: 10800
     required-projects:
       - openstack/devstack-gate
@@ -350,6 +360,7 @@
               enable_distributed_routing: True
               l2_population: True
               tunnel_types: vxlan,gre
+              arp_responder: True
             securitygroup:
               firewall_driver: iptables_hybrid
           $NEUTRON_L3_CONF:
@@ -387,14 +398,17 @@
 
 - job:
     name: neutron-tempest-postgres-full
-    parent: legacy-dsvm-base
-    run: playbooks/legacy/neutron-tempest-postgres-full/run.yaml
-    post-run: playbooks/legacy/neutron-tempest-postgres-full/post.yaml
+    parent: tempest-integrated-networking
     timeout: 7800
     required-projects:
       - openstack/devstack-gate
       - openstack/neutron
       - openstack/tempest
+    vars:
+      devstack_services:
+        postgresql: true
+        mysql: false
+    irrelevant-files: *tempest-irrelevant-files
 
 - job:
     name: neutron-tempest-with-os-ken-master
@@ -413,7 +427,6 @@
     vars:
       devstack_localrc:
         NEUTRON_DEPLOY_MOD_WSGI: true
-    voting: false
 
 - job:
     name: neutron-functional-with-uwsgi
@@ -421,19 +434,27 @@
     vars:
       devstack_localrc:
         NEUTRON_DEPLOY_MOD_WSGI: true
-    voting: false
 
 - job:
     name: neutron-tempest-with-uwsgi
-    parent: devstack-tempest
+    parent: tempest-integrated-networking
     description: Run neutron Tempest tests with uwsgi
     timeout: 8400
-    required-projects:
-      - openstack/neutron
-      - openstack/tempest
     vars:
-      tox_envlist: full
       devstack_localrc:
         NEUTRON_DEPLOY_MOD_WSGI: true
     irrelevant-files: *tempest-irrelevant-files
+
+- job:
+    name: neutron-centos-7-tripleo-standalone
+    parent: tripleo-ci-base-standalone
+    nodeset: single-centos-7-node
     voting: false
+    vars:
+      featureset: '052'
+      featureset_override:
+        standalone_environment_files:
+          - 'environments/services/neutron-ovs.yaml'
+        tempest_test_whitelist:
+          - 'tempest.scenario.test_network_basic_ops.TestNetworkBasicOps.test_network_basic_ops'
+    irrelevant-files: *tempest-irrelevant-files

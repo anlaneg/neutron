@@ -35,14 +35,27 @@ Enable FWaaS v2
       [AGENT]
       extensions = fwaas_v2
 
+#. Configure the ML2 plugin agent extension.
+
+   Add the following statements to ``ml2_conf.ini``, this file is usually
+   located at ``/etc/neutron/plugins/ml2/ml2_conf.ini``:
+
+   .. code-block:: ini
+
+      [agent]
+      extensions = fwaas_v2
+
+      [fwaas]
+      firewall_l2_driver = noop
+
 #. Create the required tables in the database:
 
    .. code-block:: console
 
       # neutron-db-manage --subproject neutron-fwaas upgrade head
 
-#. Restart the ``neutron-l3-agent`` and ``neutron-server`` services
-   to apply the settings.
+#. Restart the ``neutron-l3-agent``, ``neutron-openvswitch-agent`` and
+   ``neutron-server`` services to apply the settings.
 
    .. note::
 
@@ -58,7 +71,7 @@ Then, create a firewall that applies the policy.
 
    .. code-block:: console
 
-      $ neutron firewall-rule-create --protocol {tcp,udp,icmp,any} \
+      $ openstack firewall group rule create --protocol {tcp,udp,icmp,any} \
         --source-ip-address SOURCE_IP_ADDRESS \
         --destination-ip-address DESTINATION_IP_ADDRESS \
         --source-port SOURCE_PORT_RANGE --destination-port DEST_PORT_RANGE \
@@ -76,7 +89,7 @@ Then, create a firewall that applies the policy.
 
    .. code-block:: console
 
-      $ neutron firewall-policy-create --firewall-rules \
+      $ openstack firewall group policy create --firewall-rule \
         "FIREWALL_RULE_IDS_OR_NAMES" myfirewallpolicy
 
    Separate firewall rule IDs or names with spaces. The order in which you
@@ -99,11 +112,16 @@ Then, create a firewall that applies the policy.
       of each policy. Consequently, a firewall policy with no rules blocks
       all traffic by default.
 
-#. Create a firewall:
+#. Create a firewall group:
 
    .. code-block:: console
 
-      $ neutron firewall-create FIREWALL_POLICY_UUID
+      $ openstack firewall group create --ingress-firewall-policy \
+        "FIREWALL_POLICY_IDS_OR_NAMES" --egress-firewall-policy \
+        "FIREWALL_POLICY_IDS_OR_NAMES" --port "PORT_IDS_OR_NAMES"
+
+   Separate firewall policy IDs or names with spaces. The direction in which you
+   specify the policies is important.
 
    .. note::
 

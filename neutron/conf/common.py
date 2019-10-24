@@ -191,3 +191,16 @@ placement_opts = [
 
 def register_placement_opts(cfg=cfg.CONF):
     cfg.register_opts(placement_opts, group=PLACEMENT_CONF_SECTION)
+
+
+IRONIC_CONF_SECTION = 'ironic'
+
+ironic_opts = [
+    cfg.BoolOpt('enable_notifications', default=False,
+                help=_("Send notification events to ironic. (For example on "
+                       "relevant port status changes.)")),
+]
+
+
+def register_ironic_opts(cfg=cfg.CONF):
+    cfg.register_opts(ironic_opts, group=IRONIC_CONF_SECTION)

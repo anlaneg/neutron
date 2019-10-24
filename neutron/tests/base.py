@@ -30,6 +30,7 @@ import mock
 from neutron_lib.callbacks import manager as registry_manager
 from neutron_lib.db import api as db_api
 from neutron_lib import fixture
+from neutron_lib.tests import tools as lib_test_tools
 from neutron_lib.tests.unit import fake_notifier
 from oslo_concurrency.fixture import lockutils
 from oslo_config import cfg
@@ -39,6 +40,7 @@ from oslo_utils import excutils
 from oslo_utils import fileutils
 from oslo_utils import strutils
 from oslotest import base
+from osprofiler import profiler
 import six
 from sqlalchemy import exc as sqlalchemy_exc
 import testtools
@@ -54,7 +56,6 @@ from neutron import manager
 from neutron import policy
 from neutron.quota import resource_registry
 from neutron.tests import post_mortem_debug
-from neutron.tests import tools
 
 
 CONF = cfg.CONF
@@ -64,6 +65,8 @@ ROOTDIR = os.path.dirname(__file__)
 ETCDIR = os.path.join(ROOTDIR, 'etc')
 
 SUDO_CMD = 'sudo -n'
+
+TESTCASE_RETRIES = 3
 
 
 def etcdir(*p):
@@ -172,10 +175,24 @@ class AttributeDict(dict):
 def _catch_timeout(f):
     @functools.wraps(f)
     def func(self, *args, **kwargs):
-        try:
-            return f(self, *args, **kwargs)
-        except eventlet.Timeout as e:
-            self.fail('Execution of this test timed out: %s' % e)
+        for idx in range(1, TESTCASE_RETRIES + 1):
+            try:
+                return f(self, *args, **kwargs)
+            except eventlet.Timeout as e:
+                self.fail('Execution of this test timed out: %s' % e)
+            # NOTE(ralonsoh): exception catch added due to the constant
+            # occurrences of this exception during FT and UT execution.
+            # This is due to [1]. Once the sync decorators are removed or the
+            # privsep ones are decorated by those ones (swap decorator
+            # declarations) this catch can be remove.
+            # [1] https://review.opendev.org/#/c/631275/
+            except fixtures.TimeoutException:
+                with excutils.save_and_reraise_exception() as ctxt:
+                    if idx < TESTCASE_RETRIES:
+                        msg = ('"fixtures.TimeoutException" during test case '
+                               'execution no %s; test case re-executed' % idx)
+                        self.addDetail('DietTestCase', msg)
+                        ctxt.reraise = False
     return func
 
 
@@ -229,7 +246,7 @@ class DietTestCase(base.BaseTestCase):
                 debugger))
 
         # Make sure we see all relevant deprecation warnings when running tests
-        self.useFixture(tools.WarningsFixture())
+        self.useFixture(fixture.WarningsFixture(module_re=['^neutron\\.']))
 
         self.useFixture(fixture.DBQueryHooksFixture())
 
@@ -246,7 +263,7 @@ class DietTestCase(base.BaseTestCase):
         self.addOnException(self.check_for_systemexit)
         self.orig_pid = os.getpid()
 
-        tools.reset_random_seed()
+        lib_test_tools.reset_random_seed()
 
     def addOnException(self, handler):
 
@@ -380,6 +397,7 @@ class BaseTestCase(DietTestCase):
         self.addCleanup(db_api.sqla_remove_all)
         self.addCleanup(rpc_consumer_reg.clear)
         self.addCleanup(rpc_producer_reg.clear)
+        self.addCleanup(profiler.clean)
 
     def get_new_temp_dir(self):
         """Create a new temporary directory.

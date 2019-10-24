@@ -26,7 +26,6 @@ from neutron_lib import constants
 from neutron_lib import exceptions
 from neutron_lib.utils import file as file_utils
 from oslo_log import log as logging
-import oslo_messaging
 from oslo_utils import excutils
 from oslo_utils import fileutils
 from oslo_utils import uuidutils
@@ -129,8 +128,6 @@ class DhcpBase(object):
                  version=None, plugin=None):
         self.conf = conf
         self.network = network
-        self.dns_domain = (self.network.get('dns_domain') or
-                           self.conf.dns_domain)
         self.process_monitor = process_monitor
         self.device_manager = DeviceManager(self.conf, plugin)
         self.version = version
@@ -249,6 +246,7 @@ class DhcpLocalProcess(DhcpBase):
             conf=self.conf,
             uuid=self.network.id,
             namespace=self.network.namespace,
+            service=DNSMASQ_SERVICE_NAME,
             default_cmd_callback=cmd_callback,
             pid_file=self.get_conf_file_name('pid'),
             run_as_root=True)
@@ -366,14 +364,10 @@ class Dnsmasq(DhcpLocalProcess):
             '--dhcp-match=set:ipxe,175',
             '--dhcp-userclass=set:ipxe6,iPXE',
             '--local-service',
+            '--bind-dynamic',
         ]
-        if self.device_manager.driver.bridged:
+        if not self.device_manager.driver.bridged:
             cmd += [
-                '--bind-interfaces',
-            ]
-        else:
-            cmd += [
-                '--bind-dynamic',
                 '--bridge-interface=%s,tap*' % self.interface_name,
             ]
 
@@ -443,8 +437,8 @@ class Dnsmasq(DhcpLocalProcess):
         for server in self.conf.dnsmasq_dns_servers:
             cmd.append('--server=%s' % server)
 
-        if self.dns_domain:
-            cmd.append('--domain=%s' % self.dns_domain)
+        if self.conf.dns_domain:
+            cmd.append('--domain=%s' % self.conf.dns_domain)
 
         if self.conf.dhcp_broadcast_reply:
             cmd.append('--dhcp-broadcast')
@@ -635,8 +629,8 @@ class Dnsmasq(DhcpLocalProcess):
                     hostname = 'host-%s' % alloc.ip_address.replace(
                         '.', '-').replace(':', '-')
                     fqdn = hostname
-                    if self.dns_domain:
-                        fqdn = '%s.%s' % (fqdn, self.dns_domain)
+                    if self.conf.dns_domain:
+                        fqdn = '%s.%s' % (fqdn, self.conf.dns_domain)
                 yield (port, alloc, hostname, fqdn, no_dhcp, no_opts)
 
     def _get_port_extra_dhcp_opts(self, port):
@@ -1000,9 +994,9 @@ class Dnsmasq(DhcpLocalProcess):
                 # dns-server submitted by the server
                 subnet_index_map[subnet.id] = i
 
-            if self.dns_domain and subnet.ip_version == 6:
+            if self.conf.dns_domain and subnet.ip_version == 6:
                 options.append('tag:tag%s,option6:domain-search,%s' %
-                               (i, ''.join(self.dns_domain)))
+                               (i, ''.join(self.conf.dns_domain)))
 
             gateway = subnet.gateway_ip
             host_routes = []
@@ -1035,7 +1029,7 @@ class Dnsmasq(DhcpLocalProcess):
                     if (s.ip_version == 4 and
                             s.cidr != subnet.cidr and
                             sub_segment_id == segment_id):
-                        host_routes.append("%s,0.0.0.0" % s.cidr)
+                        host_routes.insert(0, "%s,0.0.0.0" % s.cidr)
 
                 if host_routes:
                     if gateway:
@@ -1229,7 +1223,9 @@ class DeviceManager(object):
     def __init__(self, conf, plugin):
         self.conf = conf
         self.plugin = plugin
-        self.driver = agent_common_utils.load_interface_driver(conf)
+        self.driver = agent_common_utils.load_interface_driver(
+            conf,
+            get_networks_callback=self.plugin.get_networks)
 
     def get_interface_name(self, network, port):
         """Return interface(device) name for use by the DHCP process."""
@@ -1387,17 +1383,10 @@ class DeviceManager(object):
         for port in network.ports:
             port_device_id = getattr(port, 'device_id', None)
             if port_device_id == constants.DEVICE_ID_RESERVED_DHCP_PORT:
-                try:
-                    #尝试着绑定此dhcp port到本device
-                    port = self.plugin.update_dhcp_port(
-                        port.id, {'port': {'network_id': network.id,
-                                           'device_id': device_id}})
-                except oslo_messaging.RemoteError as e:
-                    if e.exc_type == 'DhcpPortInUse':
-                        LOG.info("Skipping DHCP port %s as it is "
-                                 "already in use", port.id)
-                        continue
-                    raise
+                #尝试着绑定此dhcp port到本device
+                port = self.plugin.update_dhcp_port(
+                    port.id, {'port': {'network_id': network.id,
+                                       'device_id': device_id}})
                 if port:
                     return port
 
@@ -1423,6 +1412,37 @@ class DeviceManager(object):
             fixed_ips=unique_ip_subnets)
         #要求server创建dhcp-port
         return self.plugin.create_dhcp_port({'port': port_dict})
+
+    def _check_dhcp_port_subnet(self, dhcp_port, dhcp_subnets, network):
+        """Check if DHCP port IPs are in the range of the DHCP subnets
+
+        FIXME(kevinbenton): ensure we have the IPs we actually need.
+        can be removed once bug/1627480 is fixed
+        """
+        if self.driver.use_gateway_ips:
+            return
+
+        expected = set(dhcp_subnets)
+        actual = {fip.subnet_id for fip in dhcp_port.fixed_ips}
+        missing = expected - actual
+        if not missing:
+            return
+
+        LOG.debug('Requested DHCP port with IPs on subnets %(expected)s '
+                  'but only got IPs on subnets %(actual)s.',
+                  {'expected': expected, 'actual': actual})
+        updated_dhcp_port = self.plugin.get_dhcp_port(dhcp_port.id)
+        actual = {fip.subnet_id for fip in updated_dhcp_port.fixed_ips}
+        missing = expected - actual
+        if missing:
+            raise exceptions.SubnetMismatchForPort(
+                port_id=updated_dhcp_port.id, subnet_id=list(missing)[0])
+
+        self._update_dhcp_port(network, updated_dhcp_port)
+        LOG.debug('Previous DHCP port information: %(dhcp_port)s. Updated '
+                  'DHCP port information: %(updated_dhcp_port)s.',
+                  {'dhcp_port': dhcp_port,
+                   'updated_dhcp_port': updated_dhcp_port})
 
     def setup_dhcp_port(self, network):
         """Create/update DHCP port for the host if needed and return port."""
@@ -1453,21 +1473,6 @@ class DeviceManager(object):
         else:
             raise exceptions.Conflict()
 
-        # FIXME(kevinbenton): ensure we have the IPs we actually need.
-        # can be removed once bug/1627480 is fixed
-        if not self.driver.use_gateway_ips:
-            expected = set(dhcp_subnets)
-            actual = {fip.subnet_id for fip in dhcp_port.fixed_ips}
-            missing = expected - actual
-            # 我们按需要的subnet提交了dhcp port申请，但server返回的ip中少了部分subnet的ip
-            # 扔异常
-            if missing:
-                LOG.debug("Requested DHCP port with IPs on subnets "
-                          "%(expected)s but only got IPs on subnets "
-                          "%(actual)s.", {'expected': expected,
-                                          'actual': actual})
-                raise exceptions.SubnetMismatchForPort(
-                    port_id=dhcp_port.id, subnet_id=list(missing)[0])
         # Convert subnet_id to subnet dict
         fixed_ips = [dict(subnet_id=fixed_ip.subnet_id,
                           ip_address=fixed_ip.ip_address,
@@ -1625,6 +1630,7 @@ class DeviceManager(object):
         """Ensure DHCP reply packets always have correct UDP checksums."""
         #计算checksum
         iptables_mgr = iptables_manager.IptablesManager(use_ipv6=True,
+                                                        nat=False,
                                                         namespace=namespace)
         ipv4_rule = ('-p udp -m udp --dport %d -j CHECKSUM --checksum-fill'
                      % constants.DHCP_RESPONSE_PORT)

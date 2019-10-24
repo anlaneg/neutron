@@ -68,6 +68,7 @@ class ProcessManager(MonitoredProcess):
         self.pid_file = pid_file
         self.run_as_root = run_as_root or self.namespace is not None
         self.custom_reload_callback = custom_reload_callback
+        self.kill_scripts_path = cfg.CONF.AGENT.kill_scripts_path
 
         if service:
             self.service_pid_fname = 'pid.' + service
@@ -110,17 +111,26 @@ class ProcessManager(MonitoredProcess):
                                          run_as_root=self.run_as_root)
             else:
                 #发信号杀死进程
-                cmd = ['kill', '-%s' % (sig), pid]
+                cmd = self.get_kill_cmd(sig, pid)
                 utils.execute(cmd, run_as_root=self.run_as_root)
                 # In the case of shutting down, remove the pid file
                 if sig == '9':
                     fileutils.delete_if_exists(self.get_pid_file_name())
         elif pid:
-            LOG.debug('Process for %(uuid)s pid %(pid)d is stale, ignoring '
-                      'signal %(signal)s', {'uuid': self.uuid, 'pid': pid,
-                                            'signal': sig})
+            LOG.debug('%{service}s process for %(uuid)s pid %(pid)d is stale, '
+                      'ignoring signal %(signal)s',
+                      {'service': self.service, 'uuid': self.uuid,
+                       'pid': pid, 'signal': sig})
         else:
-            LOG.debug('No process started for %s', self.uuid)
+            LOG.debug('No %(service)s process started for %(uuid)s',
+                      {'service': self.service, 'uuid': self.uuid})
+
+    def get_kill_cmd(self, sig, pid):
+        if self.kill_scripts_path:
+            kill_file = "%s-kill" % self.service
+            if os.path.isfile(os.path.join(self.kill_scripts_path, kill_file)):
+                return [kill_file, sig, pid]
+        return ['kill', '-%s' % (sig), pid]
 
     def get_pid_file_name(self):
         """Returns the file name for a given kind of config file."""
@@ -170,7 +180,7 @@ class ProcessMonitor(object):
 
         :param config: oslo config object with the agent configuration.
         :type config: oslo_config.ConfigOpts
-        :param resource_type: can be dhcp, router, load_balancer, etc.
+        :param resource_type: can be dhcp, router, etc.
         :type resource_type: str
         """
         self._config = config

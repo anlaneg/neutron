@@ -5,12 +5,14 @@ source $LIBDIR/flavors
 source $LIBDIR/l2_agent
 source $LIBDIR/l2_agent_sriovnicswitch
 source $LIBDIR/l3_agent
+source $LIBDIR/l3_conntrack_helper
 source $LIBDIR/ml2
 source $LIBDIR/network_segment_range
 source $LIBDIR/qos
 source $LIBDIR/ovs
 source $LIBDIR/segments
 source $LIBDIR/trunk
+source $LIBDIR/placement
 source $LIBDIR/log
 source $LIBDIR/fip_port_forwarding
 source $LIBDIR/uplink_status_propagation
@@ -27,7 +29,8 @@ if [[ "$1" == "stack" ]]; then
             if [[ "$NEUTRON_AGENT" == "openvswitch" ]] && \
                [[ "$Q_BUILD_OVS_FROM_GIT" == "True" ]]; then
                 remove_ovs_packages
-                compile_ovs True /usr /var
+                compile_ovs False /usr /var
+                load_conntrack_gre_module
                 start_new_ovs
             fi
             ;;
@@ -43,6 +46,9 @@ if [[ "$1" == "stack" ]]; then
             fi
             if is_service_enabled q-trunk neutron-trunk; then
                 configure_trunk_extension
+            fi
+            if is_service_enabled q-placement neutron-placement; then
+                configure_placement_extension
             fi
             if is_service_enabled q-log neutron-log; then
                 configure_log
@@ -69,7 +75,6 @@ if [[ "$1" == "stack" ]]; then
             #Therefore we create new service, q-sriov-agt, and the
             # q-agt/neutron-agent should be OVS or linux bridge.
             if is_service_enabled q-sriov-agt neutron-sriov-agent; then
-                configure_$NEUTRON_CORE_PLUGIN
                 configure_l2_agent
                 configure_l2_agent_sriovnicswitch
             fi
@@ -80,6 +85,9 @@ if [[ "$1" == "stack" ]]; then
                 fi
                 if is_service_enabled q-port-forwarding neutron-port-forwarding; then
                     configure_port_forwarding
+                fi
+                if is_service_enabled q-conntrack-helper neutron-conntrack-helper; then
+                    configure_l3_conntrack_helper
                 fi
                 configure_l3_agent
             fi

@@ -110,15 +110,16 @@ class QosExtensionBaseTestCase(test_agent.BasicRouterOperationsFramework):
                     'port_id': _uuid(),
                     'host': HOSTNAME,
                     'qos_policy_id': self.policy.id}
-        self.router = {'id': _uuid(),
+        self.router_id = _uuid()
+        self.router = {'id': self.router_id,
                        'gw_port': self.ex_gw_port,
                        'ha': False,
                        'distributed': False,
                        lib_const.FLOATINGIP_KEY: [self.fip]}
-        self.router_info = l3router.RouterInfo(self.agent, _uuid(),
+        self.router_info = l3router.RouterInfo(self.agent, self.router_id,
                                                self.router, **self.ri_kwargs)
         self.router_info.ex_gw_port = self.ex_gw_port
-        self.agent.router_info[self.router['id']] = self.router_info
+        self.agent.router_info[self.router_id] = self.router_info
 
         def _mock_get_router_info(router_id):
             return self.router_info
@@ -128,7 +129,7 @@ class QosExtensionBaseTestCase(test_agent.BasicRouterOperationsFramework):
             'L3AgentExtensionAPI.get_router_info').start()
         self.get_router_info.side_effect = _mock_get_router_info
 
-        self.agent_api = l3_ext_api.L3AgentExtensionAPI(None)
+        self.agent_api = l3_ext_api.L3AgentExtensionAPI(None, None)
         self.fip_qos_ext.consume_api(self.agent_api)
 
 
@@ -275,6 +276,31 @@ class FipQosExtensionTestCase(QosExtensionBaseTestCase):
                            TEST_QOS_FIP)],
                 any_order=True)
 
+    def test_delete_router(self):
+        tc_wrapper = mock.Mock()
+        with mock.patch.object(self.fip_qos_ext, '_get_tc_wrapper',
+                               return_value=tc_wrapper):
+            self.fip_qos_ext.update_router(self.context, self.router)
+            tc_wrapper.set_ip_rate_limit.assert_has_calls(
+                [mock.call(lib_const.INGRESS_DIRECTION,
+                           TEST_QOS_FIP, 1111, 2222),
+                 mock.call(lib_const.EGRESS_DIRECTION,
+                           TEST_QOS_FIP, 3333, 4444)],
+                any_order=True)
+            self.fip_qos_ext.delete_router(self.context, self.router)
+            self.assertIsNone(
+                self.fip_qos_ext.fip_qos_map.router_floating_ips.get(
+                    self.router_id))
+            self.assertIsNone(
+                self.fip_qos_ext.fip_qos_map.ingress_ratelimits.get(
+                    TEST_QOS_FIP))
+            self.assertIsNone(
+                self.fip_qos_ext.fip_qos_map.egress_ratelimits.get(
+                    TEST_QOS_FIP))
+            self.assertIsNone(
+                self.fip_qos_ext.fip_qos_map.get_resource_policy(
+                    TEST_QOS_FIP))
+
     def test_update_router_fip_removed(self):
         self._test_qos_policy_scenarios()
 
@@ -308,12 +334,12 @@ class FipQosExtensionTestCase(QosExtensionBaseTestCase):
                                            lib_const.EGRESS_DIRECTION)
 
     def test_update_router_only_ingress(self):
-        self._test_only_one_direction_rule(self.fip_qos_ext.add_router,
+        self._test_only_one_direction_rule(self.fip_qos_ext.update_router,
                                            self.policy2,
                                            lib_const.INGRESS_DIRECTION)
 
     def test_update_router_only_egress(self):
-        self._test_only_one_direction_rule(self.fip_qos_ext.add_router,
+        self._test_only_one_direction_rule(self.fip_qos_ext.update_router,
                                            self.policy3,
                                            lib_const.EGRESS_DIRECTION)
 
@@ -384,3 +410,37 @@ class RouterFipRateLimitMapsTestCase(base.BaseTestCase):
         self.assertIsNone(self.policy_map.find_fip_router_id("8.8.8.8"))
         self.assertEqual(router_id,
                          self.policy_map.find_fip_router_id(TEST_FIP))
+
+    def test_get_router_floating_ips(self):
+        router_id = _uuid()
+        test_ips = [TEST_FIP, TEST_FIP2]
+        self.policy_map.router_floating_ips[router_id] = set([TEST_FIP,
+                                                              TEST_FIP2])
+        get_ips = self.policy_map.get_router_floating_ips(router_id)
+        self.assertEqual(len(test_ips), len(get_ips))
+
+    def test_remove_fip_ratelimit_cache(self):
+        fip = "1.1.1.1"
+        self.policy_map.set_fip_ratelimit_cache(
+            "ingress", fip, 100, 200)
+        self.policy_map.set_fip_ratelimit_cache(
+            "egress", fip, 100, 200)
+        self.policy_map.remove_fip_ratelimit_cache("ingress", fip)
+        self.assertIsNone(self.policy_map.ingress_ratelimits.get(fip))
+        self.policy_map.remove_fip_ratelimit_cache("egress", fip)
+        self.assertIsNone(self.policy_map.egress_ratelimits.get(fip))
+
+    def test_set_fip_ratelimit_cache(self):
+        fip = "1.1.1.1"
+        self.policy_map.set_fip_ratelimit_cache(
+            "ingress", fip, 100, 200)
+        self.policy_map.set_fip_ratelimit_cache(
+            "egress", fip, 300, 400)
+        in_rate, in_burst = self.policy_map.get_fip_ratelimit_cache(
+            "ingress", fip)
+        self.assertEqual(100, in_rate)
+        self.assertEqual(200, in_burst)
+        e_rate, e_burst = self.policy_map.get_fip_ratelimit_cache(
+            "egress", fip)
+        self.assertEqual(300, e_rate)
+        self.assertEqual(400, e_burst)

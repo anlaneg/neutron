@@ -80,6 +80,26 @@ In addition to that, the following rules are to follow:
   When impacts are identified as a result of the above steps, every effort must
   be made to work with the affected sub-projects to resolve the issues.
 
+* Any change that modifies or introduces a new API should have test coverage in
+  neutron-tempest-plugin or tempest test suites. There should be at least one
+  API test added for a new feature, but it is preferred that both API and
+  scenario tests be added where it is appropriate.
+
+  Scenario tests should cover not only the base level of new functionality, but
+  also standard ways in which the functionality can be used. For example, if the
+  feature adds a new kind of networking (like e.g. trunk ports) then tests
+  should make sure that instances can use IPs provided by that networking,
+  can be migrated, etc.
+
+  It is also preferred that some negative test cases, like API tests to
+  ensure that correct HTTP error is returned when wrong data is provided,
+  will be added where it is appropriate.
+
+* It is usually enough for any "mechanical" changes, like e.g. translation
+  imports or imports of updated CI templates, to have only one +2 Code-Review
+  vote to be approved. If there is any uncertainty about a specific patch, it is
+  better to wait for review from another core reviewer before approving the patch.
+
 .. _spec-review-practices:
 
 Neutron Spec Review Practices

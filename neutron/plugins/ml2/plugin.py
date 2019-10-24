@@ -48,6 +48,8 @@ from neutron_lib.api.definitions import rbac_security_groups as rbac_sg_apidef
 from neutron_lib.api.definitions import security_groups_port_filtering
 from neutron_lib.api.definitions import subnet as subnet_def
 from neutron_lib.api.definitions import subnet_onboard as subnet_onboard_def
+from neutron_lib.api.definitions import subnetpool_prefix_ops \
+    as subnetpool_prefix_ops_def
 from neutron_lib.api.definitions import vlantransparent as vlan_apidef
 from neutron_lib.api import extensions
 from neutron_lib.api import validators
@@ -64,7 +66,6 @@ from neutron_lib.db import utils as db_utils
 from neutron_lib import exceptions as exc
 from neutron_lib.exceptions import allowedaddresspairs as addr_exc
 from neutron_lib.exceptions import port_security as psec_exc
-from neutron_lib.objects import utils as obj_utils
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api
@@ -202,7 +203,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                                     port_mac_address_regenerate.ALIAS,
                                     pbe_ext.ALIAS,
                                     agent_resources_synced.ALIAS,
-                                    subnet_onboard_def.ALIAS]
+                                    subnet_onboard_def.ALIAS,
+                                    subnetpool_prefix_ops_def.ALIAS]
 
     # List of agent types for which all binding_failed ports should try to be
     # rebound when agent revive
@@ -284,10 +286,9 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
     @registry.receives(resources.PORT,
                        [provisioning_blocks.PROVISIONING_COMPLETE])
-    def _port_provisioned(self, rtype, event, trigger, context, object_id,
-                          **kwargs):
-        port_id = object_id
-        port = db.get_port(context, port_id)
+    def _port_provisioned(self, rtype, event, trigger, payload=None):
+        port_id = payload.resource_id
+        port = db.get_port(payload.context, port_id)
         port_binding = p_utils.get_port_binding_by_status_and_host(
             getattr(port, 'port_bindings', []), const.ACTIVE)
         if not port or not port_binding:
@@ -306,7 +307,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             # one last time to detect the case where we were triggered by an
             # unbound port and the port became bound with new provisioning
             # blocks before 'get_port' was called above
-            if provisioning_blocks.is_object_blocked(context, port_id,
+            if provisioning_blocks.is_object_blocked(payload.context, port_id,
                                                      resources.PORT):
                 LOG.debug("Port %s had new provisioning blocks added so it "
                           "will not transition to active.", port_id)
@@ -315,7 +316,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             LOG.debug("Port %s is administratively disabled so it will "
                       "not transition to active.", port_id)
             return
-        self.update_port_status(context, port_id, const.PORT_STATUS_ACTIVE)
+        self.update_port_status(
+            payload.context, port_id, const.PORT_STATUS_ACTIVE)
 
     @log_helpers.log_method_call
     def _start_rpc_notifiers(self):
@@ -368,6 +370,18 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                                 old_mac=orig_port['mac_address'],
                                 new_mac=port['mac_address'])
         return mac_change
+
+    def _reset_mac_for_direct_physical(self, orig_port, port, binding):
+        # when unbinding direct-physical port we need to free
+        # physical device MAC address so that other ports may reuse it
+        if (binding.vnic_type == portbindings.VNIC_DIRECT_PHYSICAL and
+                port.get('device_id') == '' and
+                port.get('device_owner') == '' and
+                orig_port['device_id'] != ''):
+            port['mac_address'] = self._generate_macs()[0]
+            return True
+        else:
+            return False
 
     @registry.receives(resources.AGENT, [events.AFTER_UPDATE])
     def _retry_binding_revived_agents(self, resource, event, trigger,
@@ -432,7 +446,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             binding.host = host
             changes = True
 
-        vnic_type = attrs and attrs.get(portbindings.VNIC_TYPE)
+        vnic_type = attrs.get(portbindings.VNIC_TYPE) if attrs else None
         if (validators.is_attr_set(vnic_type) and
                 binding.vnic_type != vnic_type):
             #检查vnic类型是否有变更
@@ -516,7 +530,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                     # Now, the port and its binding state should be committed.
                     context, need_notify, try_again = (
                         self._commit_port_binding(context, bind_context,
-                                                  need_notify, try_again))
+                                                  need_notify))
                 else:
                     context = bind_context
 
@@ -580,8 +594,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         return new_context
 
     def _commit_port_binding(self, orig_context, bind_context,
-                             need_notify, try_again,
-                             update_binding_levels=True):
+                             need_notify, update_binding_levels=True):
         port_id = orig_context.current['id']
         plugin_context = orig_context._plugin_context
         orig_binding = orig_context._binding
@@ -701,6 +714,22 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 # Call the mechanism driver precommit methods, commit
                 # the results, and call the postcommit methods.
                 self.mechanism_manager.update_port_precommit(cur_context)
+            else:
+                # Try to populate the PortContext with the current binding
+                # levels so that the RPC notification won't get suppressed.
+                # This is to avoid leaving ports stuck in a DOWN state.
+                # For more information see bug:
+                # https://bugs.launchpad.net/neutron/+bug/1755810
+                LOG.warning("Concurrent port binding operations failed on "
+                            "port %s", port_id)
+                levels = db.get_binding_level_objs(plugin_context, port_id,
+                                                   cur_binding.host)
+                for level in levels:
+                    cur_context._push_binding_level(level)
+                # refresh context with a snapshot of the current binding state
+                cur_context._binding = driver_context.InstanceSnapshot(
+                    cur_binding)
+
         if commit:
             # Continue, using the port state as of the transaction that
             # just finished, whether that transaction committed new
@@ -838,15 +867,11 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 agents = self.get_agents(
                     context, filters={'agent_type': [agent_type]})
                 for agent in agents:
-                    vif_types.append(mech_driver.obj.get_vif_type(
-                        context, agent, segments[0]))
+                    vif_types.append(
+                        mech_driver.obj.get_supported_vif_type(agent))
 
-        filter_obj = obj_utils.NotIn(vif_types)
-        filters = {portbindings.VIF_TYPE:
-                   filter_obj.filter(models.PortBinding.vif_type),
-                   'network_id': [network['id']]}
-        if super(Ml2Plugin, self).get_ports_count(context,
-                                                  filters=filters):
+        if ports_obj.Port.check_network_ports_by_binding_types(
+                context, network['id'], vif_types, negative_search=True):
             msg = (_('Provider network attribute %(attr)s cannot be updated '
                      'if any port in the network has not the following '
                      '%(vif_field)s: %(vif_types)s') %
@@ -1206,7 +1231,11 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         # called inside of a transaction.
         return super(Ml2Plugin, self).delete_network(context, id)
 
-    @registry.receives(resources.NETWORK, [events.PRECOMMIT_DELETE])
+    # NOTE(mgoddard): Use a priority of zero to ensure this handler runs before
+    # other precommit handlers. This is necessary to ensure we avoid another
+    # handler deleting a subresource of the network, e.g. segments.
+    @registry.receives(resources.NETWORK, [events.PRECOMMIT_DELETE],
+                       priority=0)
     def _network_delete_precommit_handler(self, rtype, event, trigger,
                                           context, network_id, **kwargs):
         network = self.get_network(context, network_id)
@@ -1257,10 +1286,6 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                                                         result, network)
             self.mechanism_manager.create_subnet_precommit(mech_context)
 
-        # TODO(kevinbenton): move this to '_after_subnet_create'
-        # db base plugin post commit ops
-        self._create_subnet_postcommit(context, result, net_db, ipam_sub)
-
         return result, mech_context
 
     @utils.transaction_guard
@@ -1272,6 +1297,9 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         return self._after_create_subnet(context, result, mech_context)
 
     def _after_create_subnet(self, context, result, mech_context):
+        # db base plugin post commit ops
+        self._create_subnet_postcommit(context, result)
+
         kwargs = {'context': context, 'subnet': result}
         registry.notify(resources.SUBNET, events.AFTER_CREATE, self, **kwargs)
         try:
@@ -1319,7 +1347,10 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         # called inside of a transaction.
         return super(Ml2Plugin, self).delete_subnet(context, id)
 
-    @registry.receives(resources.SUBNET, [events.PRECOMMIT_DELETE])
+    # NOTE(mgoddard): Use a priority of zero to ensure this handler runs before
+    # other precommit handlers. This is necessary to ensure we avoid another
+    # handler deleting a subresource of the subnet.
+    @registry.receives(resources.SUBNET, [events.PRECOMMIT_DELETE], priority=0)
     def _subnet_delete_precommit_handler(self, rtype, event, trigger,
                                          context, subnet_id, **kwargs):
         subnet_obj = self._get_subnet_object(context, subnet_id)
@@ -1468,6 +1499,11 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
         return bound_context.current
 
+    def _ensure_security_groups_on_port(self, context, port_dict):
+        port_compat = {'port': port_dict}
+        sgids = self._get_security_groups_on_port(context, port_compat)
+        self._process_port_create_security_group(context, port_dict, sgids)
+
     @utils.transaction_guard
     @db_api.retry_if_session_inactive()
     def create_port_bulk(self, context, ports):
@@ -1483,11 +1519,18 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             for port in port_list:
                 # Set up the port request dict
                 pdata = port.get('port')
+                project_id = pdata.get('project_id') or pdata.get('tenant_id')
+                security_group_ids = pdata.get('security_groups')
+                if security_group_ids is const.ATTR_NOT_SPECIFIED:
+                    security_group_ids = None
+                else:
+                    security_group_ids = set(security_group_ids)
                 if pdata.get('device_owner'):
                     self._enforce_device_owner_not_router_intf_or_device_id(
                         context, pdata.get('device_owner'),
-                        pdata.get('device_id'), pdata.get('tenant_id'))
-                bulk_port_data = dict(project_id=pdata.get('project_id'),
+                        pdata.get('device_id'), project_id)
+                bulk_port_data = dict(
+                    project_id=project_id,
                     name=pdata.get('name'),
                     network_id=pdata.get('network_id'),
                     admin_state_up=pdata.get('admin_state_up'),
@@ -1495,7 +1538,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                         const.PORT_STATUS_ACTIVE),
                     device_id=pdata.get('device_id'),
                     device_owner=pdata.get('device_owner'),
-                    security_groups=pdata.get('security_groups'),
+                    security_group_ids=security_group_ids,
                     description=pdata.get('description'))
 
                 # Ensure that the networks exist.
@@ -1516,6 +1559,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                                               mac=raw_mac_address)
                 eui_mac_address = netaddr.EUI(raw_mac_address,
                                               dialect=eui48.mac_unix_expanded)
+                port['port']['mac_address'] = str(eui_mac_address)
 
                 # Create the Port object
                 db_port_obj = ports_obj.Port(context,
@@ -1523,26 +1567,41 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                                             id=uuidutils.generate_uuid(),
                                             **bulk_port_data)
                 db_port_obj.create()
-                port_dict = self._make_port_dict(db_port_obj,
-                                                 process_extensions=False)
-                port_compat = {'port': port_dict}
 
                 # Call IPAM to allocate IP addresses
                 try:
                     # TODO(njohnston): IPAM allocation needs to be revamped to
                     # be bulk-friendly.
-                    self.ipam.allocate_ips_for_port_and_store(
-                        context, db_port_obj, db_port_obj['id'])
+                    ips = self.ipam.allocate_ips_for_port_and_store(
+                            context, port, db_port_obj['id'])
+                    ipam_fixed_ips = []
+                    for ip in ips:
+                        fixed_ip = ports_obj.IPAllocation(
+                                port_id=db_port_obj['id'],
+                                subnet_id=ip['subnet_id'],
+                                network_id=network_id,
+                                ip_address=ip['ip_address'])
+                        ipam_fixed_ips.append(fixed_ip)
+
+                    db_port_obj['fixed_ips'] = ipam_fixed_ips
                     db_port_obj['ip_allocation'] = (ipalloc_apidef.
                                                 IP_ALLOCATION_IMMEDIATE)
                 except ipam_exc.DeferIpam:
                     db_port_obj['ip_allocation'] = (ipalloc_apidef.
                                                 IP_ALLOCATION_DEFERRED)
+
                 fixed_ips = pdata.get('fixed_ips')
                 if validators.is_attr_set(fixed_ips) and not fixed_ips:
                     # [] was passed explicitly as fixed_ips: unaddressed port.
                     db_port_obj['ip_allocation'] = (ipalloc_apidef.
                                                     IP_ALLOCATION_NONE)
+
+                # Make port dict
+                port_dict = self._make_port_dict(db_port_obj,
+                                                 process_extensions=False)
+                port_dict[portbindings.HOST_ID] = pdata.get(
+                    portbindings.HOST_ID)
+                port_compat = {'port': port_dict}
 
                 # Activities immediately post-port-creation
                 self.extension_manager.process_create_port(context, port_dict,
@@ -1550,13 +1609,17 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 self._portsec_ext_port_create_processing(context, port_dict,
                                                          port_compat)
 
-                # sgids must be got after portsec checked with security group
-                sgids = self._get_security_groups_on_port(context, port_compat)
-                self._process_port_create_security_group(context, port_dict,
-                                                         sgids)
+                # Ensure the default security group is assigned, unless one was
+                # specifically requested
+                if security_group_ids is None:
+                    self._ensure_security_groups_on_port(context, port_dict)
 
                 # process port binding
                 binding = db.add_port_binding(context, port_dict['id'])
+                binding_host = pdata.get(
+                    portbindings.HOST_ID, const.ATTR_NOT_SPECIFIED)
+                if binding_host != const.ATTR_NOT_SPECIFIED:
+                    binding["host"] = binding_host
                 mech_context = driver_context.PortContext(self, context,
                                                           port_dict, network,
                                                           binding, None)
@@ -1593,6 +1656,13 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         # Perform actions after the transaction is committed
         completed_ports = []
         for port in port_data:
+            # Ensure security groups are assigned to the port, if
+            # specifically requested
+            port_dict = port['port_dict']
+            if port_dict.get('security_group_ids') is not None:
+                with db_api.CONTEXT_WRITER.using(context):
+                    self._ensure_security_groups_on_port(context, port_dict)
+
             resource_extend.apply_funcs('ports',
                                         port['port_dict'],
                                         port['port_obj'].db_obj)
@@ -1660,6 +1730,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             if not binding:
                 raise exc.PortNotFound(port_id=id)
             mac_address_updated = self._check_mac_update_allowed(
+                port_db, attrs, binding)
+            mac_address_updated |= self._reset_mac_for_direct_physical(
                 port_db, attrs, binding)
             need_port_update_notify |= mac_address_updated
             original_port = self._make_port_dict(port_db)
@@ -1805,6 +1877,13 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         # merge into session to reflect changes
         binding.persist_state_to_session(plugin_context.session)
 
+    def delete_distributed_port_bindings_by_router_id(self, context,
+                                                      router_id):
+        for binding in (context.session.query(models.DistributedPortBinding).
+                filter_by(router_id=router_id)):
+            db.clear_binding_levels(context, binding.port_id, binding.host)
+            context.session.delete(binding)
+
     @utils.transaction_guard
     @db_api.retry_if_session_inactive()
     def update_distributed_port_binding(self, context, id, port):
@@ -1926,8 +2005,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         self._post_delete_port(
             context, port, router_ids, bound_mech_contexts)
 
-    def _post_delete_port(
-        self, context, port, router_ids, bound_mech_contexts):
+    def _post_delete_port(self, context, port, router_ids,
+                          bound_mech_contexts):
         kwargs = {
             'context': context,
             'port': port,
@@ -2252,6 +2331,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
     def _get_ports_query(self, context, filters=None, *args, **kwargs):
         filters = filters or {}
         security_groups = filters.pop("security_groups", None)
+        limit = kwargs.pop('limit', None)
         if security_groups:
             port_bindings = self._get_port_security_group_bindings(
                 context, filters={'security_group_id':
@@ -2271,6 +2351,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 models_v2.IPAllocation.ip_address.like('%%%s%%' % ip))
                 for ip in ip_addresses_s])
             query = query.filter(substr_filter)
+        if limit:
+            query = query.limit(limit)
         return query
 
     def filter_hosts_with_network_access(
@@ -2546,7 +2628,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         for count in range(MAX_BIND_TRIES):
             cur_context, _, try_again = self._commit_port_binding(
                 original_context, bind_context, need_notify=True,
-                try_again=True, update_binding_levels=False)
+                update_binding_levels=False)
             if not try_again:
                 self.notifier.binding_deactivate(context, port_id,
                                                  active_binding.host,
@@ -2565,3 +2647,11 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         db.clear_binding_levels(context,
                                 port_id=port_id,
                                 host=host)
+
+    @db_api.retry_if_session_inactive()
+    def get_ports_by_vnic_type_and_host(self, context, **kwargs):
+        host = kwargs['host']
+        vnic_type = kwargs['vnic_type']
+        ports = ports_obj.Port.get_ports_by_vnic_type_and_host(
+            context, vnic_type, host)
+        return [self._make_port_dict(port.db_obj) for port in ports]

@@ -24,7 +24,9 @@ from neutron_lib.db import api as db_api
 from neutron_lib.db import model_query
 from neutron_lib import exceptions as n_exc
 from neutron_lib.objects import exceptions as o_exc
+from neutron_lib.objects.logapi import event_types
 from neutron_lib.objects import utils as obj_utils
+from neutron_lib.tests import tools as lib_test_tools
 from neutron_lib.utils import helpers
 from oslo_db import exception as obj_exc
 from oslo_db.sqlalchemy import utils as db_utils
@@ -41,7 +43,6 @@ from neutron.objects import base
 from neutron.objects import common_types
 from neutron.objects.db import api as obj_db_api
 from neutron.objects import flavor
-from neutron.objects.logapi import event_types
 from neutron.objects import network as net_obj
 from neutron.objects import ports
 from neutron.objects.qos import policy as qos_policy
@@ -452,7 +453,7 @@ def get_random_dscp_mark():
 
 def get_list_of_random_networks(num=10):
     for i in range(5):
-        res = [tools.get_random_ip_network() for i in range(num)]
+        res = [lib_test_tools.get_random_ip_network() for i in range(num)]
         # make sure there are no duplicates
         if len(set(res)) == num:
             return res
@@ -511,13 +512,13 @@ FIELD_TYPE_VALUE_GENERATOR_MAP = {
     common_types.FlowDirectionEnumField: tools.get_random_flow_direction,
     common_types.HARouterEnumField: tools.get_random_ha_states,
     common_types.IpamAllocationStatusEnumField: tools.get_random_ipam_status,
-    common_types.IPNetworkField: tools.get_random_ip_network,
+    common_types.IPNetworkField: lib_test_tools.get_random_ip_network,
     common_types.IPNetworkPrefixLenField: tools.get_random_prefixlen,
     common_types.IPV6ModeEnumField: tools.get_random_ipv6_mode,
     common_types.IPVersionEnumField: tools.get_random_ip_version,
     common_types.IpProtocolEnumField: tools.get_random_ip_protocol,
     common_types.ListOfIPNetworksField: get_list_of_random_networks,
-    common_types.MACAddressField: tools.get_random_EUI,
+    common_types.MACAddressField: lib_test_tools.get_random_EUI,
     common_types.NetworkSegmentRangeNetworkTypeEnumField:
         tools.get_random_network_segment_range_network_type,
     common_types.PortBindingStatusEnumField:
@@ -1207,7 +1208,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                                '_get_changed_persistent_fields',
                                return_value=fields_to_update):
             with mock.patch.object(obj_db_api, 'get_objects',
-                side_effect=self.fake_get_objects):
+                                   side_effect=self.fake_get_objects):
                 obj = self._test_class(self.context, **self.obj_fields[0])
                 # get new values and fix keys
                 update_mock.return_value = self.db_objs[1]
@@ -1250,9 +1251,8 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                 with mock.patch.object(base.NeutronDbObject,
                                        '_get_changed_persistent_fields',
                                        return_value=fields_to_update):
-                    with mock.patch.object(
-                        obj_db_api, 'get_objects',
-                        side_effect=self.fake_get_objects):
+                    with mock.patch.object(obj_db_api, 'get_objects',
+                                           side_effect=self.fake_get_objects):
                         obj.update()
                 self._check_equal(self.objs[0], obj)
 
@@ -1523,10 +1523,12 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
                         objclass.db_model(**objclass_fields)
                     ]
 
-    def _create_test_network(self, name='test-network1', network_id=None):
+    def _create_test_network(self, name='test-network1', network_id=None,
+                             qos_policy_id=None):
         network_id = (uuidutils.generate_uuid() if network_id is None
                       else network_id)
-        _network = net_obj.Network(self.context, name=name, id=network_id)
+        _network = net_obj.Network(self.context, name=name, id=network_id,
+                                   qos_policy_id=qos_policy_id)
         _network.create()
         return _network
 

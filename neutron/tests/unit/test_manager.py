@@ -32,7 +32,7 @@ DB_PLUGIN_KLASS = 'neutron.db.db_base_plugin_v2.NeutronDbPluginV2'
 
 
 class MultiServiceCorePlugin(object):
-    supported_extension_aliases = ['lbaas', dummy_plugin.Dummy.get_alias()]
+    supported_extension_aliases = ['fwaas', dummy_plugin.Dummy.get_alias()]
 
 
 class CorePluginWithAgentNotifiers(object):
@@ -125,7 +125,7 @@ class NeutronManagerTestCase(base.BaseTestCase):
                               "MultiServiceCorePlugin")
         manager.NeutronManager.get_instance()
         plugins = directory.get_plugins()
-        # CORE, LOADBALANCER, DUMMY
+        # CORE, FIREWALL, DUMMY
         self.assertEqual(3, len(plugins))
 
     def test_load_plugins_with_requirements(self):
@@ -204,7 +204,6 @@ class NeutronManagerTestCase(base.BaseTestCase):
         svc_plugins = directory.get_plugins()
         self.assertEqual(3, len(svc_plugins))
         self.assertIn(lib_const.CORE, svc_plugins.keys())
-        self.assertIn(lib_const.LOADBALANCER, svc_plugins.keys())
         self.assertIn(dummy_plugin.DUMMY_SERVICE_TYPE, svc_plugins.keys())
 
     def test_load_default_service_plugins(self):
@@ -217,17 +216,10 @@ class NeutronManagerTestCase(base.BaseTestCase):
         svc_plugins = directory.get_plugins()
         self.assertIn(dummy_plugin.DUMMY_SERVICE_TYPE, svc_plugins)
 
-    def test_post_plugin_validation(self):
-        cfg.CONF.import_opt('dhcp_agents_per_network',
-                            'neutron.db.agentschedulers_db')
-
-        self.assertIsNone(manager.validate_post_plugin_load())
-        cfg.CONF.set_override('dhcp_agents_per_network', 2)
-        self.assertIsNone(manager.validate_post_plugin_load())
-        cfg.CONF.set_override('dhcp_agents_per_network', 0)
-        self.assertIsNotNone(manager.validate_post_plugin_load())
-        cfg.CONF.set_override('dhcp_agents_per_network', -1)
-        self.assertIsNotNone(manager.validate_post_plugin_load())
+    def test_dhcp_agents_per_network_min(self):
+        # Ensures dhcp_agents_per_network must be at least 1.
+        self.assertRaises(ValueError, cfg.CONF.set_override,
+                          'dhcp_agents_per_network', 0)
 
     def test_pre_plugin_validation(self):
         self.assertIsNotNone(manager.validate_pre_plugin_load())

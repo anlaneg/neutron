@@ -179,8 +179,9 @@ class TestDhcpAgentNotifyAPI(base.BaseTestCase):
                                      {}, 'foo_network_id')
         self.assertEqual(1, self.mock_fanout.call_count)
 
-    def _test__notify_agents_with_function(
-        self, function, expected_scheduling=0, expected_casts=0):
+    def _test__notify_agents_with_function(self, function,
+                                           expected_scheduling=0,
+                                           expected_casts=0):
         with mock.patch.object(self.notifier, '_schedule_network') as f:
             with mock.patch.object(self.notifier, '_get_enabled_agents') as g:
                 agent = agent_obj.Agent(mock.ANY, id=uuidutils.generate_uuid(),
@@ -254,7 +255,7 @@ class TestDhcpAgentNotifyAPI(base.BaseTestCase):
         self.assertEqual(1, self.mock_fanout.call_count)
 
     def test__cast_message(self):
-        self.notifier._cast_message(mock.ANY, mock.ANY, mock.ANY)
+        self.notifier._cast_message(mock.ANY, mock.ANY, mock.ANY, mock.ANY)
         self.assertEqual(1, self.mock_cast.call_count)
 
     def test__native_notification_unsubscribes(self):

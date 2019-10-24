@@ -21,8 +21,8 @@ from neutron_lib.db import resource_extend
 from neutron_lib.db import utils as db_utils
 from neutron_lib.exceptions import allowedaddresspairs as addr_exc
 from neutron_lib.objects import exceptions
+from neutron_lib.utils import net as net_utils
 
-from neutron.common import utils
 from neutron.objects.port.extensions import (allowedaddresspairs
                                              as obj_addr_pair)
 
@@ -44,9 +44,9 @@ class AllowedAddressPairsMixin(object):
                         #未指定mac_address时，用port的mac地址
                         address_pair['mac_address'] = port['mac_address']
                     # retain string format as passed through API
-                    mac_address = utils.AuthenticEUI(
+                    mac_address = net_utils.AuthenticEUI(
                         address_pair['mac_address'])
-                    ip_address = utils.AuthenticIPNetwork(
+                    ip_address = net_utils.AuthenticIPNetwork(
                         address_pair['ip_address'])
                     #创建地址对
                     pair_obj = obj_addr_pair.AllowedAddressPair(

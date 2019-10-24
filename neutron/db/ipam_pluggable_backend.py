@@ -118,6 +118,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         allocated ip addresses.
         """
         allocated = []
+        factory = ipam_driver.get_address_request_factory()
 
         # we need to start with entries that asked for a specific IP in case
         # those IPs happen to be next in the line for allocation for ones that
@@ -132,7 +133,6 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
                 ip_list = [ip] if isinstance(ip, dict) else ip
                 subnets = [ip_dict['subnet_id'] for ip_dict in ip_list]
                 try:
-                    factory = ipam_driver.get_address_request_factory()
                     ip_request = factory.get_request(context, port, ip_list[0])
                     ipam_allocator = ipam_driver.get_allocator(subnets)
                     ip_address, subnet_id = ipam_allocator.allocate(ip_request)
@@ -174,6 +174,10 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
     def delete_subnet(self, context, subnet_id):
         ipam_driver = driver.Pool.get_instance(None, context)
         ipam_driver.remove_subnet(subnet_id)
+
+    def get_subnet(self, context, subnet_id):
+        ipam_driver = driver.Pool.get_instance(None, context)
+        return ipam_driver.get_subnet(subnet_id)
 
     def allocate_ips_for_port_and_store(self, context, port, port_id):
         # Make a copy of port dict to prevent changing
@@ -285,6 +289,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         """
         fixed_ip_list = []
         for fixed in fixed_ips:
+            fixed['device_owner'] = device_owner
             subnet = self._get_subnet_for_fixed_ip(context, fixed, subnets)
 
             is_auto_addr_subnet = ipv6_utils.is_auto_address_subnet(subnet)
@@ -341,7 +346,7 @@ class IpamPluggableBackend(ipam_backend_mixin.IpamBackendMixin):
         try:
             subnets = self._ipam_get_subnets(
                 context, network_id=port['network_id'], host=host,
-                service_type=port.get('device_owner'))
+                service_type=port.get('device_owner'), fixed_configured=True)
         except ipam_exc.DeferIpam:
             subnets = []
 

@@ -12,12 +12,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import functools
+import random
+import threading
+
+import netaddr
+from neutron_lib import constants as n_cons
 from oslo_utils import uuidutils
+from pyroute2.ipdb import routes as ipdb_routes
+from pyroute2.iproute import linux as iproute_linux
 import testtools
 
 from neutron.agent.linux import ip_lib
 from neutron.common import utils as common_utils
 from neutron.privileged.agent.linux import ip_lib as priv_ip_lib
+from neutron.tests.common import net_helpers
 from neutron.tests.functional import base as functional_base
 
 
@@ -183,42 +192,45 @@ class GetDevicesInfoTestCase(functional_base.BaseSudoTestCase):
         self.assertEqual(sorted(interfaces_tested),
                          sorted(self.interfaces + vxlan_interfaces))
 
+    def _retrieve_interface(self, interface_name, namespace):
+        for device in priv_ip_lib.get_link_devices(namespace):
+            if interface_name == ip_lib.get_attr(device, 'IFLA_IFNAME'):
+                return device
+        else:
+            self.fail('Interface "%s" not found' % interface_name)
+
     def test_get_devices_info_veth_different_namespaces(self):
         namespace2 = 'ns_test-' + uuidutils.generate_uuid()
         priv_ip_lib.create_netns(namespace2)
         self.addCleanup(self._remove_ns, namespace2)
+        # Create a random number of dummy interfaces in namespace2, in order
+        # to increase the 'veth1_2' interface index in its namespace.
+        for idx in range(5, random.randint(15, 20)):
+            priv_ip_lib.create_interface('int_%s' % idx, namespace2, 'dummy')
+
         ip_wrapper = ip_lib.IPWrapper(self.namespace)
         ip_wrapper.add_veth('veth1_1', 'veth1_2', namespace2)
 
-        devices = priv_ip_lib.get_link_devices(self.namespace)
-        for device in devices:
-            name = ip_lib.get_attr(device, 'IFLA_IFNAME')
-            if name == 'veth1_1':
-                veth1_1 = device
-                break
-        else:
-            self.fail('Interface "veth1_1" not found')
+        veth1_1 = self._retrieve_interface('veth1_1', self.namespace)
+        veth1_2 = self._retrieve_interface('veth1_2', namespace2)
 
         ifla_linkinfo = ip_lib.get_attr(veth1_1, 'IFLA_LINKINFO')
         self.assertEqual(ip_lib.get_attr(ifla_linkinfo, 'IFLA_INFO_KIND'),
                          'veth')
-        self.assertIsNone(ip_lib.get_attr(veth1_1, 'IFLA_LINK'))
+        # NOTE(ralonsoh): since kernel_version=4.15.0-60-generic, iproute2
+        # provides the veth pair index, even if the pair interface is in other
+        # namespace. In previous versions, the parameter 'IFLA_LINK' was not
+        # present. We need to handle both cases.
+        self.assertIn(ip_lib.get_attr(veth1_1, 'IFLA_LINK'),
+                      [None, veth1_2['index']])
 
     def test_get_devices_info_veth_same_namespaces(self):
         ip_wrapper = ip_lib.IPWrapper(self.namespace)
         ip_wrapper.add_veth('veth1_1', 'veth1_2')
 
-        devices = priv_ip_lib.get_link_devices(self.namespace)
-        veth1_1 = veth1_2 = None
-        for device in devices:
-            name = ip_lib.get_attr(device, 'IFLA_IFNAME')
-            if name == 'veth1_1':
-                veth1_1 = device
-            elif name == 'veth1_2':
-                veth1_2 = device
+        veth1_1 = self._retrieve_interface('veth1_1', self.namespace)
+        veth1_2 = self._retrieve_interface('veth1_2', self.namespace)
 
-        self.assertIsNotNone(veth1_1)
-        self.assertIsNotNone(veth1_2)
         veth1_1_link = ip_lib.get_attr(veth1_1, 'IFLA_LINK')
         veth1_2_link = ip_lib.get_attr(veth1_2, 'IFLA_LINK')
         self.assertEqual(veth1_1['index'], veth1_2_link)
@@ -450,3 +462,201 @@ class GetIpAddressesTestCase(functional_base.BaseSudoTestCase):
             self.assertEqual(interfaces[int_name]['cidr'], cidr)
             self.assertEqual(interfaces[int_name]['scope'],
                              ip_lib.IP_ADDRESS_SCOPE[ip_address['scope']])
+
+
+class RouteTestCase(functional_base.BaseSudoTestCase):
+
+    def setUp(self):
+        super(RouteTestCase, self).setUp()
+        self.namespace = self.useFixture(net_helpers.NamespaceFixture()).name
+        self.device_name = 'test_device'
+        ip_lib.IPWrapper(self.namespace).add_dummy(self.device_name)
+        self.device = ip_lib.IPDevice(self.device_name, self.namespace)
+        self.device.link.set_up()
+
+    def _check_routes(self, cidrs, table=None, gateway=None, metric=None,
+                      scope=None):
+        table = table or iproute_linux.DEFAULT_TABLE
+        if not scope:
+            scope = 'universe' if gateway else 'link'
+        scope = priv_ip_lib._get_scope_name(scope)
+        for cidr in cidrs:
+            ip_version = common_utils.get_ip_version(cidr)
+            if ip_version == n_cons.IP_VERSION_6 and not metric:
+                metric = ipdb_routes.IP6_RT_PRIO_USER
+            if ip_version == n_cons.IP_VERSION_6:
+                scope = 0
+            routes = priv_ip_lib.list_ip_routes(self.namespace, ip_version)
+            for route in routes:
+                ip = ip_lib.get_attr(route, 'RTA_DST')
+                mask = route['dst_len']
+                if not (ip == str(netaddr.IPNetwork(cidr).ip) and
+                        mask == netaddr.IPNetwork(cidr).cidr.prefixlen):
+                    continue
+                self.assertEqual(table, route['table'])
+                self.assertEqual(
+                    priv_ip_lib._IP_VERSION_FAMILY_MAP[ip_version],
+                    route['family'])
+                self.assertEqual(gateway,
+                                 ip_lib.get_attr(route, 'RTA_GATEWAY'))
+                self.assertEqual(metric,
+                                 ip_lib.get_attr(route, 'RTA_PRIORITY'))
+                self.assertEqual(scope, route['scope'])
+                break
+            else:
+                self.fail('CIDR %s not found in the list of routes' % cidr)
+
+    def _check_gateway(self, gateway, table=None, metric=None):
+        table = table or iproute_linux.DEFAULT_TABLE
+        ip_version = common_utils.get_ip_version(gateway)
+        if ip_version == n_cons.IP_VERSION_6 and not metric:
+            metric = ipdb_routes.IP6_RT_PRIO_USER
+        scope = 0
+        routes = priv_ip_lib.list_ip_routes(self.namespace, ip_version)
+        for route in routes:
+            if not (ip_lib.get_attr(route, 'RTA_GATEWAY') == gateway):
+                continue
+            self.assertEqual(table, route['table'])
+            self.assertEqual(
+                priv_ip_lib._IP_VERSION_FAMILY_MAP[ip_version],
+                route['family'])
+            self.assertEqual(gateway,
+                             ip_lib.get_attr(route, 'RTA_GATEWAY'))
+            self.assertEqual(scope, route['scope'])
+            self.assertEqual(0, route['dst_len'])
+            self.assertEqual(metric,
+                             ip_lib.get_attr(route, 'RTA_PRIORITY'))
+            break
+        else:
+            self.fail('Default gateway %s not found in the list of routes'
+                      % gateway)
+
+    def _add_route_device_and_check(self, table=None, metric=None,
+                                    scope='link'):
+        cidrs = ['192.168.0.0/24', '172.90.0.0/16', '10.0.0.0/8',
+                 '2001:db8::/64']
+        for cidr in cidrs:
+            ip_version = common_utils.get_ip_version(cidr)
+            priv_ip_lib.add_ip_route(self.namespace, cidr, ip_version,
+                                     device=self.device_name, table=table,
+                                     metric=metric, scope=scope)
+
+        self._check_routes(cidrs, table=table, metric=metric, scope=scope)
+
+    def test_add_route_device(self):
+        self._add_route_device_and_check(table=None)
+
+    def test_add_route_device_table(self):
+        self._add_route_device_and_check(table=100)
+
+    def test_add_route_device_metric(self):
+        self._add_route_device_and_check(metric=50)
+
+    def test_add_route_device_table_metric(self):
+        self._add_route_device_and_check(table=200, metric=30)
+
+    def test_add_route_device_scope_global(self):
+        self._add_route_device_and_check(scope='global')
+
+    def test_add_route_device_scope_site(self):
+        self._add_route_device_and_check(scope='site')
+
+    def test_add_route_device_scope_host(self):
+        self._add_route_device_and_check(scope='host')
+
+    def test_add_route_via_ipv4(self):
+        cidrs = ['192.168.0.0/24', '172.90.0.0/16', '10.0.0.0/8']
+        int_cidr = '192.168.20.1/24'
+        int_ip_address = str(netaddr.IPNetwork(int_cidr).ip)
+        self.device.addr.add(int_cidr)
+        for cidr in cidrs:
+            ip_version = common_utils.get_ip_version(cidr)
+            priv_ip_lib.add_ip_route(self.namespace, cidr, ip_version,
+                                     via=int_ip_address)
+        self._check_routes(cidrs, gateway=int_ip_address)
+
+    def test_add_route_via_ipv6(self):
+        cidrs = ['2001:db8::/64', 'faaa::/96']
+        int_cidr = 'fd00::1/64'
+        via_ip = 'fd00::2'
+        self.device.addr.add(int_cidr)
+        for cidr in cidrs:
+            ip_version = common_utils.get_ip_version(cidr)
+            priv_ip_lib.add_ip_route(self.namespace, cidr, ip_version,
+                                     via=via_ip)
+        self._check_routes(cidrs, gateway=via_ip)
+
+    def test_add_default(self):
+        ip_addresses = ['192.168.0.1/24', '172.90.0.1/16', '10.0.0.1/8',
+                        '2001:db8::1/64', 'faaa::1/96']
+        for ip_address in ip_addresses:
+            ip_version = common_utils.get_ip_version(ip_address)
+            if ip_version == n_cons.IP_VERSION_4:
+                _ip = str(netaddr.IPNetwork(ip_address).ip)
+            else:
+                _ip = str(netaddr.IPNetwork(ip_address).ip + 1)
+            self.device.addr.add(ip_address)
+            priv_ip_lib.add_ip_route(self.namespace, None, ip_version,
+                                     device=self.device_name, via=_ip)
+            self._check_gateway(_ip)
+
+
+class GetLinkAttributesTestCase(functional_base.BaseSudoTestCase):
+
+    def setUp(self):
+        super(GetLinkAttributesTestCase, self).setUp()
+        self.namespace = self.useFixture(net_helpers.NamespaceFixture()).name
+        self.device_name = 'test_device'
+        ip_lib.IPWrapper(self.namespace).add_dummy(self.device_name)
+        self.device = ip_lib.IPDevice(self.device_name, self.namespace)
+        self.pyroute_dev = priv_ip_lib.get_link_devices(
+            self.namespace, ifname=self.device_name)
+        self.assertEqual(1, len(self.pyroute_dev))
+        self.pyroute_dev = self.pyroute_dev[0]
+
+    def test_get_link_attribute_kind(self):
+        ifla_linkinfo = ip_lib.get_attr(self.pyroute_dev, 'IFLA_LINKINFO')
+        ifla_link_kind = ip_lib.get_attr(ifla_linkinfo, 'IFLA_INFO_KIND')
+        self.assertEqual('dummy', ifla_link_kind)
+        self.assertEqual(ifla_link_kind, self.device.link.link_kind)
+
+    def test_get_link_attributes(self):
+        expected_attr = ['mtu', 'qlen', 'state', 'qdisc', 'brd', 'link/ether',
+                         'alias', 'allmulticast', 'link_kind']
+        attr = self.device.link.attributes
+        self.assertSetEqual(set(expected_attr), set(attr.keys()))
+
+
+class ListNamespacePids(functional_base.BaseSudoTestCase):
+
+    def setUp(self):
+        super(ListNamespacePids, self).setUp()
+        self.namespace = self.useFixture(net_helpers.NamespaceFixture()).name
+        self.timeout = 3
+
+    @staticmethod
+    def _run_sleep(namespace, timeout):
+        ip_wrapper = ip_lib.IPWrapper(namespace=namespace)
+        ip_wrapper.netns.execute(['sleep', timeout], check_exit_code=False)
+
+    def _check_pids(self, num_pids, namespace=None):
+        namespace = self.namespace if not namespace else namespace
+        self.pids = priv_ip_lib.list_ns_pids(namespace)
+        return len(self.pids) == num_pids
+
+    def test_list_namespace_pids(self):
+        thread = threading.Thread(target=self._run_sleep,
+                                  args=(self.namespace, self.timeout))
+        thread.start()
+        try:
+            check_pids = functools.partial(self._check_pids, 1)
+            common_utils.wait_until_true(check_pids, timeout=self.timeout)
+        except common_utils.WaitTimeout:
+            self.fail('Process no found in namespace %s' % self.namespace)
+        thread.join(timeout=self.timeout)
+
+    def test_list_namespace_pids_nothing_running_inside(self):
+        self.assertTrue(self._check_pids(0))
+
+    def test_list_namespace_not_created(self):
+        self.assertTrue(self._check_pids(0, namespace='othernamespace'))

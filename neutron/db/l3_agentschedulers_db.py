@@ -15,6 +15,7 @@
 
 from neutron_lib.api import extensions
 from neutron_lib import constants
+from neutron_lib.db import api as db_api
 from neutron_lib.exceptions import agent as agent_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
@@ -159,7 +160,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         if not self.router_supports_scheduling(context, router_id):
             raise l3agentscheduler.RouterDoesntSupportScheduling(
                 router_id=router_id)
-        with context.session.begin(subtransactions=True):
+        with db_api.CONTEXT_WRITER.using(context):
             router = self.get_router(context, router_id)
             agent = self._get_agent(context, agent_id)
             self.validate_agent_router_combination(context, agent, router)
@@ -226,7 +227,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
                 context, router_id=router_id, l3_agent_id=agent_id)
 
     def _unschedule_router(self, context, router_id, agents_ids):
-        with context.session.begin(subtransactions=True):
+        with db_api.CONTEXT_WRITER.using(context):
             for agent_id in agents_ids:
                 self._unbind_router(context, router_id, agent_id)
 
@@ -238,7 +239,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
         """
         cur_agents = self.list_l3_agents_hosting_router(
             context, router_id)['agents']
-        with context.session.begin(subtransactions=True):
+        with db_api.CONTEXT_WRITER.using(context):
             cur_agents_ids = [agent['id'] for agent in cur_agents]
             self._unschedule_router(context, router_id, cur_agents_ids)
 
@@ -303,7 +304,8 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
 
         return self.get_sync_data(context, router_ids=router_ids, active=True)
 
-    def list_router_ids_on_host(self, context, host, router_ids=None):
+    def list_router_ids_on_host(self, context, host, router_ids=None,
+                                with_dvr=True):
         try:
             agent = self._get_agent_by_type_and_host(
                 context, constants.AGENT_TYPE_L3, host)
@@ -311,16 +313,19 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
             return []
         if not agentschedulers_db.services_available(agent.admin_state_up):
             return []
-        return self._get_router_ids_for_agent(context, agent, router_ids)
+        return self._get_router_ids_for_agent(context, agent,
+                                              router_ids, with_dvr)
 
     def get_host_ha_router_count(self, context, host):
-        router_ids = self.list_router_ids_on_host(context, host)
+        router_ids = self.list_router_ids_on_host(context, host,
+                                                  with_dvr=False)
         up_routers = l3_objs.Router.get_objects(context, id=router_ids,
                                                 admin_state_up=True)
         return len(l3_objs.RouterExtraAttributes.get_objects(
             context, router_id=[obj.id for obj in up_routers], ha=True))
 
-    def _get_router_ids_for_agent(self, context, agent, router_ids):
+    def _get_router_ids_for_agent(self, context, agent, router_ids,
+                                  with_dvr=True):
         """Get IDs of routers that the agent should host
 
         Overridden for DVR to handle agents in 'dvr' mode which have
@@ -386,7 +391,7 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
                 context, router_ids))
 
     def list_l3_agents_hosting_router(self, context, router_id):
-        with context.session.begin(subtransactions=True):
+        with db_api.CONTEXT_READER.using(context):
             agents = self._get_l3_agents_hosting_routers(
                 context, [router_id])
         return {'agents': [self._make_agent_dict(agent)
@@ -462,14 +467,10 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
 
             handle_internal_only_routers = agent_conf.get(
                 'handle_internal_only_routers', True)
-            gateway_external_network_id = agent_conf.get(
-                'gateway_external_network_id', None)
 
             ex_net_id = (sync_router['external_gateway_info'] or {}).get(
                 'network_id')
-            if ((not ex_net_id and not handle_internal_only_routers) or
-                (ex_net_id and gateway_external_network_id and
-                 ex_net_id != gateway_external_network_id)):
+            if not ex_net_id and not handle_internal_only_routers:
                 continue
 
             candidates.append(l3_agent)

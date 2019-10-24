@@ -17,6 +17,7 @@ from neutron_lib.callbacks import priority_group
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as lib_const
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as lib_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
@@ -87,11 +88,12 @@ class DriverController(object):
         drv = self._get_provider_for_create(context, router)
         self._stm.add_resource_association(context, plugin_constants.L3,
                                            drv.name, router['id'])
-        registry.notify(
+        registry.publish(
             resources.ROUTER_CONTROLLER, events.PRECOMMIT_ADD_ASSOCIATION,
-            trigger, context=context, router=router,
-            router_db=router_db, old_driver=None,
-            new_driver=drv, **kwargs)
+            trigger, payload=events.DBEventPayload(
+                context, request_body=router, states=(router_db,),
+                metadata={'old_driver': None, 'new_driver': drv},
+                resource_id=router_db.get('id')))
 
     @registry.receives(resources.ROUTER, [events.PRECOMMIT_DELETE],
                        priority_group.PRIORITY_ROUTER_CONTROLLER)
@@ -99,10 +101,13 @@ class DriverController(object):
                                router_id, **kwargs):
         """Remove the association between a router and a service provider."""
         drv = self.get_provider_for_router(context, router_id)
-        registry.notify(
+        registry.publish(
             resources.ROUTER_CONTROLLER, events.PRECOMMIT_DELETE_ASSOCIATIONS,
-            trigger, context=context, router_id=router_id,
-            old_driver=drv, new_driver=None, **kwargs)
+            trigger, payload=events.DBEventPayload(
+                context,
+                metadata={'old_driver': drv, 'new_driver': None},
+                resource_id=router_id))
+
         self._stm.del_resource_associations(context, [router_id])
 
     @registry.receives(resources.ROUTER, [events.PRECOMMIT_UPDATE],
@@ -160,7 +165,7 @@ class DriverController(object):
                                             'new': new_drv})
             _ensure_driver_supports_request(new_drv, payload.request_body)
             # TODO(kevinbenton): notify old driver explicitly of driver change
-            with payload.context.session.begin(subtransactions=True):
+            with db_api.CONTEXT_WRITER.using(payload.context):
                 registry.publish(
                     resources.ROUTER_CONTROLLER,
                     events.PRECOMMIT_DELETE_ASSOCIATIONS,
@@ -169,7 +174,7 @@ class DriverController(object):
                     payload.context, [payload.resource_id])
                 self._stm.add_resource_association(
                     payload.context, plugin_constants.L3,
-                    new_drv.name, payload.resource_id)
+                    new_drv.name, payload.resource_id, expire_session=False)
                 registry.publish(
                     resources.ROUTER_CONTROLLER,
                     events.PRECOMMIT_ADD_ASSOCIATION,
@@ -189,11 +194,13 @@ class DriverController(object):
                 self._stm.add_resource_association(
                     context, plugin_constants.L3,
                     driver_name, router_id)
-                registry.notify(
+                registry.publish(
                     resources.ROUTER_CONTROLLER,
                     events.PRECOMMIT_ADD_ASSOCIATION,
-                    self, context=context, router_id=router_id,
-                    router=router, old_driver=None, new_driver=driver)
+                    self, payload=events.DBEventPayload(
+                        context, states=(router,),
+                        metadata={'old_driver': None, 'new_driver': driver},
+                        resource_id=router_id))
         return self.drivers[driver_name]
 
     def _get_provider_for_create(self, context, router):
@@ -236,7 +243,7 @@ class DriverController(object):
 
 
 class _LegacyPlusProviderConfiguration(
-    provider_configuration.ProviderConfiguration):
+        provider_configuration.ProviderConfiguration):
 
     def __init__(self):
         # loads up ha, dvr, and single_node service providers automatically.

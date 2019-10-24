@@ -40,10 +40,10 @@ import neutron.conf.db.l3_dvr_db
 import neutron.conf.db.l3_gwmode_db
 import neutron.conf.db.l3_hamode_db
 import neutron.conf.extensions.allowedaddresspairs
+import neutron.conf.extensions.conntrack_helper
 import neutron.conf.plugins.ml2.config
 import neutron.conf.plugins.ml2.drivers.agent
 import neutron.conf.plugins.ml2.drivers.driver_type
-import neutron.conf.plugins.ml2.drivers.l2pop
 import neutron.conf.plugins.ml2.drivers.linuxbridge
 import neutron.conf.plugins.ml2.drivers.macvtap
 import neutron.conf.plugins.ml2.drivers.mech_sriov.agent_common
@@ -63,6 +63,7 @@ import neutron.wsgi
 
 
 NOVA_GROUP = 'nova'
+IRONIC_GROUP = 'ironic'
 
 CONF = cfg.CONF
 
@@ -75,6 +76,8 @@ deprecations = {'nova.cafile': [cfg.DeprecatedOpt('ca_certificates_file',
 
 _nova_options = ks_loading.register_session_conf_options(
             CONF, NOVA_GROUP, deprecated_opts=deprecations)
+_ironic_options = ks_loading.register_session_conf_options(
+            CONF, IRONIC_GROUP)
 
 
 def list_agent_opts():
@@ -98,8 +101,11 @@ def list_agent_opts():
 def list_extension_opts():
     return [
         ('DEFAULT',
-         neutron.conf.extensions.allowedaddresspairs
-         .allowed_address_pair_opts),
+         itertools.chain(
+             neutron.conf.extensions.allowedaddresspairs
+             .allowed_address_pair_opts,
+             neutron.conf.extensions.conntrack_helper.conntrack_helper_opts)
+         ),
         ('quotas',
          itertools.chain(
              neutron.conf.quota.l3_quota_opts,
@@ -140,6 +146,10 @@ def list_opts():
         (neutron.conf.common.NOVA_CONF_SECTION,
          itertools.chain(
               neutron.conf.common.nova_opts)
+         ),
+        (neutron.conf.common.IRONIC_CONF_SECTION,
+         itertools.chain(
+             neutron.conf.common.ironic_opts)
          ),
         ('quotas', neutron.conf.quota.core_quota_opts)
     ]
@@ -211,6 +221,8 @@ def list_l3_agent_opts():
          ),
         ('agent',
          neutron.conf.agent.agent_extensions_manager.AGENT_EXT_MANAGER_OPTS),
+        ('network_log',
+         neutron.conf.services.logging.log_driver_opts)
     ]
 
 
@@ -259,8 +271,6 @@ def list_ml2_conf_opts():
          neutron.conf.plugins.ml2.drivers.driver_type.geneve_opts),
         ('securitygroup',
          neutron.conf.agent.securitygroups_rpc.security_group_opts),
-        ('l2pop',
-         neutron.conf.plugins.ml2.drivers.l2pop.l2_population_options),
         ('ovs_driver',
          neutron.conf.plugins.ml2.drivers.openvswitch.mech_ovs_conf.
          ovs_driver_opts),
@@ -316,6 +326,20 @@ def list_auth_opts():
                 opt_list.append(plugin_option)
     opt_list.sort(key=operator.attrgetter('name'))
     return [(NOVA_GROUP, opt_list)]
+
+
+def list_ironic_auth_opts():
+    opt_list = copy.deepcopy(_ironic_options)
+    opt_list.insert(0, ks_loading.get_auth_common_conf_options()[0])
+    # NOTE(mhickey): There are a lot of auth plugins, we just generate
+    # the config options for a few common ones
+    plugins = ['password', 'v2password', 'v3password']
+    for name in plugins:
+        for plugin_option in ks_loading.get_auth_plugin_conf_options(name):
+            if all(option.name != plugin_option.name for option in opt_list):
+                opt_list.append(plugin_option)
+    opt_list.sort(key=operator.attrgetter('name'))
+    return [(IRONIC_GROUP, opt_list)]
 
 
 def list_xenapi_opts():

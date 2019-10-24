@@ -34,6 +34,7 @@ from neutron.agent.linux import external_process
 from neutron.agent.linux import interface
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import keepalived
+from neutron.agent.metadata import driver as metadata_driver
 from neutron.common import utils as common_utils
 from neutron.conf.agent import common as agent_config
 from neutron.conf import common as common_config
@@ -95,11 +96,6 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                           get_temp_file_path('external/pids'))
         conf.set_override('host', host)
         conf.set_override('agent_mode', agent_mode)
-        conf.set_override(
-            'root_helper', cfg.CONF.AGENT.root_helper, group='AGENT')
-        conf.set_override(
-            'root_helper_daemon', cfg.CONF.AGENT.root_helper_daemon,
-            group='AGENT')
 
         return conf
 
@@ -135,6 +131,12 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                                                   enable_pf_floating_ip=(
                                                       enable_pf_floating_ip),
                                                   qos_policy_id=qos_policy_id)
+
+    def change_router_state(self, router_id, state):
+        ri = self.agent.router_info.get(router_id)
+        if not ri:
+            self.fail('Router %s is not present in the L3 agent' % router_id)
+        ri.ha_state = state
 
     def _test_conntrack_disassociate_fip(self, ha):
         '''Test that conntrack immediately drops stateful connection
@@ -200,8 +202,8 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
     def _gateway_check(self, gateway_ip, external_device):
         expected_gateway = gateway_ip
         ip_vers = netaddr.IPAddress(expected_gateway).version
-        existing_gateway = (external_device.route.get_gateway(
-            ip_version=ip_vers).get('gateway'))
+        existing_gateway = external_device.route.get_gateway(
+            ip_version=ip_vers).get('via')
         self.assertEqual(expected_gateway, existing_gateway)
 
     def _assert_ha_device(self, router):
@@ -232,15 +234,25 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
     def _assert_external_device(self, router):
         self.assertTrue(self._check_external_device(router))
 
+    def _wait_until_ipv6_accept_ra_has_state(
+            self, ns_name, device_name, enabled):
+        ip_wrapper = ip_lib.IPWrapper(namespace=ns_name)
+
+        def _ipv6_accept_ra_state():
+            ra_state = ip_wrapper.netns.execute(['sysctl', '-b',
+                'net.ipv6.conf.%s.accept_ra' % device_name])
+            return (
+                enabled == (int(ra_state) != constants.ACCEPT_RA_DISABLED))
+
+        common_utils.wait_until_true(_ipv6_accept_ra_state)
+
     def _assert_ipv6_accept_ra(self, router, enabled=True):
         external_port = router.get_ex_gw_port()
         external_device_name = router.get_external_device_name(
             external_port['id'])
-        ip_wrapper = ip_lib.IPWrapper(namespace=router.ns_name)
-        ra_state = ip_wrapper.netns.execute(['sysctl', '-b',
-            'net.ipv6.conf.%s.accept_ra' % external_device_name])
-        self.assertEqual(
-            enabled, int(ra_state) != constants.ACCEPT_RA_DISABLED)
+
+        self._wait_until_ipv6_accept_ra_has_state(
+            router.ns_name, external_device_name, enabled)
 
     def _wait_until_ipv6_forwarding_has_state(self, ns_name, dev_name, state):
 
@@ -393,7 +405,8 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         pm = external_process.ProcessManager(
             conf,
             router.router_id,
-            router.ns_name)
+            router.ns_name,
+            service=metadata_driver.HAPROXY_SERVICE)
         return pm.active
 
     def device_exists_with_ips_and_mac(self, expected_device, name_getter,
@@ -486,7 +499,8 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         # so there's no need to check that explicitly.
         self.assertFalse(self._namespace_exists(router.ns_name))
         common_utils.wait_until_true(
-            lambda: not self._metadata_proxy_exists(self.agent.conf, router))
+            lambda: not self._metadata_proxy_exists(self.agent.conf, router),
+            timeout=10)
 
     def _assert_snat_chains(self, router):
         self.assertFalse(router.iptables_manager.is_chain_empty(
@@ -673,8 +687,8 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
             self._assert_ip_address_on_interface(namespace, interface,
                                                  ip_address)
 
-    def _assert_ip_address_not_on_interface(
-        self, namespace, interface, ip_address):
+    def _assert_ip_address_not_on_interface(self,
+                                            namespace, interface, ip_address):
         self.assertNotIn(
             ip_address, self._get_addresses_on_device(namespace, interface))
 
@@ -683,8 +697,8 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         self.assertIn(
             ip_address, self._get_addresses_on_device(namespace, interface))
 
-    def _assert_ping_reply_from_expected_address(
-        self, ping_result, expected_address):
+    def _assert_ping_reply_from_expected_address(self, ping_result,
+                                                 expected_address):
         ping_results = ping_result.split('\n')
         self.assertGreater(
             len(ping_results), 1,

@@ -35,6 +35,11 @@ LOG = logging.getLogger(__name__)
 HA_DEV_PREFIX = 'ha-'
 IP_MONITOR_PROCESS_SERVICE = 'ip_monitor'
 SIGTERM_TIMEOUT = 10
+KEEPALIVED_STATE_CHANGE_MONITOR_SERVICE_NAME = (
+    "neutron-keepalived-state-change-monitor")
+
+# TODO(liuyulong): move to neutron-lib?
+STATE_CHANGE_PROC_NAME = 'neutron-keepalived-state-change'
 
 # The multiplier is used to compensate execution time of function sending
 # SIGHUP to keepalived process. The constant multiplies ha_vrrp_advert_int
@@ -66,11 +71,20 @@ class HaRouter(router.RouterInfo):
         self.ha_port = None
         self.keepalived_manager = None
         self.state_change_callback = state_change_callback
+        self._ha_state = None
+        self._ha_state_path = None
 
     def create_router_namespace_object(
             self, router_id, agent_conf, iface_driver, use_ipv6):
         return HaRouterNamespace(
             router_id, agent_conf, iface_driver, use_ipv6)
+
+    @property
+    def ha_state_path(self):
+        if not self._ha_state_path and self.keepalived_manager:
+            self._ha_state_path = (self.keepalived_manager.
+                                   get_full_config_file_path('state'))
+        return self._ha_state_path
 
     @property
     def ha_priority(self):
@@ -82,22 +96,20 @@ class HaRouter(router.RouterInfo):
 
     @property
     def ha_state(self):
-        state = None
-        ha_state_path = self.keepalived_manager.get_full_config_file_path(
-            'state')
+        if self._ha_state:
+            return self._ha_state
         try:
-            with open(ha_state_path, 'r') as f:
-                state = f.read()
+            with open(self.ha_state_path, 'r') as f:
+                self._ha_state = f.read()
         except (OSError, IOError):
             LOG.debug('Error while reading HA state for %s', self.router_id)
-        return state or 'unknown'
+        return self._ha_state or 'unknown'
 
     @ha_state.setter
     def ha_state(self, new_state):
-        ha_state_path = self.keepalived_manager.get_full_config_file_path(
-            'state')
+        self._ha_state = new_state
         try:
-            with open(ha_state_path, 'w') as f:
+            with open(self.ha_state_path, 'w') as f:
                 f.write(new_state)
         except (OSError, IOError):
             LOG.error('Error while writing HA state for %s',
@@ -127,7 +139,7 @@ class HaRouter(router.RouterInfo):
             raise Exception(msg)
         super(HaRouter, self).initialize(process_monitor)
 
-        self.ha_port = ha_port
+        self.set_ha_port()
         self._init_keepalived_manager(process_monitor)
         self.ha_network_added()
         self.update_initial_state(self.state_change_callback)
@@ -359,6 +371,7 @@ class HaRouter(router.RouterInfo):
             self.agent_conf,
             '%s.monitor' % self.router_id,
             self.ha_namespace,
+            service=KEEPALIVED_STATE_CHANGE_MONITOR_SERVICE_NAME,
             default_cmd_callback=self._get_state_change_monitor_callback())
 
     def _get_state_change_monitor_callback(self):
@@ -369,9 +382,8 @@ class HaRouter(router.RouterInfo):
             "%s/neutron-keepalived-state-change.log") % config_dir
 
         def callback(pid_file):
-            root_helper_daemon = self.agent_conf.AGENT.root_helper_daemon or ''
             cmd = [
-                'neutron-keepalived-state-change',
+                STATE_CHANGE_PROC_NAME,
                 '--router_id=%s' % self.router_id,
                 '--namespace=%s' % self.ha_namespace,
                 '--conf_dir=%s' % config_dir,
@@ -381,9 +393,7 @@ class HaRouter(router.RouterInfo):
                 '--pid_file=%s' % pid_file,
                 '--state_path=%s' % self.agent_conf.state_path,
                 '--user=%s' % os.geteuid(),
-                '--group=%s' % os.getegid(),
-                '--AGENT-root_helper=%s' % self.agent_conf.AGENT.root_helper,
-                '--AGENT-root_helper_daemon=%s' % root_helper_daemon]
+                '--group=%s' % os.getegid()]
             return cmd
 
         return callback
@@ -393,6 +403,10 @@ class HaRouter(router.RouterInfo):
         pm.enable()
         process_monitor.register(
             self.router_id, IP_MONITOR_PROCESS_SERVICE, pm)
+        LOG.debug("Router %(router_id)s %(process)s pid %(pid)d",
+                  {"router_id": self.router_id,
+                   "process": KEEPALIVED_STATE_CHANGE_MONITOR_SERVICE_NAME,
+                   "pid": pm.pid})
 
     def destroy_state_change_monitor(self, process_monitor):
         if not self.ha_port:
@@ -468,10 +482,23 @@ class HaRouter(router.RouterInfo):
         self.ha_network_removed()
         super(HaRouter, self).delete()
 
+    def set_ha_port(self):
+        ha_port = self.router.get(n_consts.HA_INTERFACE_KEY)
+        if not ha_port:
+            return
+        # NOTE: once HA port is set, it MUST remain this value no matter what
+        # the server return. Because there is race condition between l3-agent
+        # side sync router info for processing and server side router deleting.
+        # TODO(liuyulong): make sure router HA ports never change.
+        if not self.ha_port or (self.ha_port and
+                                self.ha_port['status'] != ha_port['status']):
+            self.ha_port = ha_port
+
     def process(self):
         super(HaRouter, self).process()
 
-        self.ha_port = self.router.get(n_consts.HA_INTERFACE_KEY)
+        self.set_ha_port()
+        LOG.debug("Processing HA router with HA port: %s", self.ha_port)
         if (self.ha_port and
                 self.ha_port['status'] == n_consts.PORT_STATUS_ACTIVE):
             self.enable_keepalived()

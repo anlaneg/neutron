@@ -98,7 +98,7 @@ class L3AgentTestCase(framework.L3AgentTestFramework):
         gw_port = router.get_ex_gw_port()
         interface_name = router.get_external_device_name(gw_port['id'])
         device = ip_lib.IPDevice(interface_name, namespace=router.ns_name)
-        self.assertIn('gateway', device.route.get_gateway())
+        self.assertIn('via', device.route.get_gateway())
 
         # Make this copy, so that the agent will think there is change in
         # external gateway port.
@@ -212,8 +212,6 @@ class L3AgentTestCase(framework.L3AgentTestFramework):
         # Mock the plugin RPC API so a known external network id is returned
         # when the router updates are processed by the agent
         external_network_id = framework._uuid()
-        self.mock_plugin_api.get_external_network_id.return_value = (
-            external_network_id)
 
         # Plug external_gateway_info in the routers that are not going to be
         # deleted by the agent when it processes the updates. Otherwise,

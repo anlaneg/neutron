@@ -547,7 +547,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
     def update_network_precommit(self, context):
         """Notify all mechanism drivers during network update.
 
-        :raises: DB retriable error if create_network_precommit raises them
+        :raises: DB retriable error if update_network_precommit raises them
         See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver update_network_precommit call fails.
@@ -577,7 +577,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
     def delete_network_precommit(self, context):
         """Notify all mechanism drivers during network deletion.
 
-        :raises: DB retriable error if create_network_precommit raises them
+        :raises: DB retriable error if delete_network_precommit raises them
         See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver delete_network_precommit call fails.
@@ -611,7 +611,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
     def create_subnet_precommit(self, context):
         """Notify all mechanism drivers during subnet creation.
 
-        :raises: DB retriable error if create_network_precommit raises them
+        :raises: DB retriable error if create_subnet_precommit raises them
         See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver create_subnet_precommit call fails.
@@ -641,7 +641,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
     def update_subnet_precommit(self, context):
         """Notify all mechanism drivers during subnet update.
 
-        :raises: DB retriable error if create_network_precommit raises them
+        :raises: DB retriable error if update_subnet_precommit raises them
         See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver update_subnet_precommit call fails.
@@ -671,7 +671,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
     def delete_subnet_precommit(self, context):
         """Notify all mechanism drivers during subnet deletion.
 
-        :raises: DB retriable error if create_network_precommit raises them
+        :raises: DB retriable error if delete_subnet_precommit raises them
         See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver delete_subnet_precommit call fails.
@@ -705,7 +705,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
     def create_port_precommit(self, context):
         """Notify all mechanism drivers during port creation.
 
-        :raises: DB retriable error if create_network_precommit raises them
+        :raises: DB retriable error if create_port_precommit raises them
         See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver create_port_precommit call fails.
@@ -735,7 +735,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
     def update_port_precommit(self, context):
         """Notify all mechanism drivers during port update.
 
-        :raises: DB retriable error if create_network_precommit raises them
+        :raises: DB retriable error if update_port_precommit raises them
         See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver update_port_precommit call fails.
@@ -765,7 +765,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
     def delete_port_precommit(self, context):
         """Notify all mechanism drivers during port deletion.
 
-        :raises:DB retriable error if create_network_precommit raises them
+        :raises:DB retriable error if delete_port_precommit raises them
         See neutron_lib.db.api.is_retriable for what db exception is retriable
         or neutron.plugins.ml2.common.MechanismDriverError
         if any mechanism driver delete_port_precommit call fails.
@@ -848,11 +848,20 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                        'host': context.host})
             return False
 
+        drivers = self._check_drivers_connectivity(drivers, context)
+        if not drivers:
+            LOG.error("Port %(port)s does not have an IP address assigned and "
+                      "there are no driver with 'connectivity' = 'l2'. The "
+                      "port cannot be bound.",
+                      {'port': context.current['id']})
+            return False
+
         for driver in drivers:
             #检查注册的机制类驱动能不能绑定
             if not self._check_driver_to_bind(driver, segments_to_bind,
                                               context._binding_levels):
                 continue
+
             try:
                 context._prepare_to_bind(segments_to_bind)
                 driver.obj.bind_port(context) #驱动尝试着绑定此port
@@ -1057,6 +1066,21 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                 #如果binding_levels中已存在此绑定，则返回False
                 return False
         return True
+
+    def _check_drivers_connectivity(self, drivers, port_context):
+        """If port does not have an IP address, driver connectivity must be l2
+
+        A port without an IP address can be bound only to a mech driver with
+        "connectivity" = "l2". "legacy" or "l3" (e.g.: Calico) drivers cannot
+        have a port bound without an IP allocated.
+        """
+        if port_context.current.get('fixed_ips'):
+            return drivers
+
+        return [d for d in drivers if
+                getattr(d.obj, 'vif_details', {}).get(
+                    portbindings.VIF_DETAILS_CONNECTIVITY) ==
+                portbindings.CONNECTIVITY_L2]
 
     def get_workers(self):
         #获取各驱动的workers

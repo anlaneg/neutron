@@ -17,11 +17,13 @@ import collections
 import contextlib
 import copy
 
+import eventlet
 import netaddr
 from neutron_lib.callbacks import events as callbacks_events
 from neutron_lib.callbacks import registry as callbacks_registry
 from neutron_lib.callbacks import resources as callbacks_resources
 from neutron_lib import constants as lib_const
+from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import netutils
 
@@ -62,6 +64,22 @@ def create_reg_numbers(flow_params):
     _replace_register(flow_params, ovsfw_consts.REG_NET, 'reg_net')
     _replace_register(
         flow_params, ovsfw_consts.REG_REMOTE_GROUP, 'reg_remote_group')
+
+
+def get_segmentation_id_from_other_config(bridge, port_name):
+    """Return segmentation_id stored in OVSDB other_config metadata.
+
+    :param bridge: OVSBridge instance where port is.
+    :param port_name: Name of the port.
+    """
+    try:
+        other_config = bridge.db_get_val(
+            'Port', port_name, 'other_config')
+        network_type = other_config.get('network_type')
+        if lib_const.TYPE_VLAN == network_type:
+            return int(other_config.get('segmentation_id'))
+    except (TypeError, ValueError):
+        pass
 
 
 def get_tag_from_other_config(bridge, port_name):
@@ -117,9 +135,10 @@ class SecurityGroup(object):
 
 
 class OFPort(object):
-    def __init__(self, port_dict, ovs_port, vlan_tag):
+    def __init__(self, port_dict, ovs_port, vlan_tag, segment_id=None):
         self.id = port_dict['device']
         self.vlan_tag = vlan_tag
+        self.segment_id = segment_id
         self.mac = ovs_port.vif_mac
         self.lla_address = str(netutils.get_ipv6_addr_by_EUI64(
             lib_const.IPv6_LLA_PREFIX, self.mac))
@@ -395,6 +414,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                                    applied
 
         """
+        self.permitted_ethertypes = cfg.CONF.SECURITYGROUP.permitted_ethertypes
         self.int_br = self.initialize_bridge(integration_bridge)
         self.sg_port_map = SGPortMap()
         self.conj_ip_manager = ConjIPFlowManager(self)
@@ -508,8 +528,15 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             raise exceptions.OVSFWPortNotFound(port_id=port_id)
         return ovs_port
 
+    def get_ovs_ports(self, port_ids):
+        return self.int_br.br.get_vifs_by_ids(port_ids)
+
     def _get_port_vlan_tag(self, port_name):
         return get_tag_from_other_config(self.int_br.br, port_name)
+
+    def _get_port_segmentation_id(self, port_name):
+        return get_segmentation_id_from_other_config(
+            self.int_br.br, port_name)
 
     def get_ofport(self, port):
         port_id = port['device']
@@ -526,13 +553,19 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             of_port = self.sg_port_map.ports[port_id]
         except KeyError:
             port_vlan_id = self._get_port_vlan_tag(ovs_port.port_name)
-            of_port = OFPort(port, ovs_port, port_vlan_id)
+            segment_id = self._get_port_segmentation_id(
+                ovs_port.port_name)
+            of_port = OFPort(port, ovs_port, port_vlan_id,
+                             segment_id)
             self.sg_port_map.create_port(of_port, port)
         else:
             if of_port.ofport != ovs_port.ofport:
                 self.sg_port_map.remove_port(of_port)
-                of_port = OFPort(port, ovs_port, of_port.vlan_tag)
-            self.sg_port_map.update_port(of_port, port)
+                of_port = OFPort(port, ovs_port, of_port.vlan_tag,
+                                 of_port.segment_id)
+                self.sg_port_map.create_port(of_port, port)
+            else:
+                self.sg_port_map.update_port(of_port, port)
 
         return of_port
 
@@ -659,8 +692,12 @@ class OVSFirewallDriver(firewall.FirewallDriver):
 
     def process_trusted_ports(self, port_ids):
         """Pass packets from these ports directly to ingress pipeline."""
+        ovs_ports = self.get_ovs_ports(port_ids)
         for port_id in port_ids:
-            self._initialize_egress_no_port_security(port_id)
+            self._initialize_egress_no_port_security(port_id,
+                                                     ovs_ports=ovs_ports)
+            # yield to let other greenthreads proceed
+            eventlet.sleep(0)
 
     def remove_trusted_ports(self, port_ids):
         for port_id in port_ids:
@@ -682,6 +719,33 @@ class OVSFirewallDriver(firewall.FirewallDriver):
     def ports(self):
         return {id_: port.neutron_port_dict
                 for id_, port in self.sg_port_map.ports.items()}
+
+    def install_vlan_direct_flow(self, mac, segment_id, ofport, local_vlan):
+        # If the port segment_id is not None/0, the
+        # port's network type must be VLAN type.
+        if segment_id:
+            self._add_flow(
+                table=ovs_consts.TRANSIENT_TABLE,
+                priority=90,
+                dl_dst=mac,
+                dl_vlan='0x%x' % segment_id,
+                actions='set_field:{:d}->reg{:d},'
+                        'set_field:{:d}->reg{:d},'
+                        'strip_vlan,resubmit(,{:d})'.format(
+                            ofport,
+                            ovsfw_consts.REG_PORT,
+                            # This always needs the local vlan.
+                            local_vlan,
+                            ovsfw_consts.REG_NET,
+                            ovs_consts.BASE_INGRESS_TABLE)
+            )
+
+    def delete_vlan_direct_flow(self, mac, segment_id):
+        if segment_id:
+            self._strict_delete_flow(priority=90,
+                                     table=ovs_consts.TRANSIENT_TABLE,
+                                     dl_dst=mac,
+                                     dl_vlan=segment_id)
 
     def initialize_port_flows(self, port):
         """Set base flows for port
@@ -706,6 +770,9 @@ class OVSFirewallDriver(firewall.FirewallDriver):
 
         # Identify ingress flows
         for mac_addr in port.all_allowed_macs:
+            self.install_vlan_direct_flow(
+                mac_addr, port.segment_id, port.ofport, port.vlan_tag)
+
             self._add_flow(
                 table=ovs_consts.TRANSIENT_TABLE,
                 priority=90,
@@ -738,9 +805,14 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                     ovs_consts.ACCEPTED_EGRESS_TRAFFIC_NORMAL_TABLE)
             )
 
-    def _initialize_egress_no_port_security(self, port_id):
+    def _initialize_egress_no_port_security(self, port_id, ovs_ports=None):
         try:
-            ovs_port = self.get_ovs_port(port_id)
+            if ovs_ports is not None:
+                ovs_port = ovs_ports.get(port_id)
+                if not ovs_port:
+                    raise exceptions.OVSFWPortNotFound(port_id=port_id)
+            else:
+                ovs_port = self.get_ovs_port(port_id)
             vlan_tag = self._get_port_vlan_tag(ovs_port.port_name)
         except exceptions.OVSFWTagNotFound:
             # It's a patch port, don't set anything
@@ -882,6 +954,27 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             actions='resubmit(,%d)' % ovs_consts.DROPPED_TRAFFIC_TABLE
         )
 
+        # Allow custom ethertypes
+        for permitted_ethertype in self.permitted_ethertypes:
+            if permitted_ethertype[:2] == '0x':
+                try:
+                    hex_ethertype = hex(int(permitted_ethertype, base=16))
+                    action = ('resubmit(,%d)' %
+                        ovs_consts.ACCEPTED_EGRESS_TRAFFIC_NORMAL_TABLE)
+                    self._add_flow(
+                        table=ovs_consts.BASE_EGRESS_TABLE,
+                        priority=95,
+                        dl_type=hex_ethertype,
+                        reg_port=port.ofport,
+                        actions=action
+                    )
+                    continue
+                except ValueError:
+                    pass
+            LOG.warning("Custom ethertype %(permitted_ethertype)s is not "
+                        "a hexadecimal number.",
+                        {'permitted_ethertype': permitted_ethertype})
+
         # Drop all remaining egress connections
         self._add_flow(
             table=ovs_consts.BASE_EGRESS_TABLE,
@@ -997,6 +1090,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
             reg_port=port.ofport,
             actions='output:{:d}'.format(port.ofport)
         )
+
         self._initialize_ingress_ipv6_icmp(port)
 
         # DHCP offers
@@ -1175,6 +1269,7 @@ class OVSFirewallDriver(firewall.FirewallDriver):
                                      table=ovs_consts.TRANSIENT_TABLE,
                                      dl_dst=mac_addr,
                                      dl_vlan=port.vlan_tag)
+            self.delete_vlan_direct_flow(mac_addr, port.segment_id)
             self._delete_flows(table=ovs_consts.ACCEPT_OR_INGRESS_TABLE,
                                dl_dst=mac_addr, reg_net=port.vlan_tag)
         self._strict_delete_flow(priority=100,

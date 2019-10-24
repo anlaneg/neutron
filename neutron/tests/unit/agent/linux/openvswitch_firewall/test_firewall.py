@@ -24,19 +24,22 @@ from neutron.agent.common import utils
 from neutron.agent.linux.openvswitch_firewall import constants as ovsfw_consts
 from neutron.agent.linux.openvswitch_firewall import exceptions
 from neutron.agent.linux.openvswitch_firewall import firewall as ovsfw
+from neutron.conf.agent import securitygroups_rpc
 from neutron.plugins.ml2.drivers.openvswitch.agent.common import constants \
         as ovs_consts
-from neutron.plugins.ml2.drivers.openvswitch.agent.openflow.ovs_ofctl \
+from neutron.plugins.ml2.drivers.openvswitch.agent.openflow.native \
     import ovs_bridge
 from neutron.tests import base
 
 TESTING_VLAN_TAG = 1
+TESTING_SEGMENT = 1000
 
 
 def create_ofport(port_dict):
     ovs_port = mock.Mock(vif_mac='00:00:00:00:00:00', ofport=1,
                          port_name="port-name")
-    return ovsfw.OFPort(port_dict, ovs_port, vlan_tag=TESTING_VLAN_TAG)
+    return ovsfw.OFPort(port_dict, ovs_port, vlan_tag=TESTING_VLAN_TAG,
+                        segment_id=TESTING_SEGMENT)
 
 
 class TestCreateRegNumbers(base.BaseTestCase):
@@ -359,6 +362,7 @@ class TestOVSFirewallDriver(base.BaseTestCase):
         super(TestOVSFirewallDriver, self).setUp()
         mock_bridge = mock.patch.object(
             ovs_lib, 'OVSBridge', autospec=True).start()
+        securitygroups_rpc.register_securitygroups_opts()
         self.firewall = ovsfw.OVSFirewallDriver(mock_bridge)
         self.mock_bridge = self.firewall.int_br
         self.mock_bridge.reset_mock()
@@ -473,6 +477,7 @@ class TestOVSFirewallDriver(base.BaseTestCase):
         self.mock_bridge.br.get_vif_port_by_id.return_value = \
             fake_ovs_port
         port = self.firewall.get_or_create_ofport(port_dict)
+        self.assertIn(of_port.id, self.firewall.sg_port_map.ports.keys())
         self.assertEqual(port.ofport, 2)
 
     def test_get_or_create_ofport_missing(self):
@@ -550,6 +555,103 @@ class TestOVSFirewallDriver(base.BaseTestCase):
                 self.firewall, 'initialize_port_flows') as m_init_flows:
             self.firewall.prepare_port_filter(port_dict)
         self.assertFalse(m_init_flows.called)
+
+    def test_initialize_port_flows_vlan_dvr_conntrack_direct(self):
+        port_dict = {
+            'device': 'port-id',
+            'security_groups': [1]}
+        of_port = create_ofport(port_dict)
+        self.firewall.sg_port_map.ports[of_port.id] = of_port
+        port = self.firewall.get_or_create_ofport(port_dict)
+
+        self.firewall.initialize_port_flows(port)
+
+        call_args1 = {
+            'table': ovs_consts.TRANSIENT_TABLE,
+            'priority': 100,
+            'in_port': port.ofport,
+            'actions': 'set_field:{:d}->reg{:d},'
+                       'set_field:{:d}->reg{:d},'
+                       'resubmit(,{:d})'.format(
+                           port.ofport,
+                           ovsfw_consts.REG_PORT,
+                           port.vlan_tag,
+                           ovsfw_consts.REG_NET,
+                           ovs_consts.BASE_EGRESS_TABLE)}
+        egress_flow_call = mock.call(**call_args1)
+
+        call_args2 = {
+            'table': ovs_consts.TRANSIENT_TABLE,
+            'priority': 90,
+            'dl_dst': port.mac,
+            'dl_vlan': '0x%x' % port.segment_id,
+            'actions': 'set_field:{:d}->reg{:d},'
+                       'set_field:{:d}->reg{:d},'
+                       'strip_vlan,resubmit(,{:d})'.format(
+                           port.ofport,
+                           ovsfw_consts.REG_PORT,
+                           port.vlan_tag,
+                           ovsfw_consts.REG_NET,
+                           ovs_consts.BASE_INGRESS_TABLE)}
+        ingress_flow_call1 = mock.call(**call_args2)
+
+        call_args3 = {
+            'table': ovs_consts.TRANSIENT_TABLE,
+            'priority': 90,
+            'dl_dst': port.mac,
+            'dl_vlan': '0x%x' % port.vlan_tag,
+            'actions': 'set_field:{:d}->reg{:d},'
+                       'set_field:{:d}->reg{:d},'
+                       'strip_vlan,resubmit(,{:d})'.format(
+                           port.ofport,
+                           ovsfw_consts.REG_PORT,
+                           port.vlan_tag,
+                           ovsfw_consts.REG_NET,
+                           ovs_consts.BASE_INGRESS_TABLE)}
+        ingress_flow_call2 = mock.call(**call_args3)
+        self.mock_bridge.br.add_flow.assert_has_calls(
+            [egress_flow_call, ingress_flow_call1, ingress_flow_call2])
+
+    def test_delete_all_port_flows(self):
+        port_dict = {
+            'device': 'port-id',
+            'security_groups': [1]}
+        of_port = create_ofport(port_dict)
+        self.firewall.sg_port_map.ports[of_port.id] = of_port
+        port = self.firewall.get_or_create_ofport(port_dict)
+
+        self.firewall.delete_all_port_flows(port)
+
+        call_args1 = {"strict": True,
+                      "priority": 90,
+                      "table": ovs_consts.TRANSIENT_TABLE,
+                      "dl_dst": port.mac,
+                      "dl_vlan": port.vlan_tag}
+        flow1 = mock.call(**call_args1)
+
+        call_args2 = {"strict": True,
+                      "priority": 90,
+                      "table": ovs_consts.TRANSIENT_TABLE,
+                      "dl_dst": port.mac,
+                      "dl_vlan": port.segment_id}
+        flow2 = mock.call(**call_args2)
+
+        call_args3 = {"table": ovs_consts.ACCEPT_OR_INGRESS_TABLE,
+                      "dl_dst": port.mac,
+                      "reg6": port.vlan_tag}
+        flow3 = mock.call(**call_args3)
+
+        call_args4 = {"in_port": port.ofport,
+                      "strict": True,
+                      "priority": 100,
+                      "table": ovs_consts.TRANSIENT_TABLE}
+        flow4 = mock.call(**call_args4)
+
+        call_args5 = {"reg5": port.ofport}
+        flow5 = mock.call(**call_args5)
+
+        self.mock_bridge.br.delete_flows.assert_has_calls(
+            [flow1, flow2, flow3, flow4, flow5])
 
     def test_prepare_port_filter_initialized_port(self):
         port_dict = {'device': 'port-id',
@@ -720,15 +822,21 @@ class TestOVSFirewallDriver(base.BaseTestCase):
             self.firewall._remove_egress_no_port_security('foo')
 
     def test_process_trusted_ports_caches_port_id(self):
-        self.firewall.process_trusted_ports(['port_id'])
-        self.assertIn('port_id', self.firewall.sg_port_map.unfiltered)
+        vif_port = ovs_lib.VifPort('name', 1, 'id', 'mac', mock.ANY)
+        with mock.patch.object(self.firewall.int_br.br, 'get_vifs_by_ids',
+                               return_value={'port_id': vif_port}):
+            self.firewall.process_trusted_ports(['port_id'])
+            self.assertEqual(1, len(self.firewall.sg_port_map.unfiltered))
+            self.assertEqual(vif_port.ofport,
+                             self.firewall.sg_port_map.unfiltered['port_id'])
 
     def test_process_trusted_ports_port_not_found(self):
         """Check that exception is not propagated outside."""
-        self.mock_bridge.br.get_vif_port_by_id.return_value = None
-        self.firewall.process_trusted_ports(['port_id'])
-        # Processing should have failed so port is not cached
-        self.assertNotIn('port_id', self.firewall.sg_port_map.unfiltered)
+        with mock.patch.object(self.firewall.int_br.br, 'get_vifs_by_ids',
+                               return_value={}):
+            self.firewall.process_trusted_ports(['port_id'])
+            # Processing should have failed so port is not cached
+            self.assertEqual(0, len(self.firewall.sg_port_map.unfiltered))
 
     def test_remove_trusted_ports_clears_cached_port_id(self):
         self.firewall.sg_port_map.unfiltered['port_id'] = 1
@@ -751,12 +859,13 @@ class TestCookieContext(base.BaseTestCase):
 
         self.execute = mock.patch.object(
             utils, "execute", spec=utils.execute).start()
-        bridge = ovs_bridge.OVSAgentBridge('foo')
+        bridge = ovs_bridge.OVSAgentBridge('foo', os_ken_app=mock.Mock())
         mock.patch.object(
             ovsfw.OVSFirewallDriver, 'initialize_bridge',
             return_value=bridge.deferred(
                 full_ordered=True, use_bundle=True)).start()
 
+        securitygroups_rpc.register_securitygroups_opts()
         self.firewall = ovsfw.OVSFirewallDriver(bridge)
         # Remove calls from firewall initialization
         self.execute.reset_mock()

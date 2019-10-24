@@ -19,6 +19,7 @@
 
 """Utilities and helper functions."""
 
+import datetime
 import functools
 import importlib
 import os
@@ -37,13 +38,16 @@ from eventlet.green import subprocess
 import netaddr
 from neutron_lib import constants as n_const
 from neutron_lib.db import api as db_api
+from neutron_lib import exceptions as n_exc
 from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 from oslo_utils import excutils
+from oslo_utils import timeutils
+from oslo_utils import uuidutils
+from osprofiler import profiler
 import pkg_resources
-import six
 
 import neutron
 from neutron._i18n import _
@@ -59,6 +63,10 @@ _SEPARATOR_REGEX = re.compile(r'[/\\]+')
 
 class WaitTimeout(Exception):
     """Default exception coming from wait_until_true() function."""
+
+
+class TimerTimeout(n_exc.NeutronException):
+    message = _('Timer timeout expired after %(timeout)s second(s).')
 
 
 class LockWithTimer(object):
@@ -165,16 +173,18 @@ class exception_logger(object):
         return call
 
 
-def get_other_dvr_serviced_device_owners():
+def get_other_dvr_serviced_device_owners(host_dvr_for_dhcp=True):
     """Return device_owner names for ports that should be serviced by DVR
 
     This doesn't return DEVICE_OWNER_COMPUTE_PREFIX since it is a
     prefix, not a complete device_owner name, so should be handled
     separately (see is_dvr_serviced() below)
     """
-    return [n_const.DEVICE_OWNER_LOADBALANCER,
-            n_const.DEVICE_OWNER_LOADBALANCERV2,
-            n_const.DEVICE_OWNER_DHCP]
+    device_owners = [n_const.DEVICE_OWNER_LOADBALANCER,
+                     n_const.DEVICE_OWNER_LOADBALANCERV2]
+    if host_dvr_for_dhcp:
+        device_owners.append(n_const.DEVICE_OWNER_DHCP)
+    return device_owners
 
 
 def get_dvr_allowed_address_pair_device_owners():
@@ -239,7 +249,7 @@ def cidr_to_ip(ip_cidr):
 def cidr_mask(ip_cidr):
     """Returns the subnet mask length from a cidr
 
-    :param: An ipv4 or ipv6 cidr mask length
+    :param ip_cidr: An ipv4 or ipv6 cidr mask length
     """
     return netaddr.IPNetwork(ip_cidr).netmask.netmask_bits()
 
@@ -700,44 +710,6 @@ def wait_until_true(predicate, timeout=60, sleep=1, exception=None):
         raise WaitTimeout(_("Timed out after %d seconds") % timeout)
 
 
-class _AuthenticBase(object):
-    def __init__(self, addr, **kwargs):
-        super(_AuthenticBase, self).__init__(addr, **kwargs)
-        self._initial_value = addr
-
-    def __str__(self):
-        if isinstance(self._initial_value, six.string_types):
-            return self._initial_value
-        return super(_AuthenticBase, self).__str__()
-
-    # NOTE(ihrachys): override deepcopy because netaddr.* classes are
-    # slot-based and hence would not copy _initial_value
-    def __deepcopy__(self, memo):
-        return self.__class__(self._initial_value)
-
-
-class AuthenticEUI(_AuthenticBase, netaddr.EUI):
-    '''AuthenticEUI class
-
-    This class retains the format of the MAC address string passed during
-    initialization.
-
-    This is useful when we want to make sure that we retain the format passed
-    by a user through API.
-    '''
-
-
-class AuthenticIPNetwork(_AuthenticBase, netaddr.IPNetwork):
-    '''AuthenticIPNetwork class
-
-    This class retains the format of the IP network string passed during
-    initialization.
-
-    This is useful when we want to make sure that we retain the format passed
-    by a user through API.
-    '''
-
-
 class classproperty(object):
     def __init__(self, f):
         self.func = f
@@ -893,3 +865,122 @@ def validate_rp_bandwidth(rp_bandwidths, device_names):
                 "Invalid resource_provider_bandwidths: "
                 "Device name %(dev_name)s is missing from "
                 "device mappings") % {'dev_name': dev_name})
+
+
+class Timer(object):
+    """Timer context manager class
+
+    This class creates a context that:
+    - Triggers a timeout exception if the timeout is set.
+    - Returns the time elapsed since the context was initialized.
+    - Returns the time spent in the context once it's closed.
+
+    The timeout exception can be suppressed; when the time expires, the context
+    finishes without rising TimerTimeout.
+    """
+    def __init__(self, timeout=None, raise_exception=True):
+        super(Timer, self).__init__()
+        self.start = self.delta = None
+        self._timeout = int(timeout) if timeout else None
+        self._timeout_flag = False
+        self._raise_exception = raise_exception
+
+    def _timeout_handler(self, *_):
+        self._timeout_flag = True
+        if self._raise_exception:
+            raise TimerTimeout(timeout=self._timeout)
+        self.__exit__()
+
+    def __enter__(self):
+        self.start = datetime.datetime.now()
+        if self._timeout:
+            signal.signal(signal.SIGALRM, self._timeout_handler)
+            signal.alarm(self._timeout)
+        return self
+
+    def __exit__(self, *_):
+        if self._timeout:
+            signal.alarm(0)
+        self.delta = datetime.datetime.now() - self.start
+
+    def __getattr__(self, item):
+        return getattr(self.delta, item)
+
+    def __iter__(self):
+        self._raise_exception = False
+        return self.__enter__()
+
+    def next(self):  # pragma: no cover
+        # NOTE(ralonsoh): Python 2 support.
+        if not self._timeout_flag:
+            return datetime.datetime.now()
+        raise StopIteration()
+
+    def __next__(self):  # pragma: no cover
+        # NOTE(ralonsoh): Python 3 support.
+        return self.next()
+
+    def __del__(self):
+        signal.alarm(0)
+
+    @property
+    def delta_time_sec(self):
+        return (datetime.datetime.now() - self.start).total_seconds()
+
+
+def _collect_profiler_info():
+    p = profiler.get()
+    if p:
+        return {
+            "hmac_key": p.hmac_key,
+            "base_id": p.get_base_id(),
+            "parent_id": p.get_id(),
+        }
+
+
+def spawn(func, *args, **kwargs):
+    """As eventlet.spawn() but with osprofiler initialized in the new threads
+
+    osprofiler stores the profiler instance in thread local storage, therefore
+    in new threads (including eventlet threads) osprofiler comes uninitialized
+    by default. This spawn() is a stand-in replacement for eventlet.spawn()
+    but we re-initialize osprofiler in threads spawn()-ed.
+    """
+
+    profiler_info = _collect_profiler_info()
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if profiler_info:
+            profiler.init(**profiler_info)
+        return func(*args, **kwargs)
+
+    return eventlet.spawn(wrapper, *args, **kwargs)
+
+
+def spawn_n(func, *args, **kwargs):
+    """See spawn() above"""
+
+    profiler_info = _collect_profiler_info()
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if profiler_info:
+            profiler.init(**profiler_info)
+        return func(*args, **kwargs)
+
+    return eventlet.spawn_n(wrapper, *args, **kwargs)
+
+
+def timecost(f):
+    call_id = uuidutils.generate_uuid()
+    message_base = ("Time-cost: call %(call_id)s function %(fname)s ") % {
+                    "call_id": call_id, "fname": f.__name__}
+    end_message = (message_base + "took %(seconds).3fs seconds to run")
+
+    @timeutils.time_it(LOG, message=end_message, min_duration=None)
+    def wrapper(*args, **kwargs):
+        LOG.debug(message_base + "start")
+        ret = f(*args, **kwargs)
+        return ret
+    return wrapper

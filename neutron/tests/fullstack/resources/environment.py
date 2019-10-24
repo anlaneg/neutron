@@ -38,7 +38,8 @@ class EnvironmentDescription(object):
                  service_plugins='router', arp_responder=False,
                  agent_down_time=75, router_scheduler=None,
                  global_mtu=constants.DEFAULT_NETWORK_MTU,
-                 debug_iptables=False, log=False, report_bandwidths=False):
+                 debug_iptables=False, log=False, report_bandwidths=False,
+                 has_placement=False, placement_port=None):
         self.network_type = network_type
         self.l2_pop = l2_pop
         self.qos = qos
@@ -52,6 +53,8 @@ class EnvironmentDescription(object):
         self.service_plugins = service_plugins
         self.debug_iptables = debug_iptables
         self.report_bandwidths = report_bandwidths
+        self.has_placement = has_placement
+        self.placement_port = placement_port
         if self.qos:
             self.service_plugins += ',qos'
         if self.log:
@@ -69,17 +72,17 @@ class HostDescription(object):
     under?
     """
     def __init__(self, l3_agent=False, dhcp_agent=False,
-                 of_interface='ovs-ofctl',
                  l2_agent_type=constants.AGENT_TYPE_OVS,
                  firewall_driver='noop', availability_zone=None,
-                 l3_agent_mode=None):
+                 l3_agent_mode=None,
+                 l3_agent_extensions=None):
         self.l2_agent_type = l2_agent_type
         self.l3_agent = l3_agent
         self.dhcp_agent = dhcp_agent
-        self.of_interface = of_interface
         self.firewall_driver = firewall_driver
         self.availability_zone = availability_zone
         self.l3_agent_mode = l3_agent_mode
+        self.l3_agent_extensions = l3_agent_extensions
 
 
 class Host(fixtures.Fixture):
@@ -406,6 +409,17 @@ class Environment(fixtures.Fixture):
             process.NeutronServerFixture(
                 self.env_desc, None,
                 self.test_name, neutron_cfg_fixture, plugin_cfg_fixture))
+
+        if self.env_desc.has_placement:
+            placement_cfg_fixture = self.useFixture(
+                config.PlacementConfigFixture(self.env_desc, self.hosts_desc,
+                                              self.temp_dir)
+            )
+            self.placement = self.useFixture(
+                process.PlacementFixture(
+                    self.env_desc, self.hosts_desc, self.test_name,
+                    placement_cfg_fixture)
+            )
 
         self.hosts = [self._create_host(desc) for desc in self.hosts_desc]
 

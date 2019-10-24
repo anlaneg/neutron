@@ -14,21 +14,28 @@
 #    under the License.
 
 import collections
+import itertools
+import signal
 
 import netaddr
 from neutron_lib import constants
 from neutron_lib.utils import net
 from oslo_config import cfg
 from oslo_log import log as logging
+from oslo_serialization import jsonutils
 from oslo_utils import importutils
 from oslo_utils import uuidutils
+from pyroute2.iproute import linux as iproute_linux
+import testscenarios
 import testtools
 
+from neutron.agent.common import async_process
 from neutron.agent.linux import ip_lib
 from neutron.common import utils
 from neutron.conf.agent import common as config
 from neutron.privileged.agent.linux import ip_lib as priv_ip_lib
 from neutron.tests.common import net_helpers
+from neutron.tests.functional.agent.linux.bin import ip_monitor
 from neutron.tests.functional import base as functional_base
 
 LOG = logging.getLogger(__name__)
@@ -93,6 +100,11 @@ class IpLibTestFramework(functional_base.BaseSudoTestCase):
 
 
 class IpLibTestCase(IpLibTestFramework):
+
+    def _check_routes(self, expected_routes, actual_routes):
+        actual_routes = [{key: route[key] for key in expected_routes[0].keys()}
+                         for route in actual_routes]
+        self.assertEqual(expected_routes, actual_routes)
 
     def test_rules_lifecycle(self):
         PRIORITY = 32768
@@ -311,19 +323,17 @@ class IpLibTestCase(IpLibTestFramework):
         }
         expected_gateways = {
             constants.IP_VERSION_4: {
-                'metric': metric,
-                'gateway': gateways[constants.IP_VERSION_4]},
+                'priority': metric,
+                'via': gateways[constants.IP_VERSION_4]},
             constants.IP_VERSION_6: {
-                'metric': metric,
-                'gateway': gateways[constants.IP_VERSION_6]}}
+                'priority': metric,
+                'via': gateways[constants.IP_VERSION_6]}}
 
         for ip_version, gateway_ip in gateways.items():
             device.route.add_gateway(gateway_ip, metric)
-
-            self.assertEqual(
-                expected_gateways[ip_version],
-                device.route.get_gateway(ip_version=ip_version))
-
+            self._check_routes(
+                [expected_gateways[ip_version]],
+                [device.route.get_gateway(ip_version=ip_version)])
             device.route.delete_gateway(gateway_ip)
             self.assertIsNone(
                 device.route.get_gateway(ip_version=ip_version))
@@ -661,3 +671,314 @@ class NamespaceTestCase(functional_base.BaseSudoTestCase):
     def test_network_namespace_exists_ns_doesnt_exists_try_is_ready(self):
         self.assertFalse(ip_lib.network_namespace_exists('another_ns',
                                                          try_is_ready=True))
+
+
+class IpMonitorTestCase(testscenarios.WithScenarios,
+                        functional_base.BaseLoggingTestCase):
+
+    scenarios = [
+        ('namespace', {'namespace': 'ns_' + uuidutils.generate_uuid()}),
+        ('no_namespace', {'namespace': None})
+    ]
+
+    def setUp(self):
+        super(IpMonitorTestCase, self).setUp()
+        self.addCleanup(self._cleanup)
+        if self.namespace:
+            priv_ip_lib.create_netns(self.namespace)
+        self.devices = [('int_' + uuidutils.generate_uuid())[
+                        :constants.DEVICE_NAME_MAX_LEN] for _ in range(5)]
+        self.ip_wrapper = ip_lib.IPWrapper(self.namespace)
+        self.temp_file = self.get_temp_file_path('out_' + self.devices[0] +
+                                                 '.tmp')
+        self.proc = self._run_ip_monitor(ip_monitor)
+
+    def _cleanup(self):
+        self.proc.stop(block=True, kill_signal=signal.SIGTERM)
+        if self.namespace:
+            priv_ip_lib.remove_netns(self.namespace)
+        else:
+            for device in self.devices:
+                try:
+                    priv_ip_lib.delete_interface(device, self.namespace)
+                except priv_ip_lib.NetworkInterfaceNotFound:
+                    pass
+
+    @staticmethod
+    def _normalize_module_name(name):
+        for suf in ['.pyc', '.pyo']:
+            if name.endswith(suf):
+                return name[:-len(suf)] + '.py'
+        return name
+
+    def _run_ip_monitor(self, module):
+        executable = self._normalize_module_name(module.__file__)
+        proc = async_process.AsyncProcess(
+            [executable, self.temp_file, str(self.namespace)],
+            run_as_root=True)
+        proc.start(block=True)
+        return proc
+
+    def _read_file(self, ip_addresses):
+        try:
+            registers = []
+            with open(self.temp_file, 'r') as f:
+                data = f.read()
+                for line in data.splitlines():
+                    register = jsonutils.loads(line)
+                    registers.append({'name': register['name'],
+                                      'cidr': register['cidr'],
+                                      'event': register['event']})
+            for ip_address in ip_addresses:
+                if ip_address not in registers:
+                    return False
+            return True
+        except (OSError, IOError) as e:
+            return False
+
+    def _check_read_file(self, ip_addresses):
+        try:
+            utils.wait_until_true(lambda: self._read_file(ip_addresses),
+                                  timeout=30)
+        except utils.WaitTimeout:
+            with open(self.temp_file, 'r') as f:
+                registers = f.read()
+            self.fail('Defined IP addresses: %s, IP addresses registered: %s' %
+                      (ip_addresses, registers))
+
+    def _handle_ip_addresses(self, event, ip_addresses):
+        for ip_address in (_ip for _ip in ip_addresses
+                           if _ip['event'] == event):
+            ip_device = ip_lib.IPDevice(ip_address['name'], self.namespace)
+            if event == 'removed':
+                ip_device.addr.delete(ip_address['cidr'])
+            if event == 'added':
+                ip_device.addr.add(ip_address['cidr'])
+
+    def test_add_remove_ip_address_and_interface(self):
+        for device in self.devices:
+            self.ip_wrapper.add_dummy(device)
+        utils.wait_until_true(lambda: self._read_file({}), timeout=30)
+        ip_addresses = [
+            {'cidr': '192.168.250.1/24', 'event': 'added',
+             'name': self.devices[0]},
+            {'cidr': '192.168.250.2/24', 'event': 'added',
+             'name': self.devices[1]},
+            {'cidr': '192.168.250.3/24', 'event': 'added',
+             'name': self.devices[2]},
+            {'cidr': '192.168.250.10/24', 'event': 'added',
+             'name': self.devices[3]},
+            {'cidr': '192.168.250.10/24', 'event': 'removed',
+             'name': self.devices[3]},
+            {'cidr': '2001:db8::1/64', 'event': 'added',
+             'name': self.devices[4]},
+            {'cidr': '2001:db8::2/64', 'event': 'added',
+             'name': self.devices[4]}]
+
+        self._handle_ip_addresses('added', ip_addresses)
+        self._handle_ip_addresses('removed', ip_addresses)
+        self._check_read_file(ip_addresses)
+
+        ip_device = ip_lib.IPDevice(self.devices[4], self.namespace)
+        ip_device.link.delete()
+        ip_addresses = [
+            {'cidr': '2001:db8::1/64', 'event': 'removed',
+             'name': self.devices[4]},
+            {'cidr': '2001:db8::2/64', 'event': 'removed',
+             'name': self.devices[4]}]
+        self._check_read_file(ip_addresses)
+
+    def test_interface_added_after_initilization(self):
+        for device in self.devices[:len(self.devices) - 1]:
+            self.ip_wrapper.add_dummy(device)
+        utils.wait_until_true(lambda: self._read_file({}), timeout=30)
+        ip_addresses = [
+            {'cidr': '192.168.251.21/24', 'event': 'added',
+             'name': self.devices[0]},
+            {'cidr': '192.168.251.22/24', 'event': 'added',
+             'name': self.devices[1]}]
+
+        self._handle_ip_addresses('added', ip_addresses)
+        self._check_read_file(ip_addresses)
+
+        self.ip_wrapper.add_dummy(self.devices[-1])
+        ip_addresses.append({'cidr': '192.168.251.23/24', 'event': 'added',
+                             'name': self.devices[-1]})
+
+        self._handle_ip_addresses('added', [ip_addresses[-1]])
+        self._check_read_file(ip_addresses)
+
+    def test_add_and_remove_multiple_ips(self):
+        # NOTE(ralonsoh): testing [1], adding multiple IPs.
+        # [1] https://bugs.launchpad.net/neutron/+bug/1832307
+        utils.wait_until_true(lambda: self._read_file({}), timeout=30)
+        self.ip_wrapper.add_dummy(self.devices[0])
+        ip_addresses = []
+        for i in range(250):
+            _cidr = str(netaddr.IPNetwork('192.168.252.1/32').ip + i) + '/32'
+            ip_addresses.append({'cidr': _cidr, 'event': 'added',
+                                 'name': self.devices[0]})
+
+        self._handle_ip_addresses('added', ip_addresses)
+        self._check_read_file(ip_addresses)
+
+        for i in range(250):
+            _cidr = str(netaddr.IPNetwork('192.168.252.1/32').ip + i) + '/32'
+            ip_addresses.append({'cidr': _cidr, 'event': 'removed',
+                                 'name': self.devices[0]})
+
+        self._handle_ip_addresses('removed', ip_addresses)
+        self._check_read_file(ip_addresses)
+
+
+class IpRouteCommandTestCase(functional_base.BaseSudoTestCase):
+
+    def setUp(self):
+        super(IpRouteCommandTestCase, self).setUp()
+        self.namespace = self.useFixture(net_helpers.NamespaceFixture()).name
+        ip_lib.IPWrapper(self.namespace).add_dummy('test_device')
+        self.device = ip_lib.IPDevice('test_device', namespace=self.namespace)
+        self.device.link.set_up()
+        self.device_cidr_ipv4 = '192.168.100.1/24'
+        self.device_cidr_ipv6 = '2020::1/64'
+        self.device.addr.add(self.device_cidr_ipv4)
+        self.device.addr.add(self.device_cidr_ipv6)
+        self.cidrs = ['192.168.0.0/24', '10.0.0.0/8', '2001::/64', 'faaa::/96']
+
+    def _assert_route(self, ip_version, table=None, source_prefix=None,
+                      cidr=None, scope=None, via=None, metric=None,
+                      not_in=False):
+        if not_in:
+            fn = lambda: cmp not in self.device.route.list_routes(ip_version,
+                                                                  table=table)
+            msg = 'Route found: %s'
+        else:
+            fn = lambda: cmp in self.device.route.list_routes(ip_version,
+                                                              table=table)
+            msg = 'Route not found: %s'
+
+        if cidr:
+            ip_version = utils.get_ip_version(cidr)
+        else:
+            ip_version = utils.get_ip_version(via)
+            cidr = constants.IP_ANY[ip_version]
+        if constants.IP_VERSION_6 == ip_version:
+            scope = ip_lib.IP_ADDRESS_SCOPE[0]
+        elif not scope:
+            scope = 'global' if via else 'link'
+        if ip_version == constants.IP_VERSION_6 and not metric:
+            metric = 1024
+        table = table or iproute_linux.DEFAULT_TABLE
+        table = ip_lib.IP_RULE_TABLES_NAMES.get(table, table)
+        cmp = {'table': table,
+               'cidr': cidr,
+               'source_prefix': source_prefix,
+               'scope': scope,
+               'device': 'test_device',
+               'via': via,
+               'priority': metric}
+        try:
+            utils.wait_until_true(fn, timeout=5)
+        except utils.WaitTimeout:
+            raise self.fail(msg % cmp)
+
+    def test_add_route_table(self):
+        tables = (None, 1, 253, 254, 255)
+        for cidr in self.cidrs:
+            for table in tables:
+                self.device.route.add_route(cidr, table=table)
+                ip_version = utils.get_ip_version(cidr)
+                self._assert_route(ip_version, cidr=cidr, table=table)
+
+    def test_add_route_via(self):
+        gateway_ipv4 = str(netaddr.IPNetwork(self.device_cidr_ipv4).ip)
+        gateway_ipv6 = str(netaddr.IPNetwork(self.device_cidr_ipv6).ip + 1)
+        for cidr in self.cidrs:
+            ip_version = utils.get_ip_version(cidr)
+            gateway = (gateway_ipv4 if ip_version == constants.IP_VERSION_4
+                       else gateway_ipv6)
+            self.device.route.add_route(cidr, via=gateway)
+            self._assert_route(ip_version, cidr=cidr, via=gateway)
+
+    def test_add_route_metric(self):
+        metrics = (None, 1, 10, 255)
+        for cidr in self.cidrs:
+            for metric in metrics:
+                self.device.route.add_route(cidr, metric=metric)
+                ip_version = utils.get_ip_version(cidr)
+                self._assert_route(ip_version, cidr=cidr, metric=metric)
+
+    def test_add_route_scope(self):
+        for cidr in self.cidrs:
+            for scope in ip_lib.IP_ADDRESS_SCOPE_NAME:
+                self.device.route.add_route(cidr, scope=scope)
+                ip_version = utils.get_ip_version(cidr)
+                self._assert_route(ip_version, cidr=cidr, scope=scope)
+
+    def test_add_route_gateway(self):
+        gateways = (str(netaddr.IPNetwork(self.device_cidr_ipv4).ip),
+                    str(netaddr.IPNetwork(self.device_cidr_ipv6).ip + 1))
+        for gateway in gateways:
+            ip_version = utils.get_ip_version(gateway)
+            self.device.route.add_gateway(gateway)
+            self._assert_route(ip_version, cidr=None, via=gateway,
+                               scope='global')
+
+    def test_list_onlink_routes_ipv4(self):
+        cidr_ipv4 = []
+        for cidr in self.cidrs:
+            if utils.get_ip_version(cidr) == constants.IP_VERSION_4:
+                cidr_ipv4.append(cidr)
+                self.device.route.add_onlink_route(cidr)
+
+        for cidr in cidr_ipv4:
+            self._assert_route(constants.IP_VERSION_4, cidr=cidr)
+
+        routes = self.device.route.list_onlink_routes(constants.IP_VERSION_4)
+        self.assertEqual(len(cidr_ipv4), len(routes))
+
+    def test_get_and_delete_gateway(self):
+        gateways = (str(netaddr.IPNetwork(self.device_cidr_ipv4).ip),
+                    str(netaddr.IPNetwork(self.device_cidr_ipv6).ip + 1))
+        scopes = ('global', 'site', 'link')
+        metrics = (None, 1, 255)
+        tables = (None, 1, 254, 255)
+        for gateway, scope, metric, table in itertools.product(
+                gateways, scopes, metrics, tables):
+            ip_version = utils.get_ip_version(gateway)
+            self.device.route.add_gateway(gateway, scope=scope, metric=metric,
+                                          table=table)
+            self._assert_route(ip_version, cidr=None, via=gateway, scope=scope,
+                               metric=metric, table=table)
+            self.assertEqual(gateway, self.device.route.get_gateway(
+                ip_version=ip_version, table=table)['via'])
+
+            self.device.route.delete_gateway(gateway, table=table, scope=scope)
+            self.assertIsNone(self.device.route.get_gateway(
+                ip_version=ip_version, table=table))
+
+    def test_delete_route(self):
+        scopes = ('global', 'site', 'link')
+        tables = (None, 1, 254, 255)
+        for cidr, scope, table in itertools.product(
+                self.cidrs, scopes, tables):
+            ip_version = utils.get_ip_version(cidr)
+            self.device.route.add_route(cidr, table=table, scope=scope)
+            self._assert_route(ip_version, cidr=cidr, scope=scope, table=table)
+
+            self.device.route.delete_route(cidr, table=table, scope=scope)
+            self._assert_route(ip_version, cidr=cidr, scope=scope, table=table,
+                               not_in=True)
+
+    def test_flush(self):
+        tables = (None, 1, 200)
+        ip_versions = (constants.IP_VERSION_4, constants.IP_VERSION_6)
+        for cidr, table in itertools.product(self.cidrs, tables):
+            self.device.route.add_route(cidr, table=table)
+
+        for ip_version, table in itertools.product(ip_versions, tables):
+            routes = self.device.route.list_routes(ip_version, table=table)
+            self.assertGreater(len(routes), 0)
+            self.device.route.flush(ip_version, table=table)
+            routes = self.device.route.list_routes(ip_version, table=table)
+            self.assertEqual([], routes)

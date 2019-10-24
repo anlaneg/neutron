@@ -175,7 +175,40 @@ Example::
 set the :code:`VERSION` field to 1.0.
 Change :code:`VERSION` if fields or their types are modified. When you change
 the version of objects being exposed via RPC, add method
-:code:`obj_make_compatible(self, primitive, target_version)`.
+:code:`obj_make_compatible(self, primitive, target_version)`. For example, if
+a new version introduces a new parameter, it needs to be removed for previous
+versions::
+
+    from oslo_utils import versionutils
+
+    def obj_make_compatible(self, primitive, target_version):
+        _target_version = versionutils.convert_version_to_tuple(target_version)
+        if _target_version < (1, 1):  # version 1.1 introduces "new_parameter"
+            primitive.pop('new_parameter', None)
+
+In the following example the object has changed an attribute definition. For
+example, in version 1.1 :code:`description` is allowed to be :code:`None` but
+not in version 1.0::
+
+    from oslo_utils import versionutils
+    from oslo_versionedobjects import exception
+
+    def obj_make_compatible(self, primitive, target_version):
+        _target_version = versionutils.convert_version_to_tuple(target_version)
+        if _target_version < (1, 1):  # version 1.1 changes "description"
+            if primitive['description'] is None:
+                # "description" was not nullable before
+                raise exception.IncompatibleObjectVersion(
+                    objver=target_version, objname='OVOName')
+
+Using the first example as reference, this is how the unit test can be
+implemented::
+
+    def test_object_version_degradation_1_1_to_1_0(self):
+        OVO_obj_1_1 = self._method_to_create_this_OVO()
+        OVO_obj_1_0 = OVO_obj_1_1.obj_to_primitive(target_version='1.0')
+
+        self.assertNotIn('new_parameter', OVO_obj_1_0['versioned_object.data'])
 
 .. note::
    Standard Attributes are automatically added to OVO fields in base class.
@@ -640,6 +673,26 @@ SQLAlchemy model, not an object. This is achieved by capturing the
 corresponding database model on :code:`get_***/create/update`, and exposing it
 via :code:`<object>.db_obj`
 
+Removal of downgrade checks over time
+-------------------------------------
+While the code to check object versions is meant to remain for a long period of
+time, in the interest of not accruing too much cruft over time, they are not
+intended to be permanent.  OVO downgrade code should account for code that is
+within the upgrade window of any major OpenStack distribution.  The longest
+currently known is for Ubuntu Cloud Archive which is to upgrade four versions,
+meaning during the upgrade the control nodes would be running a release that is
+four releases newer than what is running on the computes.
+
+Known fast forward upgrade windows are:
+
+* Red Hat OpenStack Platform (RHOSP): X -> X+3 [#]_
+* SuSE OpenStack Cloud (SOC): X -> X+2 [#]_
+* Ubuntu Cloud Archive: X -> X+4 [#]_
+
+Therefore removal of OVO version downgrade code should be removed in the fifth
+cycle after the code was introduced.  For example, if an object version was
+introduced in Ocata then it can be removed in Train.
+
 Backward compatibility for tenant_id
 ------------------------------------
 All objects can support :code:`tenant_id` and :code:`project_id` filters and
@@ -678,4 +731,7 @@ References
 .. [#] https://opendev.org/openstack/neutron/tree/neutron/objects/base.py?h=stable/ocata#n542
 .. [#] https://docs.openstack.org/neutron/latest/contributor/internals/db_layer.html#the-standard-attribute-table
 .. [#] https://opendev.org/openstack/neutron/tree/neutron/objects/rbac_db.py?h=stable/ocata#n291
+.. [#] https://access.redhat.com/support/policy/updates/openstack/platform/
+.. [#] https://www.suse.com/releasenotes/x86_64/SUSE-OPENSTACK-CLOUD/8/#Upgrade
+.. [#] https://www.ubuntu.com/about/release-cycle
 .. [#] https://opendev.org/openstack/neutron-lib/tree/neutron_lib/objects/utils.py

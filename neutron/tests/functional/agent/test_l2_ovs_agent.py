@@ -40,8 +40,10 @@ class TestOVSAgent(base.OVSAgentTestFramework):
 
     def test_no_stale_flows_after_port_delete(self):
         def find_drop_flow(ofport, flows):
-            for flow in flows.split("\n"):
-                if "in_port=%d" % ofport in flow and "actions=drop" in flow:
+            for flow in flows:
+                # flow.instruction == [] means actions=drop
+                if (not flow.instructions and
+                        ('in_port', ofport) in flow.match.items()):
                     return True
             return False
 
@@ -96,6 +98,7 @@ class TestOVSAgent(base.OVSAgentTestFramework):
                         ('br_int', 'br_tun', 'br_phys')):
             actual = self.ovs.db_get_val('Bridge', br_name, 'datapath_type')
             self.assertEqual(expected, actual)
+        self.stop_agent(agent, self.agent_thread)
 
     def test_datapath_type_change(self):
         self._check_datapath_type_netdev('system')
@@ -243,6 +246,7 @@ class TestOVSAgent(base.OVSAgentTestFramework):
         patch_int_ofport_before = self.agent.patch_int_ofport
         patch_tun_ofport_before = self.agent.patch_tun_ofport
 
+        self.stop_agent(self.agent, self.agent_thread)
         self.setup_agent_and_ports(port_dicts=[], create_tunnels=True)
         self.assertEqual(patch_int_ofport_before, self.agent.patch_int_ofport)
         self.assertEqual(patch_tun_ofport_before, self.agent.patch_tun_ofport)
@@ -254,6 +258,7 @@ class TestOVSAgent(base.OVSAgentTestFramework):
         patch_int_ofport_before = self.agent.int_ofports['physnet']
         patch_phys_ofport_before = self.agent.phys_ofports['physnet']
 
+        self.stop_agent(self.agent, self.agent_thread)
         self.setup_agent_and_ports(port_dicts=[])
         self.assertEqual(patch_int_ofport_before,
                          self.agent.int_ofports['physnet'])

@@ -17,6 +17,7 @@ import os
 import uuid
 
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.api.definitions import provider_net
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib import constants
@@ -62,7 +63,9 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                 IPTABLES_FW_DRIVER_FULL, 'iptables_hybrid')
         ) and sg_enabled
         vif_details = {portbindings.CAP_PORT_FILTER: sg_enabled,
-                       portbindings.OVS_HYBRID_PLUG: hybrid_plug_required}
+                       portbindings.OVS_HYBRID_PLUG: hybrid_plug_required,
+                       portbindings.VIF_DETAILS_CONNECTIVITY:
+                           portbindings.CONNECTIVITY_L2}
         # NOTE(moshele): Bind DIRECT (SR-IOV) port allows
         # to offload the OVS flows using tc to the SR-IOV NIC.
         # We are using OVS mechanism driver because the openvswitch (>=2.8.0)
@@ -77,7 +80,9 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         # SimpleAgentMechanismDriverBase. By that e blacklisting and validation
         # of the vnic_types would be available for all mechanism drivers.
         self.supported_vnic_types = self.blacklist_supported_vnic_types(
-            vnic_types=[portbindings.VNIC_NORMAL, portbindings.VNIC_DIRECT],
+            vnic_types=[portbindings.VNIC_NORMAL,
+                        portbindings.VNIC_DIRECT,
+                        portbindings.VNIC_SMARTNIC],
             blacklist=cfg.CONF.OVS_DRIVER.vnic_type_blacklist
         )
         LOG.info("%s's supported_vnic_types: %s",
@@ -133,7 +138,7 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
             return
         super(OpenvswitchMechanismDriver, self).bind_port(context)
 
-    def get_vif_type(self, context, agent, segment):
+    def get_supported_vif_type(self, agent):
         caps = agent['configurations'].get('ovs_capabilities', {})
         if (any(x in caps.get('iface_types', []) for x
                 in [a_const.OVS_DPDK_VHOST_USER,
@@ -143,6 +148,12 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
             #对于netdev返回虚接口的类型
             return portbindings.VIF_TYPE_VHOST_USER
         return self.vif_type
+
+    def get_vif_type(self, context, agent, segment):
+        if (context.current.get(portbindings.VNIC_TYPE) ==
+                portbindings.VNIC_DIRECT):
+            return portbindings.VIF_TYPE_OVS
+        return self.get_supported_vif_type(agent)
 
     def get_vhost_mode(self, iface_types):
         # NOTE(sean-k-mooney): this function converts the ovs vhost user
@@ -209,3 +220,7 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                                               a_const.VHOST_USER_SOCKET_DIR)
         sock_name = (constants.VHOST_USER_DEVICE_PREFIX + port_id)[:14]
         return os.path.join(sockdir, sock_name)
+
+    @staticmethod
+    def provider_network_attribute_updates_supported():
+        return [provider_net.SEGMENTATION_ID]

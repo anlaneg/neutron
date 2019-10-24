@@ -903,7 +903,7 @@ class L3DvrSchedulerTestCase(L3SchedulerBaseMixin,
         }
         port = kwargs.get('port')
         plugin = directory.get_plugin()
-        l3plugin = mock.Mock()
+        l3plugin = mock.MagicMock()
         l3plugin.supported_extension_aliases = [
             'router', constants.L3_AGENT_SCHEDULER_EXT_ALIAS,
             constants.L3_DISTRIBUTED_EXT_ALIAS
@@ -986,6 +986,7 @@ class L3DvrSchedulerTestCase(L3SchedulerBaseMixin,
             'original_port': {
                 portbindings.HOST_ID: 'vm-host',
                 'device_owner': DEVICE_OWNER_COMPUTE,
+                'id': uuidutils.generate_uuid()
             },
             'port': {
                 portbindings.HOST_ID: 'vm-host',
@@ -993,15 +994,18 @@ class L3DvrSchedulerTestCase(L3SchedulerBaseMixin,
                 portbindings.PROFILE: {'migrating_to': 'vm-host2'},
             },
         }
-        l3plugin = mock.Mock()
+        l3plugin = mock.MagicMock()
         directory.add_plugin(plugin_constants.L3, l3plugin)
-        l3_dvrscheduler_db._notify_l3_agent_port_update(
-            'port', 'after_update', mock.ANY, **kwargs)
-        l3plugin.dvr_handle_new_service_port.assert_called_once_with(
-            self.adminContext, kwargs.get('port'), dest_host='vm-host2')
-        l3plugin.update_arp_entry_for_dvr_service_port.\
-            assert_called_once_with(
-                self.adminContext, kwargs.get('port'))
+        with mock.patch.object(l3plugin, '_get_floatingips_by_port_id',
+                               return_value=[]):
+            l3_dvrscheduler_db._notify_l3_agent_port_update(
+                    'port', 'after_update', mock.ANY, **kwargs)
+            l3plugin.dvr_handle_new_service_port.assert_called_once_with(
+                    self.adminContext, kwargs.get('port'),
+                    dest_host='vm-host2', router_id=None)
+            l3plugin.update_arp_entry_for_dvr_service_port.\
+                assert_called_once_with(
+                        self.adminContext, kwargs.get('port'))
 
     def test__notify_l3_agent_update_port_no_action(self):
         kwargs = {
@@ -1115,17 +1119,22 @@ class L3DvrSchedulerTestCase(L3SchedulerBaseMixin,
         router_to_remove = [{'agent_id': 'foo_agent',
                              'router_id': 'foo_id',
                              'host': 'vm-host1'}]
-        self._test__notify_l3_agent_port_binding_change(router_to_remove, fip)
+        self._test__notify_l3_agent_port_binding_change(
+                router_to_remove, fip,
+                router_id=fip['router_id'])
 
     def test__notify_l3_agent_port_binding_change_with_fip(self):
         fip = {'router_id': 'router_id'}
-        self._test__notify_l3_agent_port_binding_change(None, fip)
+        self._test__notify_l3_agent_port_binding_change(
+                None, fip, router_id=fip['router_id'])
 
     def test__notify_l3_agent_port_binding_change_fip_dvr(self):
         fip = {'router_id': 'router_id'}
         is_distributed = True
-        self._test__notify_l3_agent_port_binding_change(None,
-                                                        fip, is_distributed)
+        self._test__notify_l3_agent_port_binding_change(
+                None,
+                fip, is_distributed,
+                router_id=fip['router_id'])
 
     def test__notify_l3_agent_port_binding_change_fip_dvr_rmrt(self):
         fip = {'router_id': 'router_id'}
@@ -1133,8 +1142,9 @@ class L3DvrSchedulerTestCase(L3SchedulerBaseMixin,
                              'router_id': 'foo_id',
                              'host': 'vm-host1'}]
         is_distributed = True
-        self._test__notify_l3_agent_port_binding_change(router_to_remove,
-                                                        fip, is_distributed)
+        self._test__notify_l3_agent_port_binding_change(
+                router_to_remove, fip, is_distributed,
+                router_id=fip['router_id'])
 
     def test__notify_l3_agent_port_binding_change_fip_dvr_on_rmrt(self):
         fip = {'router_id': 'foo_id'}
@@ -1142,13 +1152,15 @@ class L3DvrSchedulerTestCase(L3SchedulerBaseMixin,
                              'router_id': 'foo_id',
                              'host': 'vm-host1'}]
         is_distributed = True
-        self._test__notify_l3_agent_port_binding_change(router_to_remove,
-                                                        fip, is_distributed)
+        self._test__notify_l3_agent_port_binding_change(
+                router_to_remove, fip, is_distributed,
+                router_id=fip['router_id'])
 
     def _test__notify_l3_agent_port_binding_change(self,
                                                    routers_to_remove=None,
                                                    fip=None,
-                                                   is_distributed=False):
+                                                   is_distributed=False,
+                                                   router_id=None):
         source_host = 'vm-host1'
         kwargs = {
             'context': self.adminContext,
@@ -1180,13 +1192,14 @@ class L3DvrSchedulerTestCase(L3SchedulerBaseMixin,
                     1,
                     l3plugin.delete_arp_entry_for_dvr_service_port.call_count)
             if fip and is_distributed and not (routers_to_remove and
-                fip['router_id'] is routers_to_remove[0]['router_id']):
+                    fip['router_id'] is routers_to_remove[0]['router_id']):
                 (l3plugin.l3_rpc_notifier.routers_updated_on_host.
                  assert_called_once_with(mock.ANY, ['router_id'], source_host))
             self.assertEqual(
                 1, l3plugin.update_arp_entry_for_dvr_service_port.call_count)
             l3plugin.dvr_handle_new_service_port.assert_called_once_with(
-                self.adminContext, kwargs.get('port'), dest_host=None)
+                self.adminContext, kwargs.get('port'),
+                dest_host=None, router_id=router_id)
 
     def test__notify_l3_agent_update_port_removing_routers(self):
         port_id = 'fake-port'
@@ -1315,13 +1328,7 @@ class L3DvrSchedulerTestCase(L3SchedulerBaseMixin,
                            '.L3AgentNotifyAPI'),\
                 mock.patch.object(
                         self.dut, 'get_l3_agents',
-                        return_value=[agent_on_host]) as get_l3_agents,\
-                mock.patch.object(
-                        self.dut, 'get_hosts_to_notify',
-                        return_value=['other_host']),\
-                mock.patch.object(
-                        self.dut, '_check_for_rtr_serviceable_ports',
-                        return_value=True):
+                        return_value=[agent_on_host]) as get_l3_agents:
 
             self.dut.dvr_handle_new_service_port(
                 self.adminContext, port)
@@ -1329,10 +1336,9 @@ class L3DvrSchedulerTestCase(L3SchedulerBaseMixin,
             get_l3_agents.assert_called_once_with(
                 self.adminContext,
                 filters={'host': [port[portbindings.HOST_ID]]})
-            self.dut.l3_rpc_notifier.routers_updated_on_host.assert_has_calls(
-                [mock.call(self.adminContext, {'r1', 'r2'}, 'host1'),
-                 mock.call(self.adminContext, {'r1', 'r2'}, 'other_host')],
-                any_order=True)
+            self.dut.l3_rpc_notifier.routers_updated_on_host.\
+                assert_called_once_with(self.adminContext,
+                                        {'r1', 'r2'}, 'host1')
             self.assertFalse(self.dut.l3_rpc_notifier.routers_updated.called)
 
     def test_get_dvr_routers_by_subnet_ids(self):

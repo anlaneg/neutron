@@ -19,6 +19,8 @@ radvd: CommandFilter, radvd, root
 # haproxy
 haproxy: RegExpFilter, haproxy, root, haproxy, -f, .*
 kill_haproxy: KillFilter, root, haproxy, -15, -9, -HUP
+# haproxy kill script filter
+kill_haproxy_script: CommandFilter, haproxy-kill, root
 
 kill_radvd_usr: KillFilter, root, /usr/sbin/radvd, -15, -9, -HUP
 kill_radvd: KillFilter, root, /sbin/radvd, -15, -9, -HUP
@@ -29,9 +31,6 @@ find: RegExpFilter, find, root, find, /sys/class/net, -maxdepth, 1, -type, l, -p
 ip_exec: IpNetnsExecFilter, ip, root
 
 # l3_tc_lib
-l3_tc_show_qdisc: RegExpFilter, tc, root, tc, qdisc, show, dev, .+
-l3_tc_add_qdisc_ingress: RegExpFilter, tc, root, tc, qdisc, add, dev, .+, ingress
-l3_tc_add_qdisc_egress: RegExpFilter, tc, root, tc, qdisc, add, dev, .+, root, handle, 1:, htb
 l3_tc_show_filters: RegExpFilter, tc, root, tc, -p, -s, -d, filter, show, dev, .+, parent, .+, prio, 1
 l3_tc_delete_filters: RegExpFilter, tc, root, tc, filter, del, dev, .+, parent, .+, prio, 1, handle, .+, u32
 l3_tc_add_filter_ingress: RegExpFilter, tc, root, tc, filter, add, dev, .+, parent, .+, protocol, ip, prio, 1, u32, match, ip, dst, .+, police, rate, .+, burst, .+, mtu, 64kb, drop, flowid, :1
@@ -52,6 +51,8 @@ ip6tables-restore: CommandFilter, ip6tables-restore, root
 # Keepalived
 keepalived: CommandFilter, keepalived, root
 kill_keepalived: KillFilter, root, keepalived, -HUP, -15, -9
+# keepalived kill script filter
+kill_keepalived_script: CommandFilter, keepalived-kill, root
 
 # l3 agent to delete floatingip's conntrack state
 conntrack: CommandFilter, conntrack, root
@@ -69,3 +70,11 @@ kill_keepalived_monitor_py3: KillFilter, root, python3, -15
 kill_keepalived_monitor_py35: KillFilter, root, python3.5, -15
 kill_keepalived_monitor_py36: KillFilter, root, python3.6, -15
 kill_keepalived_monitor_py37: KillFilter, root, python3.7, -15
+# For e.g. RHEL8 neutron-keepalived-state-change is run by "system python"
+# which is /usr/libexec/platform-python3.6 so this should be in filters also.
+# Path /usr/libexec isn't in PATH by default so it has to be given here as
+# absolute path
+kill_keepalived_monitor_platform_py: KillFilter, root, /usr/libexec/platform-python, -15
+kill_keepalived_monitor_platform_py36: KillFilter, root, /usr/libexec/platform-python3.6, -15
+# neutron-keepalived-state-change-monitor kill script filter
+kill_neutron-keepalived-state-change-monitor_script: CommandFilter, neutron-keepalived-state-change-monitor-kill, root

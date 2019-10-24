@@ -13,8 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import datetime
-
 import mock
 
 from neutron_lib.agent import topics
@@ -66,6 +64,7 @@ class FakeL3PluginWithAgents(l3_hamode_db.L3_HA_NAT_db_mixin,
 
 class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
     _mechanism_drivers = ['openvswitch', 'fake_agent', 'l2population']
+    tenant = 'tenant'
 
     def setUp(self):
         super(TestL2PopulationRpcTestCase, self).setUp()
@@ -352,47 +351,36 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                 self.mock_fanout.assert_called_with(
                     mock.ANY, 'remove_fdb_entries', expected)
 
-    def _test_ovs_agent_restarted_with_dvr_port(
-            self, agent_boot_timeout=True, agent_restarted=False):
+    def test_ovs_agent_restarted_with_dvr_port(self):
         plugin = directory.get_plugin()
         router = self._create_dvr_router()
-        with mock.patch.object(l2pop_mech_driver.L2populationMechanismDriver,
-                               'agent_restarted',
-                               return_value=agent_boot_timeout):
-            with self.subnet(network=self._network,
-                             enable_dhcp=False) as snet:
-                with self.port(
-                        subnet=snet,
-                        device_owner=constants.DEVICE_OWNER_DVR_INTERFACE)\
-                            as port:
-                    port_id = port['port']['id']
-                    plugin.update_distributed_port_binding(self.adminContext,
-                        port_id, {'port': {portbindings.HOST_ID: HOST_4,
-                        'device_id': router['id']}})
-                    port = self._show('ports', port_id)
-                    self.assertEqual(portbindings.VIF_TYPE_DISTRIBUTED,
-                                    port['port'][portbindings.VIF_TYPE])
-                    self.callbacks.update_device_up(
-                        self.adminContext,
-                        agent_id=HOST_4,
-                        device=port_id,
-                        host=HOST_4,
-                        agent_restarted=agent_restarted)
-                    fanout_expected = {port['port']['network_id']: {
-                        'network_type': u'vxlan',
-                        'ports': {
-                            u'20.0.0.4': [('00:00:00:00:00:00', '0.0.0.0')]},
-                        'segment_id': 1}}
-                    self.mock_fanout.assert_called_with(mock.ANY,
-                                                        'add_fdb_entries',
-                                                        fanout_expected)
-
-    def test_ovs_agent_restarted_with_dvr_port_boot_config_timeout(self):
-        self._test_ovs_agent_restarted_with_dvr_port()
-
-    def test_ovs_agent_restarted_with_dvr_port_rpc_send_timeout(self):
-        self._test_ovs_agent_restarted_with_dvr_port(
-            agent_boot_timeout=False, agent_restarted=True)
+        with self.subnet(network=self._network,
+                         enable_dhcp=False) as snet:
+            with self.port(
+                    subnet=snet,
+                    project_id=self.tenant,
+                    device_owner=constants.DEVICE_OWNER_DVR_INTERFACE)\
+                        as port:
+                port_id = port['port']['id']
+                plugin.update_distributed_port_binding(self.adminContext,
+                    port_id, {'port': {portbindings.HOST_ID: HOST_4,
+                    'device_id': router['id']}})
+                port = self._show('ports', port_id,
+                                  neutron_context=self.adminContext)
+                self.assertEqual(portbindings.VIF_TYPE_DISTRIBUTED,
+                                 port['port'][portbindings.VIF_TYPE])
+                self.callbacks.update_device_up(self.adminContext,
+                                                agent_id=HOST_4,
+                                                device=port_id,
+                                                host=HOST_4,
+                                                agent_restarted=True)
+                fanout_expected = {port['port']['network_id']: {
+                    'network_type': u'vxlan',
+                    'ports': {u'20.0.0.4': [('00:00:00:00:00:00', '0.0.0.0')]},
+                    'segment_id': 1}}
+                self.mock_fanout.assert_called_with(mock.ANY,
+                                                    'add_fdb_entries',
+                                                    fanout_expected)
 
     def test_ha_agents_with_dvr_rtr_does_not_get_other_fdb(self):
         router = self._create_dvr_router()
@@ -1084,6 +1072,35 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                 self.mock_fanout.assert_called_with(
                     mock.ANY, 'add_fdb_entries', add_expected)
 
+    def test_fixed_ips_changed_vlan(self):
+        self._register_ml2_agents()
+
+        with self.subnet(network=self._network2) as subnet:
+            host_arg = {portbindings.HOST_ID: HOST}
+            fixed_ips = [{'subnet_id': subnet['subnet']['id'],
+                          'ip_address': '10.0.0.2'}]
+            with self.port(subnet=subnet, cidr='10.0.0.0/24',
+                           device_owner=DEVICE_OWNER_COMPUTE,
+                           arg_list=(portbindings.HOST_ID,),
+                           fixed_ips=fixed_ips,
+                           **host_arg) as port:
+                p = port['port']
+
+                device = 'tap' + p['id']
+
+                self.callbacks.update_device_up(self.adminContext,
+                                                agent_id=HOST,
+                                                device=device)
+
+                data = {'port': {'fixed_ips': [{'ip_address': '10.0.0.2'},
+                                               {'ip_address': '10.0.0.10'}]}}
+                self.new_update_request('ports', data, p['id'])
+                l2pop_mech = l2pop_mech_driver.L2populationMechanismDriver()
+                l2pop_mech.L2PopulationAgentNotify = mock.Mock()
+                l2notify = l2pop_mech.L2PopulationAgentNotify
+                l2notify.update_fdb_entries = mock.Mock()
+                self.assertFalse(l2notify.update_fdb_entries.called)
+
     def test_fixed_ips_changed(self):
         self._register_ml2_agents()
 
@@ -1494,25 +1511,3 @@ class TestL2PopulationMechDriver(base.BaseTestCase):
         mech_driver = l2pop_mech_driver.L2populationMechanismDriver()
         with testtools.ExpectedException(exceptions.InvalidInput):
             mech_driver.update_port_precommit(ctx)
-
-    def test_agent_restarted(self):
-        mech_driver = l2pop_mech_driver.L2populationMechanismDriver()
-        ctx = mock.Mock()
-        ctx.host = "__host1__"
-        ctx._plugin_context = {}
-        agent = mock.Mock()
-        agent.started_at = datetime.datetime(2018, 5, 25, 15, 51, 20)
-        agent.heartbeat_timestamp = datetime.datetime(2018, 5, 25, 15,
-                                                      51, 50)
-
-        with mock.patch.object(l2pop_db, 'get_agent_by_host',
-                               return_value=agent):
-            res = mech_driver.agent_restarted(ctx)
-            self.assertTrue(res)
-
-        agent.heartbeat_timestamp = datetime.datetime(2018, 5, 25, 15,
-                                                      58, 30)
-        with mock.patch.object(l2pop_db, 'get_agent_by_host',
-                               return_value=agent):
-            res = mech_driver.agent_restarted(ctx)
-            self.assertFalse(res)

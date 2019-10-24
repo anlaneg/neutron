@@ -14,11 +14,11 @@ import netaddr
 from neutron_lib.api import validators
 from neutron_lib import constants as const
 from neutron_lib.db import model_query
+from neutron_lib.utils import net as net_utils
 
 from oslo_versionedobjects import fields as obj_fields
 from sqlalchemy import and_, or_
 
-from neutron.common import utils
 from neutron.db.models import segment as segment_model
 from neutron.db.models import subnet_service_type
 from neutron.db import models_v2
@@ -67,6 +67,8 @@ class Route(base.NeutronDbObject):
     # Version 1.0: Initial version
     VERSION = '1.0'
 
+    new_facade = True
+
     db_model = models_v2.SubnetRoute
 
     primary_keys = ['destination', 'nexthop', 'subnet_id']
@@ -84,7 +86,7 @@ class Route(base.NeutronDbObject):
         # TODO(korzen) remove this method when IP and CIDR decorator ready
         result = super(Route, cls).modify_fields_from_db(db_obj)
         if 'destination' in result:
-            result['destination'] = utils.AuthenticIPNetwork(
+            result['destination'] = net_utils.AuthenticIPNetwork(
                 result['destination'])
         if 'nexthop' in result:
             result['nexthop'] = netaddr.IPAddress(result['nexthop'])
@@ -191,6 +193,7 @@ class Subnet(base.NeutronDbObject):
     VERSION = '1.0'
 
     db_model = models_v2.Subnet
+    new_facade = True
 
     fields = {
         'id': common_types.UUIDField(),
@@ -278,7 +281,7 @@ class Subnet(base.NeutronDbObject):
         # TODO(korzen) remove this method when IP and CIDR decorator ready
         result = super(Subnet, cls).modify_fields_from_db(db_obj)
         if 'cidr' in result:
-            result['cidr'] = utils.AuthenticIPNetwork(result['cidr'])
+            result['cidr'] = net_utils.AuthenticIPNetwork(result['cidr'])
         if 'gateway_ip' in result and result['gateway_ip'] is not None:
             result['gateway_ip'] = netaddr.IPAddress(result['gateway_ip'])
         return result

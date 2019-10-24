@@ -61,7 +61,7 @@ provider networks. We recommend using the following procedure:
    * Segmentation ID
 
    For example, ``provider1``, ``VLAN``, and ``2016``. See the
-   `API reference <https://developer.openstack.org/api-ref/networking/v2/#segments>`__
+   `API reference <https://docs.openstack.org/api-ref/network/v2/#segments>`__
    for more information.
 
    Within a network, use a unique physical network name for each segment which
@@ -245,12 +245,12 @@ segment contains one IPv4 subnet and one IPv6 subnet.
       This command provides no output.
 
 #. Create a second segment on the provider network. In this example, the
-   segment uses the ``provider2`` physical network with VLAN ID 2016.
+   segment uses the ``provider2`` physical network with VLAN ID 2017.
 
    .. code-block:: console
 
       $ openstack network segment create --physical-network provider2 \
-        --network-type vlan --segment 2016 --network multisegment1 segment2
+        --network-type vlan --segment 2017 --network multisegment1 segment2
       +------------------+--------------------------------------+
       | Field            | Value                                |
       +------------------+--------------------------------------+
@@ -262,7 +262,7 @@ segment contains one IPv4 subnet and one IPv6 subnet.
       | network_type     | vlan                                 |
       | physical_network | provider2                            |
       | revision_number  | 1                                    |
-      | segmentation_id  | 2016                                 |
+      | segmentation_id  | 2017                                 |
       | tags             | []                                   |
       +------------------+--------------------------------------+
 
@@ -274,7 +274,7 @@ segment contains one IPv4 subnet and one IPv6 subnet.
       +--------------------------------------+----------+--------------------------------------+--------------+---------+
       | ID                                   | Name     | Network                              | Network Type | Segment |
       +--------------------------------------+----------+--------------------------------------+--------------+---------+
-      | 053b7925-9a89-4489-9992-e164c8cc8763 | segment2 | 6ab19caa-dda9-4b3d-abc4-5b8f435b98d9 | vlan         |    2016 |
+      | 053b7925-9a89-4489-9992-e164c8cc8763 | segment2 | 6ab19caa-dda9-4b3d-abc4-5b8f435b98d9 | vlan         |    2017 |
       | 43e16869-ad31-48e4-87ce-acf756709e18 | segment1 | 6ab19caa-dda9-4b3d-abc4-5b8f435b98d9 | vlan         |    2016 |
       +--------------------------------------+----------+--------------------------------------+--------------+---------+
 
@@ -382,13 +382,13 @@ segment contains one IPv4 subnet and one IPv6 subnet.
 
    .. code-block:: console
 
-      $ neutron dhcp-agent-list-hosting-net multisegment1
-      +--------------------------------------+-------------+----------------+-------+
-      | id                                   | host        | admin_state_up | alive |
-      +--------------------------------------+-------------+----------------+-------+
-      | c904ed10-922c-4c1a-84fd-d928abaf8f55 | compute0001 | True           | :-)   |
-      | e0b22cc0-d2a6-4f1c-b17c-27558e20b454 | compute0101 | True           | :-)   |
-      +--------------------------------------+-------------+----------------+-------+
+      $ openstack network agent list --agent-type dhcp --network multisegment1
+      +--------------------------------------+------------+-------------+-------------------+-------+-------+--------------------+
+      | ID                                   | Agent Type | Host        | Availability Zone | Alive | State | Binary             |
+      +--------------------------------------+------------+-------------+-------------------+-------+-------+--------------------+
+      | c904ed10-922c-4c1a-84fd-d928abaf8f55 | DHCP agent | compute0001 | nova              | :-)   | UP    | neutron-dhcp-agent |
+      | e0b22cc0-d2a6-4f1c-b17c-27558e20b454 | DHCP agent | compute0101 | nova              | :-)   | UP    | neutron-dhcp-agent |
+      +--------------------------------------+------------+-------------+-------------------+-------+-------+--------------------+
 
 #. Verify that inventories were created for each segment IPv4 subnet in the
    Compute service placement API (for the sake of brevity, only one of the
@@ -397,34 +397,12 @@ segment contains one IPv4 subnet and one IPv6 subnet.
    .. code-block:: console
 
       $ SEGMENT_ID=053b7925-9a89-4489-9992-e164c8cc8763
-      $ curl -s -X GET \
-        http://localhost/placement/resource_providers/$SEGMENT_ID/inventories \
-        -H "Content-type: application/json" \
-        -H "X-Auth-Token: $TOKEN" \
-        -H "Openstack-Api-Version: placement 1.1"
-      {
-          "resource_provider_generation": 1,
-          "inventories": {
-              "allocation_ratio": 1,
-              "total": 254,
-              "reserved": 2,
-              "step_size": 1,
-              "min_unit": 1,
-              "max_unit": 1
-          }
-      }
-
-   .. note::
-
-      As of the writing of this guide, there is not placement API CLI client,
-      so the :command:`curl` command is used for this example.
-
-   .. note::
-
-      Service points URLs differ depending on your OpenStack deployment. You
-      can discover the Placement service URL by executing the
-      :command:`openstack endpoint list | grep placement` command. This
-      command has to be executed as admin.
+      $ openstack resource provider inventory list $SEGMENT_ID
+      +----------------+------------------+----------+----------+-----------+----------+-------+
+      | resource_class | allocation_ratio | max_unit | reserved | step_size | min_unit | total |
+      +----------------+------------------+----------+----------+-----------+----------+-------+
+      | IPV4_ADDRESS   |              1.0 |        1 |        2 |         1 |        1 |    30 |
+      +----------------+------------------+----------+----------+-----------+----------+-------+
 
 #. Verify that host aggregates were created for each segment in the Compute
    service (for the sake of brevity, only one of the segments is shown in this

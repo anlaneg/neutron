@@ -19,6 +19,7 @@ import time
 
 from neutron_lib import constants
 from neutron_lib import context as ncontext
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as n_exc
 from neutron_lib.exceptions import agent as agent_exc
 from neutron_lib.exceptions import dhcpagentscheduler as das_exc
@@ -52,7 +53,6 @@ class AgentSchedulerDbMixin(agents_db.AgentDbMixin):
     agent_notifiers = {
         constants.AGENT_TYPE_DHCP: None,
         constants.AGENT_TYPE_L3: None,
-        constants.AGENT_TYPE_LOADBALANCER: None,
     }
 
     @staticmethod
@@ -65,8 +65,14 @@ class AgentSchedulerDbMixin(agents_db.AgentDbMixin):
             #                   filter is set, only agents which are 'up'
             #                   (i.e. have a recent heartbeat timestamp)
             #                   are eligible, even if active is False
-            return not agent_utils.is_agent_down(
-                agent['heartbeat_timestamp'])
+            if agent_utils.is_agent_down(agent['heartbeat_timestamp']):
+                LOG.warning('Agent %(agent)s is down. Type: %(type)s, host: '
+                            '%(host)s, heartbeat: %(heartbeat)s',
+                            {'agent': agent['id'], 'type': agent['agent_type'],
+                             'host': agent['host'],
+                             'heartbeat': agent['heartbeat_timestamp']})
+                return False
+            return True
 
     def update_agent(self, context, id, agent):
         original_agent = self.get_agent(context, id)
@@ -372,7 +378,7 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
 
     def add_network_to_dhcp_agent(self, context, id, network_id):
         self._get_network(context, network_id)
-        with context.session.begin(subtransactions=True):
+        with db_api.CONTEXT_WRITER.using(context):
             agent_db = self._get_agent(context, id)
             if (agent_db['agent_type'] != constants.AGENT_TYPE_DHCP or
                     not services_available(agent_db['admin_state_up'])):

@@ -19,6 +19,7 @@ from neutron_lib.callbacks import events
 from neutron_lib import constants
 from neutron_lib import context
 from oslo_utils import uuidutils
+import testtools
 
 from neutron.db.db_base_plugin_v2 import NeutronDbPluginV2 as db_plugin_v2
 from neutron.db import rbac_db_models
@@ -53,6 +54,7 @@ class NetworkRbacTestcase(test_plugin.NeutronDbPluginV2TestCase):
                               'admin_state_up': True,
                               'device_id': 'device_id',
                               'device_owner': 'device_owner',
+                              'project_id': target_tenant,
                               'tenant_id': target_tenant}}
 
         port = self.plugin.create_port(self.context, test_port)
@@ -72,6 +74,20 @@ class NetworkRbacTestcase(test_plugin.NeutronDbPluginV2TestCase):
                                             'access_as_external')
             self.plugin.create_rbac_policy(self.context, policy)
             self._assert_external_net_state(net_id, is_external=True)
+
+    def test_create_network_rbac_shared_existing(self):
+        tenant = 'test-tenant'
+        with self.network() as net:
+            policy = self._make_networkrbac(net,
+                                            tenant,
+                                            rbac_db_models.ACCESS_SHARED)
+            self.plugin.create_rbac_policy(self.context, policy)
+            # Give server maximum of 10 seconds to make sure we don't hit DB
+            # retry mechanism when resource already exists
+            with self.assert_max_execution_time(10):
+                with testtools.ExpectedException(
+                        ext_rbac.DuplicateRbacPolicy):
+                    self.plugin.create_rbac_policy(self.context, policy)
 
     def test_update_network_rbac_external_valid(self):
         orig_target = 'test-tenant-2'
@@ -208,15 +224,17 @@ class NetworkRbacTestcase(test_plugin.NeutronDbPluginV2TestCase):
                            'tenant_id': net_owner,
                            'project_id': net_owner}}
         policy = self._make_networkrbac(net, net_owner)['rbac_policy']
-        kwargs = {}
 
         with mock.patch.object(db_plugin_v2, '_get_network') as get_net,\
             mock.patch.object(db_plugin_v2,
                               'ensure_no_tenant_ports_on_network') as ensure:
             get_net.return_value = net['network']
+            payload = events.DBEventPayload(
+                self.context, states=(policy,),
+                metadata={'object_type': 'network'})
             self.plugin.validate_network_rbac_policy_change(
                 None, events.BEFORE_DELETE, None,
-                self.context, 'network', policy, **kwargs)
+                payload=payload)
             self.assertEqual(0, ensure.call_count)
 
     def test_update_self_share_networkrbac(self):
@@ -228,15 +246,18 @@ class NetworkRbacTestcase(test_plugin.NeutronDbPluginV2TestCase):
                            'tenant_id': net_owner,
                            'project_id': net_owner}}
         policy = self._make_networkrbac(net, net_owner)['rbac_policy']
-        kwargs = {'policy_update': {'target_tenant': 'new-target-tenant'}}
 
         with mock.patch.object(db_plugin_v2, '_get_network') as get_net,\
             mock.patch.object(db_plugin_v2,
                               'ensure_no_tenant_ports_on_network') as ensure:
             get_net.return_value = net['network']
+            payload = events.DBEventPayload(
+                self.context, states=(policy,),
+                request_body={'target_tenant': 'new-target-tenant'},
+                metadata={'object_type': 'network'})
             self.plugin.validate_network_rbac_policy_change(
                 None, events.BEFORE_UPDATE, None,
-                self.context, 'network', policy, **kwargs)
+                payload=payload)
             self.assertEqual(0, ensure.call_count)
 
     def _create_rbac_obj(self, _class):

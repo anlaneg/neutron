@@ -190,7 +190,7 @@ class SecurityGroupsTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
            in as expected_kvs dictionary
         """
         for k, v in expected_kvs.items():
-            self.assertEqual(security_group_rule[k], v)
+            self.assertEqual(v, security_group_rule[k])
 
 
 class SecurityGroupTestPlugin(db_base_plugin_v2.NeutronDbPluginV2,
@@ -268,7 +268,7 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
         keys = [('name', name,), ('description', description)]
         with self.security_group(name, description) as security_group:
             for k, v, in keys:
-                self.assertEqual(security_group['security_group'][k], v)
+                self.assertEqual(v, security_group['security_group'][k])
 
         # Verify that default egress rules have been created
 
@@ -519,7 +519,7 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
         with self.security_group(name, description) as sg:
             security_group_id = sg['security_group']['id']
             rule = self._build_security_group_rule(
-                security_group_id, 'ingress', const.PROTO_NAME_IPV6_ICMP)
+                security_group_id, 'ingress', const.PROTO_NAME_IPV6_FRAG)
             res = self._create_security_group_rule(self.fmt, rule)
             self.deserialize(self.fmt, res)
             self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
@@ -579,10 +579,10 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                     None,
                     ethertype=ethertype)
                 res = self._create_security_group_rule(self.fmt, rule)
-                self.assertEqual(res.status_int, 201)
+                self.assertEqual(webob.exc.HTTPCreated.code, res.status_int)
                 res_sg = self.deserialize(self.fmt, res)
                 prefix = res_sg['security_group_rule']['remote_ip_prefix']
-                self.assertEqual(prefix, '%s/%s' % (ip, addr[ip]['mask']))
+                self.assertEqual('%s/%s' % (ip, addr[ip]['mask']), prefix)
 
     def test_create_security_group_rule_tcp_protocol_as_number(self):
         name = 'webservers'
@@ -666,10 +666,10 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                                           ethertype=ethertype) as rule:
 
                 # the lower case value will be return
-                self.assertEqual(rule['security_group_rule']['protocol'],
-                                 protocol.lower())
-                self.assertEqual(rule['security_group_rule']['ethertype'],
-                                 const.IPv4)
+                self.assertEqual(protocol.lower(),
+                                 rule['security_group_rule']['protocol'])
+                self.assertEqual(const.IPv4,
+                                 rule['security_group_rule']['ethertype'])
 
     def test_get_security_group(self):
         name = 'webservers'
@@ -697,12 +697,12 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                 group = self.deserialize(
                     self.fmt, res.get_response(self.ext_api))
                 sg_rule = group['security_group']['security_group_rules']
-                self.assertEqual(group['security_group']['id'],
-                                 remote_group_id)
+                self.assertEqual(remote_group_id,
+                                 group['security_group']['id'])
                 self.assertEqual(3, len(sg_rule))
                 sg_rule = [r for r in sg_rule if r['direction'] == 'ingress']
                 for k, v, in keys:
-                    self.assertEqual(sg_rule[0][k], v)
+                    self.assertEqual(v, sg_rule[0][k])
 
     def test_get_security_group_empty_rules(self):
         name = 'webservers'
@@ -718,8 +718,7 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                 self.fmt, res.get_response(self.ext_api))
 
             sg_rule = group['security_group']['security_group_rules']
-            self.assertEqual(group['security_group']['id'],
-                             remote_group_id)
+            self.assertEqual(remote_group_id, group['security_group']['id'])
             self.assertEqual(0, len(sg_rule))
 
     def test_get_security_group_empty_rules_id_only(self):
@@ -738,8 +737,7 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
 
             secgroup = group['security_group']
             self.assertFalse('security_group_rules' in secgroup)
-            self.assertEqual(group['security_group']['id'],
-                             remote_group_id)
+            self.assertEqual(remote_group_id, group['security_group']['id'])
 
     # This test case checks that admins from a different tenant can add rules
     # as themselves. This is an odd behavior, with some weird GET semantics,
@@ -781,9 +779,9 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
             for sg in sgs['security_groups']:
                 if sg['name'] == "webservers":
                     rules = sg['security_group_rules']
-                    self.assertEqual(len(rules), 5)
-                    self.assertNotEqual(rules[3]['tenant_id'], 'admin-tenant')
-                    self.assertEqual(rules[4]['tenant_id'], 'admin-tenant')
+                    self.assertEqual(5, len(rules))
+                    self.assertNotEqual('admin-tenant', rules[3]['tenant_id'])
+                    self.assertEqual('admin-tenant', rules[4]['tenant_id'])
 
     def test_get_security_group_on_port_from_wrong_tenant(self):
         plugin = directory.get_plugin()
@@ -846,11 +844,11 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
         with self.network():
             res = self.new_list_request('security-groups')
             groups = self.deserialize(self.fmt, res.get_response(self.ext_api))
-            self.assertEqual(len(groups['security_groups']), 1)
+            self.assertEqual(1, len(groups['security_groups']))
             security_group_id = groups['security_groups'][0]['id']
             res = self.new_list_request('security-group-rules')
             rules = self.deserialize(self.fmt, res.get_response(self.ext_api))
-            self.assertEqual(len(rules['security_group_rules']), 4)
+            self.assertEqual(4, len(rules['security_group_rules']))
 
             # Verify default rule for v4 egress
             sg_rules = rules['security_group_rules']
@@ -942,7 +940,7 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                                           port_range_max,
                                           remote_ip_prefix) as rule:
                 for k, v, in keys:
-                    self.assertEqual(rule['security_group_rule'][k], v)
+                    self.assertEqual(v, rule['security_group_rule'][k])
 
     def test_create_security_group_rule_group_id(self):
         name = 'webservers'
@@ -967,7 +965,7 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                                               remote_group_id=remote_group_id
                                               ) as rule:
                     for k, v, in keys:
-                        self.assertEqual(rule['security_group_rule'][k], v)
+                        self.assertEqual(v, rule['security_group_rule'][k])
 
     def test_create_security_group_rule_icmp_with_type_and_code(self):
         name = 'webservers'
@@ -993,7 +991,7 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                                           port_range_max,
                                           remote_ip_prefix) as rule:
                 for k, v, in keys:
-                    self.assertEqual(rule['security_group_rule'][k], v)
+                    self.assertEqual(v, rule['security_group_rule'][k])
 
     def test_create_security_group_rule_icmp_with_type_only(self):
         name = 'webservers'
@@ -1018,7 +1016,7 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                                           port_range_max,
                                           remote_ip_prefix) as rule:
                 for k, v, in keys:
-                    self.assertEqual(rule['security_group_rule'][k], v)
+                    self.assertEqual(v, rule['security_group_rule'][k])
 
     def test_create_security_group_rule_icmpv6_with_type_only(self):
         name = 'webservers'
@@ -1047,9 +1045,9 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                                           None, None,
                                           ethertype) as rule:
                 for k, v, in keys:
-                    self.assertEqual(rule['security_group_rule'][k], v)
+                    self.assertEqual(v, rule['security_group_rule'][k])
 
-    def test_create_security_group_rule_icmpv6_legacy_protocol_name(self):
+    def _test_create_security_group_rule_legacy_protocol_name(self, protocol):
         name = 'webservers'
         description = 'my webservers'
         with self.security_group(name, description) as sg:
@@ -1057,7 +1055,6 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
             direction = "ingress"
             ethertype = const.IPv6
             remote_ip_prefix = "2001::f401:56ff:fefe:d3dc/128"
-            protocol = const.PROTO_NAME_IPV6_ICMP_LEGACY
             keys = [('remote_ip_prefix', remote_ip_prefix),
                     ('security_group_id', security_group_id),
                     ('direction', direction),
@@ -1069,7 +1066,50 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                                           None, None,
                                           ethertype) as rule:
                 for k, v, in keys:
-                    self.assertEqual(rule['security_group_rule'][k], v)
+                    # IPv6 ICMP protocol will always be 'ipv6-icmp'
+                    if k == 'protocol':
+                        v = const.PROTO_NAME_IPV6_ICMP
+                    self.assertEqual(v, rule['security_group_rule'][k])
+
+    def test_create_security_group_rule_ipv6_icmp_legacy_protocol_name(self):
+        protocol = const.PROTO_NAME_ICMP
+        self._test_create_security_group_rule_legacy_protocol_name(protocol)
+
+    def test_create_security_group_rule_icmpv6_legacy_protocol_name(self):
+        protocol = const.PROTO_NAME_IPV6_ICMP_LEGACY
+        self._test_create_security_group_rule_legacy_protocol_name(protocol)
+
+    def _test_create_security_group_rule_legacy_protocol_num(self, protocol):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            security_group_id = sg['security_group']['id']
+            direction = "ingress"
+            ethertype = const.IPv6
+            remote_ip_prefix = "2001::f401:56ff:fefe:d3dc/128"
+            keys = [('remote_ip_prefix', remote_ip_prefix),
+                    ('security_group_id', security_group_id),
+                    ('direction', direction),
+                    ('ethertype', ethertype),
+                    ('protocol', protocol)]
+            with self.security_group_rule(security_group_id, direction,
+                                          protocol, None, None,
+                                          remote_ip_prefix,
+                                          None, None,
+                                          ethertype) as rule:
+                for k, v, in keys:
+                    # IPv6 ICMP protocol will always be '58'
+                    if k == 'protocol':
+                        v = str(const.PROTO_NUM_IPV6_ICMP)
+                    self.assertEqual(v, rule['security_group_rule'][k])
+
+    def test_create_security_group_rule_ipv6_icmp_legacy_protocol_num(self):
+        protocol = const.PROTO_NUM_ICMP
+        self._test_create_security_group_rule_legacy_protocol_num(protocol)
+
+    def test_create_security_group_rule_ipv6_icmp_protocol_num(self):
+        protocol = const.PROTO_NUM_IPV6_ICMP
+        self._test_create_security_group_rule_legacy_protocol_num(protocol)
 
     def test_create_security_group_source_group_ip_and_ip_prefix(self):
         security_group_id = "4cd70774-cc67-4a87-9b39-7d1db38eb087"
@@ -1346,7 +1386,7 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                 res = req.get_response(self.api)
                 ports = self.deserialize(self.fmt, res)
                 port = ports['ports'][0]
-                self.assertEqual(len(port[ext_sg.SECURITYGROUPS]), 1)
+                self.assertEqual(1, len(port[ext_sg.SECURITYGROUPS]))
                 self._delete('ports', port['id'])
 
     def test_list_security_group_rules(self):
@@ -1487,8 +1527,8 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                                                   port['port']['id'])
                     res = self.deserialize(self.fmt,
                                            req.get_response(self.api))
-                    self.assertEqual(res['port'][ext_sg.SECURITYGROUPS][0],
-                                     sg['security_group']['id'])
+                    self.assertEqual(sg['security_group']['id'],
+                                     res['port'][ext_sg.SECURITYGROUPS][0])
 
                     # Test update port without security group
                     data = {'port': {'fixed_ips': port['port']['fixed_ips'],
@@ -1498,8 +1538,8 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                                                   port['port']['id'])
                     res = self.deserialize(self.fmt,
                                            req.get_response(self.api))
-                    self.assertEqual(res['port'][ext_sg.SECURITYGROUPS][0],
-                                     sg['security_group']['id'])
+                    self.assertEqual(sg['security_group']['id'],
+                                     res['port'][ext_sg.SECURITYGROUPS][0])
 
                     self._delete('ports', port['port']['id'])
 
@@ -1605,12 +1645,12 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                                             security_groups=(
                                                 [sg['security_group']['id']]))
                     port = self.deserialize(self.fmt, res)
-                    self.assertEqual(port['port'][ext_sg.SECURITYGROUPS][0],
-                                     sg['security_group']['id'])
+                    self.assertEqual(sg['security_group']['id'],
+                                     port['port'][ext_sg.SECURITYGROUPS][0])
                     # try to delete security group that's in use
-                    res = self._delete('security-groups',
-                                       sg['security_group']['id'],
-                                       webob.exc.HTTPConflict.code)
+                    self._delete('security-groups',
+                                 sg['security_group']['id'],
+                                 webob.exc.HTTPConflict.code)
                     # delete the blocking port
                     self._delete('ports', port['port']['id'])
 
@@ -1905,8 +1945,8 @@ class TestConvertIPPrefixToCIDR(base.BaseTestCase):
     def test_convert_ip_prefix_no_netmask_to_cidr(self):
         addr = {'10.1.2.3': '32', 'fe80::2677:3ff:fe7d:4c': '128'}
         for k, v in addr.items():
-            self.assertEqual(ext_sg.convert_ip_prefix_to_cidr(k),
-                             '%s/%s' % (k, v))
+            self.assertEqual('%s/%s' % (k, v),
+                             ext_sg.convert_ip_prefix_to_cidr(k))
 
     def test_convert_ip_prefix_with_netmask_to_cidr(self):
         addresses = ['10.1.0.0/16', '10.1.2.3/32', '2001:db8:1234::/48']

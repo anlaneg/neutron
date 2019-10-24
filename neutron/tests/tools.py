@@ -14,23 +14,17 @@
 #    under the License.
 
 import datetime
-import os
 import random
-import time
-import warnings
 
 import fixtures
-import mock
 import netaddr
 from neutron_lib import constants
-from neutron_lib.tests import tools
+from neutron_lib.services.logapi import constants as log_const
 from neutron_lib.utils import helpers
 from neutron_lib.utils import net
 from oslo_utils import netutils
 from oslo_utils import timeutils
 import unittest2
-
-from neutron.services.logapi.common import constants as log_const
 
 
 # NOTE(yamahata): from neutron-lib 1.9.1, callback priority was added and
@@ -42,42 +36,6 @@ try:
     from neutron_lib.callbacks import priority_group  # noqa
 except ImportError as e:
     _CALLBACK_PRIORITY_SUPPORTED = False
-
-
-class WarningsFixture(fixtures.Fixture):
-    """Filters out warnings during test runs."""
-
-    warning_types = (
-        DeprecationWarning, PendingDeprecationWarning, ImportWarning
-    )
-
-    def _setUp(self):
-        self.addCleanup(warnings.resetwarnings)
-        for wtype in self.warning_types:
-            warnings.filterwarnings(
-                "once", category=wtype, module='^neutron\\.')
-
-
-class OpenFixture(fixtures.Fixture):
-    """Mock access to a specific file while preserving open for others."""
-
-    def __init__(self, filepath, contents=''):
-        self.path = filepath
-        self.contents = contents
-
-    def _setUp(self):
-        self.mock_open = mock.mock_open(read_data=self.contents)
-        self._orig_open = open
-
-        def replacement_open(name, *args, **kwargs):
-            if name == self.path:
-                return self.mock_open(name, *args, **kwargs)
-            return self._orig_open(name, *args, **kwargs)
-
-        self._patch = mock.patch('six.moves.builtins.open',
-                                 new=replacement_open)
-        self._patch.start()
-        self.addCleanup(self._patch.stop)
 
 
 class SafeCleanupFixture(fixtures.Fixture):
@@ -249,16 +207,6 @@ def get_random_ip_version():
     return random.choice(constants.IP_ALLOWED_VERSIONS)
 
 
-def get_random_EUI():
-    return netaddr.EUI(
-        net.get_random_mac(['fe', '16', '3e', '00', '00', '00'])
-    )
-
-
-def get_random_ip_network(version=4):
-    return netaddr.IPNetwork(tools.get_random_cidr(version=version))
-
-
 def get_random_ip_address(version=4):
     if version == 4:
         ip_string = '10.%d.%d.%d' % (random.randint(3, 254),
@@ -310,16 +258,6 @@ def get_random_network_segment_range_network_type():
                           constants.TYPE_VXLAN,
                           constants.TYPE_GRE,
                           constants.TYPE_GENEVE])
-
-
-def reset_random_seed():
-    # reset random seed to make sure other processes extracting values from RNG
-    # don't get the same results (useful especially when you then use the
-    # random values to allocate system resources from global pool, like ports
-    # to listen). Use both current time and pid to make sure no tests started
-    # at the same time get the same values from RNG
-    seed = time.time() + os.getpid()
-    random.seed(seed)
 
 
 def get_random_ipv6_mode():

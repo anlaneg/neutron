@@ -18,35 +18,22 @@
 import sys
 
 from oslo_config import cfg
-from oslo_utils import importutils
 
 from neutron.common import config as common_config
 from neutron.common import profiler
+from neutron.plugins.ml2.drivers.openvswitch.agent.openflow.native import \
+        main as of_main
 
 
 cfg.CONF.import_group('OVS', 'neutron.plugins.ml2.drivers.openvswitch.agent.'
                       'common.config')
 
 
-_main_modules = {
-    #采用命令行方式处理
-    'ovs-ofctl': 'neutron.plugins.ml2.drivers.openvswitch.agent.openflow.'
-                 'ovs_ofctl.main',
-    #采用api方式处理
-    'native': 'neutron.plugins.ml2.drivers.openvswitch.agent.openflow.'
-                 'native.main',
-}
-
-
 def main():
     common_config.init(sys.argv[1:])
-    #初始化ovs driver，目前有两种，一种采用命令行，一种采用api方式进行处理
-    driver_name = cfg.CONF.OVS.of_interface
-    mod_name = _main_modules[driver_name]
-    mod = importutils.import_module(mod_name)
-    mod.init_config()
+    of_main.init_config()
     #初始化日志
     common_config.setup_logging()
     profiler.setup("neutron-ovs-agent", cfg.CONF.host)
     #进驱动的main
-    mod.main()
+    of_main.main()

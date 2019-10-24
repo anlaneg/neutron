@@ -14,10 +14,11 @@
 
 import netaddr
 from neutron_lib import constants
+from neutron_lib.utils import net as net_utils
+from oslo_log import log as logging
 from oslo_utils import versionutils
 from oslo_versionedobjects import fields as obj_fields
 
-from neutron.common import utils
 from neutron.db.models import dns as dns_models
 from neutron.db.models import l3
 from neutron.db.models import securitygroup as sg_models
@@ -27,6 +28,8 @@ from neutron.objects import common_types
 from neutron.objects.db import api as obj_db_api
 from neutron.objects.qos import binding
 from neutron.plugins.ml2 import models as ml2_models
+
+LOG = logging.getLogger(__name__)
 
 
 class PortBindingBase(base.NeutronDbObject):
@@ -265,7 +268,8 @@ class Port(base.NeutronDbObject):
     # Version 1.2: Added segment_id to binding_levels
     # Version 1.3: distributed_binding -> distributed_bindings
     # Version 1.4: Attribute binding becomes ListOfObjectsField
-    VERSION = '1.4'
+    # Version 1.5: Added qos_network_policy_id field
+    VERSION = '1.5'
 
     db_model = models_v2.Port
 
@@ -309,6 +313,8 @@ class Port(base.NeutronDbObject):
             default=None,
         ),
         'qos_policy_id': common_types.UUIDField(nullable=True, default=None),
+        'qos_network_policy_id': common_types.UUIDField(nullable=True,
+                                                        default=None),
 
         'binding_levels': obj_fields.ListOfObjectsField(
             'PortBindingLevel', nullable=True
@@ -332,6 +338,7 @@ class Port(base.NeutronDbObject):
         'dns',
         'fixed_ips',
         'qos_policy_id',
+        'qos_network_policy_id',
         'security',
         'security_group_ids',
     ]
@@ -440,7 +447,8 @@ class Port(base.NeutronDbObject):
         # TODO(rossella_s): get rid of it once we switch the db model to using
         # custom types.
         if 'mac_address' in fields:
-            fields['mac_address'] = utils.AuthenticEUI(fields['mac_address'])
+            fields['mac_address'] = net_utils.AuthenticEUI(
+                fields['mac_address'])
 
         distributed_port_binding = fields.get('distributed_bindings')
         if distributed_port_binding:
@@ -460,16 +468,18 @@ class Port(base.NeutronDbObject):
             }
         else:
             self.security_group_ids = set()
-        self.obj_reset_changes(['security_group_ids'])
+        fields_to_change = ['security_group_ids']
 
         # extract qos policy binding
         if db_obj.get('qos_policy_binding'):
-            self.qos_policy_id = (
-                db_obj.qos_policy_binding.policy_id
-            )
-        else:
-            self.qos_policy_id = None
-        self.obj_reset_changes(['qos_policy_id'])
+            self.qos_policy_id = db_obj.qos_policy_binding.policy_id
+            fields_to_change.append('qos_policy_id')
+        if db_obj.get('qos_network_policy_binding'):
+            self.qos_network_policy_id = (
+                db_obj.qos_network_policy_binding.policy_id)
+            fields_to_change.append('qos_network_policy_binding')
+
+        self.obj_reset_changes(fields_to_change)
 
     def obj_make_compatible(self, primitive, target_version):
         _target_version = versionutils.convert_version_to_tuple(target_version)
@@ -497,17 +507,69 @@ class Port(base.NeutronDbObject):
                             constants.ACTIVE):
                         primitive['binding'] = a_binding
                         break
+        if _target_version < (1, 5):
+            primitive.pop('qos_network_policy_id', None)
 
     @classmethod
-    def get_ports_by_router(cls, context, router_id, owner, subnet):
-        rport_qry = context.session.query(models_v2.Port).join(
-            l3.RouterPort)
-        ports = rport_qry.filter(
-            l3.RouterPort.router_id == router_id,
-            l3.RouterPort.port_type == owner,
-            models_v2.Port.network_id == subnet['network_id']
-        )
-        return [cls._load_object(context, db_obj) for db_obj in ports.all()]
+    def get_ports_by_router_and_network(cls, context, router_id, owner,
+                                        network_id):
+        """Returns port objects filtering by router ID, owner and network ID"""
+        rports_filter = (models_v2.Port.network_id == network_id, )
+        router_filter = (models_v2.Port.network_id == network_id, )
+        return cls._get_ports_by_router(context, router_id, owner,
+                                        rports_filter, router_filter)
+
+    @classmethod
+    def get_ports_by_router_and_port(cls, context, router_id, owner, port_id):
+        """Returns port objects filtering by router ID, owner and port ID"""
+        rports_filter = (l3.RouterPort.port_id == port_id, )
+        router_filter = (models_v2.Port.id == port_id, )
+        return cls._get_ports_by_router(context, router_id, owner,
+                                        rports_filter, router_filter)
+
+    @classmethod
+    def _get_ports_by_router(cls, context, router_id, owner, rports_filter,
+                             router_filter):
+        """Returns port objects filtering by router id and owner
+
+        The method will receive extra filters depending of the caller (filter
+        by network or filter by port).
+
+        The ports are retrieved using:
+        - The RouterPort registers. Each time a port is assigned to a router,
+          a new RouterPort register is added to the DB.
+        - The port owner and device_id information.
+
+        Both searches should return the same result. If not, a warning message
+        is logged and the port list to be returned is completed with the
+        missing ones.
+        """
+        rports_filter += (l3.RouterPort.router_id == router_id,
+                          l3.RouterPort.port_type == owner)
+        router_filter += (models_v2.Port.device_id == router_id,
+                          models_v2.Port.device_owner == owner)
+
+        ports = context.session.query(models_v2.Port).join(
+            l3.RouterPort).filter(*rports_filter)
+        ports_rports = [cls._load_object(context, db_obj)
+                        for db_obj in ports.all()]
+
+        ports = context.session.query(models_v2.Port).filter(*router_filter)
+        ports_router = [cls._load_object(context, db_obj)
+                        for db_obj in ports.all()]
+
+        ports_rports_ids = {p.id for p in ports_rports}
+        ports_router_ids = {p.id for p in ports_router}
+        missing_port_ids = ports_router_ids - ports_rports_ids
+        if missing_port_ids:
+            LOG.warning('The following ports, assigned to router '
+                        '%(router_id)s, do not have a "routerport" register: '
+                        '%(port_ids)s', {'router_id': router_id,
+                                         'port_ids': missing_port_ids})
+            port_objs = [p for p in ports_router if p.id in missing_port_ids]
+            ports_rports += port_objs
+
+        return ports_rports
 
     @classmethod
     def get_ports_ids_by_security_groups(cls, context, security_group_ids,
@@ -531,3 +593,37 @@ class Port(base.NeutronDbObject):
             ml2_models.PortBinding.vif_type == binding_type,
             ml2_models.PortBinding.host == host)
         return [cls._load_object(context, db_obj) for db_obj in query.all()]
+
+    @classmethod
+    def get_ports_by_vnic_type_and_host(
+            cls, context, vnic_type, host):
+        query = context.session.query(models_v2.Port).join(
+            ml2_models.PortBinding)
+        query = query.filter(
+            ml2_models.PortBinding.vnic_type == vnic_type,
+            ml2_models.PortBinding.host == host)
+        return [cls._load_object(context, db_obj) for db_obj in query.all()]
+
+    @classmethod
+    def check_network_ports_by_binding_types(
+            cls, context, network_id, binding_types, negative_search=False):
+        """This method is to check whether networks have ports with given
+        binding_types.
+
+        :param context:
+        :param network_id: ID of network to check
+        :param binding_types: list of binding types to look for
+        :param negative_search: if set to true, ports with with binding_type
+                                other than "binding_types" will be counted
+        :return: True if any port is found, False otherwise
+        """
+        query = context.session.query(models_v2.Port).join(
+            ml2_models.PortBinding)
+        query = query.filter(models_v2.Port.network_id == network_id)
+        if negative_search:
+            query = query.filter(
+                ml2_models.PortBinding.vif_type.notin_(binding_types))
+        else:
+            query = query.filter(
+                ml2_models.PortBinding.vif_type.in_(binding_types))
+        return bool(query.count())

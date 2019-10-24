@@ -36,7 +36,6 @@ from neutron_lib import context
 from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as exc
 from neutron_lib import fixture
-from neutron_lib.objects import utils as obj_utils
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api as driver_api
@@ -50,7 +49,6 @@ import webob
 from neutron._i18n import _
 from neutron.common import utils
 from neutron.db import agents_db
-from neutron.db import db_base_plugin_v2
 from neutron.db import provisioning_blocks
 from neutron.db import securitygroups_db as sg_db
 from neutron.db import segments_db
@@ -466,9 +464,9 @@ class TestMl2NetworksV2(test_plugin.TestNetworksV2,
     def test__update_segmentation_id_ports_wrong_vif_type(self):
         plugin = directory.get_plugin()
         with self.network() as net:
-            with mock.patch.object(db_base_plugin_v2.NeutronDbPluginV2,
-                                   'get_ports_count') as mock_get_ports_count:
-                mock_get_ports_count.return_value = 1
+            with mock.patch.object(
+                    port_obj.Port, 'check_network_ports_by_binding_types',
+                    return_value=True):
                 self.assertRaises(
                     exc.InvalidInput, plugin._update_segmentation_id,
                     self.context, net['network'], {})
@@ -486,25 +484,42 @@ class TestMl2NetworksV2(test_plugin.TestNetworksV2,
 
         with self.network(**{'arg_list': (mpnet_apidef.SEGMENTS, ),
                              mpnet_apidef.SEGMENTS: segments}) as net, \
-                mock.patch.object(db_base_plugin_v2.NeutronDbPluginV2,
-                                  'get_ports_count') as mock_get_ports_count, \
+                mock.patch.object(
+                    port_obj.Port, 'check_network_ports_by_binding_types',
+                    return_value=False) as check_network_ports_mock, \
                 mock.patch.object(plugin.type_manager,
                                   'update_network_segment'), \
-                mock.patch.object(plugin, 'get_agents') as mock_get_agents, \
-                mock.patch.object(obj_utils, 'NotIn') as mock_not_in:
-            mock_get_ports_count.return_value = 0
+                mock.patch.object(plugin, 'get_agents') as mock_get_agents:
             net_data = {pnet.SEGMENTATION_ID: 1000}
             plugin._update_segmentation_id(self.context, net['network'],
                                            net_data)
 
             mock_get_agents.assert_not_called()
-            mock_not_in.assert_called_once_with([
-                portbindings.VIF_TYPE_UNBOUND,
-                portbindings.VIF_TYPE_BINDING_FAILED])
-            filters = {portbindings.VIF_TYPE: mock.ANY,
-                       'network_id': [net['network']['id']]}
-            mock_get_ports_count.assert_called_once_with(
-                self.context, filters=filters)
+            check_network_ports_mock.assert_called_once_with(
+                self.context, net['network']['id'],
+                [portbindings.VIF_TYPE_UNBOUND,
+                 portbindings.VIF_TYPE_BINDING_FAILED],
+                negative_search=True)
+
+    def test_update_network_with_empty_body(self):
+        with self.network() as network:
+            network_id = network["network"]["id"]
+            network_req = self.new_update_request("networks", None,
+                                                  network_id)
+            res = network_req.get_response(self.api)
+            self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
+            self.assertIn("network", res.json['NeutronError']['message'])
+
+    def test_update_network_with_incorrect_resource_body(self):
+        with self.network() as network:
+            network_id = network["network"]["id"]
+            incorrect_body = {"incorrect": {}}
+            network_req = self.new_update_request("networks",
+                                                  incorrect_body,
+                                                  network_id)
+            res = network_req.get_response(self.api)
+            self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
+            self.assertIn("network", res.json['NeutronError']['message'])
 
 
 class TestMl2NetworksV2AgentMechDrivers(Ml2PluginV2TestCase):
@@ -518,26 +533,23 @@ class TestMl2NetworksV2AgentMechDrivers(Ml2PluginV2TestCase):
                      pnet.SEGMENTATION_ID: 1}]
         with self.network(**{'arg_list': (mpnet_apidef.SEGMENTS, ),
                              mpnet_apidef.SEGMENTS: segments}) as net, \
-                mock.patch.object(db_base_plugin_v2.NeutronDbPluginV2,
-                                  'get_ports_count') as mock_get_ports_count, \
+                mock.patch.object(
+                    port_obj.Port, 'check_network_ports_by_binding_types',
+                    return_value=False) as check_network_ports_mock, \
                 mock.patch.object(plugin.type_manager,
                                   'update_network_segment'), \
                 mock.patch.object(plugin, 'get_agents',
-                                  return_value=[mock.ANY]), \
-                mock.patch.object(obj_utils, 'NotIn') as mock_not_in:
-            mock_get_ports_count.return_value = 0
+                                  return_value=[mock.ANY]):
             net_data = {pnet.SEGMENTATION_ID: 1000}
             plugin._update_segmentation_id(self.context, net['network'],
                                            net_data)
 
-            mock_not_in.assert_called_once_with([
-                portbindings.VIF_TYPE_UNBOUND,
-                portbindings.VIF_TYPE_BINDING_FAILED,
-                mech_test.VIF_TYPE_TEST])
-            filters = {portbindings.VIF_TYPE: mock.ANY,
-                       'network_id': [net['network']['id']]}
-            mock_get_ports_count.assert_called_once_with(
-                self.context, filters=filters)
+            check_network_ports_mock.assert_called_once_with(
+                self.context, net['network']['id'],
+                [portbindings.VIF_TYPE_UNBOUND,
+                 portbindings.VIF_TYPE_BINDING_FAILED,
+                 mech_test.VIF_TYPE_TEST],
+                negative_search=True)
 
 
 class TestExternalNetwork(Ml2PluginV2TestCase):
@@ -599,7 +611,7 @@ class TestMl2NetworksWithVlanTransparencyBase(TestMl2NetworksV2):
 
 
 class TestMl2NetworksWithVlanTransparency(
-    TestMl2NetworksWithVlanTransparencyBase):
+        TestMl2NetworksWithVlanTransparencyBase):
     _mechanism_drivers = ['test']
 
     def test_create_network_vlan_transparent_fail(self):
@@ -625,7 +637,7 @@ class TestMl2NetworksWithVlanTransparency(
 
 
 class TestMl2NetworksWithVlanTransparencyAndMTU(
-    TestMl2NetworksWithVlanTransparencyBase):
+        TestMl2NetworksWithVlanTransparencyBase):
     _mechanism_drivers = ['test']
 
     def test_create_network_vlan_transparent_and_mtu(self):
@@ -714,6 +726,25 @@ class TestMl2SubnetsV2(test_plugin.TestSubnetsV2,
                     self.assertEqual(1, len(port['fixed_ips']))
                     self.assertEqual(s3['subnet']['id'],
                                      port['fixed_ips'][0]['subnet_id'])
+
+    def test_update_subnet_with_empty_body(self):
+        with self.subnet() as subnet:
+            subnet_id = subnet["subnet"]["id"]
+            subnet_req = self.new_update_request("subnets", None,
+                                                 subnet_id)
+            res = subnet_req.get_response(self.api)
+            self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
+            self.assertIn("subnet", res.json['NeutronError']['message'])
+
+    def test_update_subnet_with_incorrect_resource_body(self):
+        with self.subnet() as subnet:
+            subnet_id = subnet["subnet"]["id"]
+            incorrect_body = {"incorrect": {}}
+            subnet_req = self.new_update_request("subnets", incorrect_body,
+                                                 subnet_id)
+            res = subnet_req.get_response(self.api)
+            self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
+            self.assertIn("subnet", res.json['NeutronError']['message'])
 
     def test_subnet_after_update_callback(self):
         after_update = mock.Mock()
@@ -982,8 +1013,10 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
             mock.patch('neutron.plugins.ml2.plugin.db.get_port').start()
             provisioning_blocks.add_provisioning_component(
                 self.context, port['port']['id'], 'port', 'DHCP')
-            plugin._port_provisioned('port', 'evt', 'trigger',
-                                     self.context, port['port']['id'])
+            plugin._port_provisioned(
+                'port', 'evt', 'trigger',
+                payload=events.DBEventPayload(
+                    context, resource_id=port['port']['id']))
         self.assertFalse(ups.called)
 
     def test__port_provisioned_no_binding(self):
@@ -998,8 +1031,9 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
                 admin_state_up=True, status='ACTIVE',
                 device_id=device_id,
                 device_owner=DEVICE_OWNER_COMPUTE).create()
-        self.assertIsNone(plugin._port_provisioned('port', 'evt', 'trigger',
-                                                   self.context, port_id))
+        self.assertIsNone(plugin._port_provisioned(
+            'port', 'evt', 'trigger', payload=events.DBEventPayload(
+                self.context, resource_id=port_id)))
 
     def test__port_provisioned_port_admin_state_down(self):
         plugin = directory.get_plugin()
@@ -1016,7 +1050,8 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
         with mock.patch('neutron.plugins.ml2.plugin.db.get_port',
                         return_value=port):
             plugin._port_provisioned('port', 'evt', 'trigger',
-                                     self.context, port_id)
+                                     payload=events.DBEventPayload(
+                                         self.context, resource_id=port_id))
         self.assertFalse(ups.called)
 
     def test_port_after_create_outside_transaction(self):
@@ -1081,6 +1116,24 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
                 res_ports = self._list('ports')['ports']
                 self.assertEqual([], res_ports)
 
+    def test_update_port_with_empty_body(self):
+        with self.port() as port:
+            port_id = port["port"]["id"]
+            port_req = self.new_update_request("ports", None, port_id)
+            res = port_req.get_response(self.api)
+            self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
+            self.assertIn("port", res.json['NeutronError']['message'])
+
+    def test_update_port_with_incorrect_resource_body(self):
+        with self.port() as port:
+            port_id = port["port"]["id"]
+            incorrect_body = {"incorrect": {}}
+            port_req = self.new_update_request("ports", incorrect_body,
+                                               port_id)
+            res = port_req.get_response(self.api)
+            self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
+            self.assertIn("port", res.json['NeutronError']['message'])
+
     def test_update_port_status_build(self):
         with self.port() as port:
             self.assertEqual('DOWN', port['port']['status'])
@@ -1106,6 +1159,14 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
                 short_id = port_id[:11]
                 plugin.update_port_status(ctx, short_id, 'UP')
                 mock_gbl.assert_called_once_with(mock.ANY, port_id, mock.ANY)
+
+    def test_update_port_with_empty_data(self):
+        ctx = context.get_admin_context()
+        plugin = directory.get_plugin()
+        with self.port() as port:
+            port_id = port['port']['id']
+            new_port = plugin.update_port(ctx, port_id, {"port": {}})
+            self.assertEqual(port["port"], new_port)
 
     def _add_fake_dhcp_agent(self):
         agent = mock.Mock()
@@ -1419,14 +1480,6 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
     def test_check_if_compute_port_serviced_by_dvr(self):
         self.assertTrue(utils.is_dvr_serviced(DEVICE_OWNER_COMPUTE))
 
-    def test_check_if_lbaas_vip_port_serviced_by_dvr(self):
-        self.assertTrue(utils.is_dvr_serviced(
-            constants.DEVICE_OWNER_LOADBALANCER))
-
-    def test_check_if_lbaasv2_vip_port_serviced_by_dvr(self):
-        self.assertTrue(utils.is_dvr_serviced(
-            constants.DEVICE_OWNER_LOADBALANCERV2))
-
     def test_check_if_dhcp_port_serviced_by_dvr(self):
         self.assertTrue(utils.is_dvr_serviced(constants.DEVICE_OWNER_DHCP))
 
@@ -1559,6 +1612,12 @@ fixed_ips=ip_address_substr%%3D%s&fixed_ips=subnet_id%%3D%s
                fixed_ips['subnet_id'])
             self._test_list_resources('port', [],
                                       query_params=query_params)
+            query_params = """
+fixed_ips=ip_address_substr%%3D%s&fixed_ips=subnet_id%%3D%s&limit=1
+""".strip() % ('192.168.',
+               fixed_ips['subnet_id'])
+            self._test_list_resources('port', [],
+                                      query_params=query_params)
 
     def test_list_ports_filtered_by_fixed_ip_substring_dual_stack(self):
         with self.subnet() as subnet:
@@ -1608,6 +1667,12 @@ fixed_ips=ip_address_substr%%3D%s&fixed_ips=ip_address%%3D%s
             self.assertEqual(set([port1['port']['id'], port2['port']['id']]),
                              set([port['id'] for port in ports_data['ports']]))
             self.assertEqual(2, len(ports_data['ports']))
+            query_params = "security_groups=%s&limit=1" % (
+                           port1['port']['security_groups'][0])
+            ports_data = self._list('ports', query_params=query_params)
+            self.assertIn(ports_data['ports'][0]['id'],
+                          [port1['port']['id'], port2['port']['id']])
+            self.assertEqual(1, len(ports_data['ports']))
             query_params = "security_groups=%s&id=%s" % (
                            port1['port']['security_groups'][0],
                            port1['port']['id'])
@@ -1777,6 +1842,37 @@ class TestMl2PluginOnly(Ml2PluginV2TestCase):
     def test_check_mac_update_allowed_unless_bound(self):
         with testtools.ExpectedException(exc.PortBound):
             self._test_check_mac_update_allowed(portbindings.VIF_TYPE_OVS)
+
+    def _test_reset_mac_for_direct_physical(self, direct_physical=True,
+                                            unbinding=True):
+        plugin = directory.get_plugin()
+        port = {'device_id': '123', 'device_owner': 'compute:nova'}
+        new_attrs = ({'device_id': '', 'device_owner': ''} if unbinding else
+            {'name': 'new'})
+        binding = mock.Mock()
+        binding.vnic_type = (
+            portbindings.VNIC_DIRECT_PHYSICAL if direct_physical else
+            portbindings.VNIC_NORMAL)
+        new_mac = plugin._reset_mac_for_direct_physical(
+            port, new_attrs, binding)
+        if direct_physical and unbinding:
+            self.assertTrue(new_mac)
+            self.assertIsNotNone(new_attrs.get('mac_address'))
+        else:
+            self.assertFalse(new_mac)
+            self.assertIsNone(new_attrs.get('mac_address'))
+
+    def test_reset_mac_for_direct_physical(self):
+        self._test_reset_mac_for_direct_physical()
+
+    def test_reset_mac_for_direct_physical_not_physycal(self):
+        self._test_reset_mac_for_direct_physical(False, True)
+
+    def test_reset_mac_for_direct_physical_no_unbinding(self):
+        self._test_reset_mac_for_direct_physical(True, False)
+
+    def test_reset_mac_for_direct_physical_no_unbinding_not_physical(self):
+        self._test_reset_mac_for_direct_physical(False, False)
 
     def test__device_to_port_id_prefix_names(self):
         input_output = [('sg-abcdefg', 'abcdefg'),
@@ -2218,6 +2314,66 @@ class TestMl2PortBinding(Ml2PluginV2TestCase,
                     # Successful binding should only be attempted once.
                     self.assertEqual(1, at_mock.call_count)
 
+    def test__bind_port_if_needed_concurrent_calls(self):
+        port_vif_type = portbindings.VIF_TYPE_UNBOUND
+        bound_vif_type = portbindings.VIF_TYPE_OVS
+
+        plugin, port_context, bound_context = (
+            self._create_port_and_bound_context(port_vif_type,
+                                                bound_vif_type))
+        bound_context._binding_levels = [mock.Mock(
+            port_id="port_id",
+            level=0,
+            driver='fake_agent',
+            segment_id="11111111-2222-3333-4444-555555555555")]
+
+        # let _commit_port_binding replace the PortContext with a new instance
+        # which does not have any binding levels set to simulate the concurrent
+        # port binding operations fail
+        with mock.patch(
+            'neutron.plugins.ml2.plugin.Ml2Plugin._bind_port',
+            return_value=bound_context),\
+            mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin.'
+                       '_notify_port_updated') as npu_mock,\
+            mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin.'
+                       '_attempt_binding',
+                       side_effect=plugin._attempt_binding) as ab_mock,\
+            mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin.'
+                       '_commit_port_binding', return_value=(
+                            mock.MagicMock(), True, True)) as cpb_mock:
+            ret_context = plugin._bind_port_if_needed(port_context,
+                                                      allow_notify=True)
+            # _attempt_binding will return without doing anything during
+            # the second iteration since _should_bind_port returns False
+            self.assertEqual(2, ab_mock.call_count)
+            self.assertEqual(1, cpb_mock.call_count)
+            # _notify_port_updated will still be called though it does
+            # nothing due to the missing binding levels
+            npu_mock.assert_called_once_with(ret_context)
+
+    def test__commit_port_binding_populating_with_binding_levels(self):
+        port_vif_type = portbindings.VIF_TYPE_OVS
+        bound_vif_type = portbindings.VIF_TYPE_OVS
+
+        plugin, port_context, bound_context = (
+            self._create_port_and_bound_context(port_vif_type,
+                                                bound_vif_type))
+        db_portbinding = port_obj.PortBindingLevel(
+            self.context,
+            port_id=uuidutils.generate_uuid(),
+            level=0,
+            driver='fake_agent',
+            segment_id="11111111-2222-3333-4444-555555555555")
+        bound_context.network.current = {'id': 'net_id'}
+
+        with mock.patch.object(ml2_db, 'get_binding_level_objs',
+                return_value=[db_portbinding]),\
+                mock.patch.object(driver_context.PortContext,
+                '_push_binding_level') as pbl_mock:
+            plugin._commit_port_binding(
+                    port_context, bound_context, True)
+            pbl_mock.assert_called_once_with(db_portbinding)
+
     def test_port_binding_profile_not_changed(self):
         profile = {'e': 5}
         profile_arg = {portbindings.PROFILE: profile}
@@ -2319,8 +2475,8 @@ class TestMl2PortBinding(Ml2PluginV2TestCase,
             'id': 'foo_port_id',
             portbindings.HOST_ID: 'foo_host',
         }
-        with mock.patch.object(
-            ml2_db, 'ensure_distributed_port_binding') as mock_dist:
+        with mock.patch.object(ml2_db,
+                               'ensure_distributed_port_binding') as mock_dist:
             plugin.update_distributed_port_binding(
                 self.context, 'foo_port_id', {'port': port})
         self.assertFalse(mock_dist.called)
@@ -3193,8 +3349,7 @@ class TestML2Segments(Ml2PluginV2TestCase):
     def test_create_network_mtu_on_precommit(self):
         with mock.patch.object(mech_test.TestMechanismDriver,
                         'create_network_precommit') as bmp:
-            with mock.patch.object(
-                self.driver, '_get_network_mtu') as mtu:
+            with mock.patch.object(self.driver, '_get_network_mtu') as mtu:
                 mtu.return_value = 1100
                 with self.network() as network:
                     self.assertIn('mtu', network['network'])
@@ -3215,8 +3370,7 @@ class TestML2Segments(Ml2PluginV2TestCase):
     def test_reserve_segment_update_network_mtu(self):
         with self.network() as network:
             network_id = network['network']['id']
-            with mock.patch.object(
-                self.driver, '_get_network_mtu') as mtu:
+            with mock.patch.object(self.driver, '_get_network_mtu') as mtu:
                 mtu.return_value = 100
                 self._reserve_segment(network)
                 updated_network = self.driver.get_network(self.context,

@@ -62,7 +62,7 @@ class RpcCallbacksTestCase(base.BaseTestCase):
         }
         with mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin'
                         '._device_to_port_id'),\
-            mock.patch.object(self.callbacks, 'notify_l2pop_port_wiring'):
+                mock.patch.object(self.callbacks, 'notify_l2pop_port_wiring'):
             with mock.patch('neutron.db.provisioning_blocks.'
                             'provisioning_complete') as pc:
                 self.callbacks.update_device_up(mock.Mock(), **kwargs)
@@ -214,6 +214,17 @@ class RpcCallbacksTestCase(base.BaseTestCase):
             self.callbacks.get_devices_details_list_and_failed_devices)
         self._test_get_devices_list(callback, devices, expected)
 
+    def test_get_network_details(self):
+        kwargs = {'agent_id': 'agent_id',
+                  'host': 'host_id',
+                  'network': 'network'}
+        with mock.patch.object(self.plugin, 'get_network') as mock_get_network:
+            mock_get_network.return_value = 'net_details'
+            self.assertEqual(
+                'net_details',
+                self.callbacks.get_network_details('fake_context', **kwargs))
+            mock_get_network.assert_called_once_with('fake_context', 'network')
+
     def test_get_devices_details_list_and_failed_devices_empty_dev(self):
         with mock.patch.object(self.callbacks, 'get_device_details') as f:
             res = self.callbacks.get_devices_details_list_and_failed_devices(
@@ -238,6 +249,12 @@ class RpcCallbacksTestCase(base.BaseTestCase):
             port = ml2_db_get_port.return_value
             (self.plugin.nova_notifier.notify_port_active_direct.
              assert_called_once_with(port))
+
+    def test_update_device_up_with_device_not_bound_to_host_no_notify(self):
+        cfg.CONF.set_override('notify_nova_on_port_status_changes', False)
+        self.assertIsNone(self._test_update_device_not_bound_to_host(
+            self.callbacks.update_device_up))
+        self.plugin.nova_notifier.notify_port_active_direct.assert_not_called()
 
     def test_update_device_down_with_device_not_bound_to_host(self):
         self.assertEqual(
@@ -335,7 +352,7 @@ class RpcApiTestCase(base.BaseTestCase):
             expected = 'foo'
 
         ctxt = oslo_context.RequestContext(user_id='fake_user',
-                                           tenant='fake_project')
+                                           project_id='fake_project')
         expected_retval = expected if rpc_method == 'call' else None
         expected_version = kwargs.pop('version', None)
         fanout = kwargs.pop('fanout', False)
@@ -483,3 +500,12 @@ class RpcApiTestCase(base.BaseTestCase):
                            devices=['fake_device1', 'fake_device2'],
                            agent_id='fake_agent_id', host='fake_host',
                            version='1.5')
+
+    def test_get_ports_by_vnic_type_and_host(self):
+        rpcapi = agent_rpc.PluginApi(topics.PLUGIN)
+        self._test_rpc_api(rpcapi, None,
+                           'get_ports_by_vnic_type_and_host',
+                           rpc_method='call',
+                           vnic_type='fake_device1',
+                           host='fake_host',
+                           version='1.7')

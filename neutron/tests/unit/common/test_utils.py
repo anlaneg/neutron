@@ -16,13 +16,16 @@ import os.path
 import random
 import re
 import sys
+import time
 
 import ddt
 import eventlet
+from eventlet import queue
 import mock
 import netaddr
 from neutron_lib import constants
 from oslo_log import log as logging
+from osprofiler import profiler
 import six
 import testscenarios
 import testtools
@@ -357,30 +360,6 @@ class TestPortRuleMasking(base.BaseTestCase):
             self.compare_port_ranges_results(port_min, port_max)
 
 
-class TestAuthenticEUI(base.BaseTestCase):
-
-    def test_retains_original_format(self):
-        for mac_str in ('FA-16-3E-73-A2-E9', 'fa:16:3e:73:a2:e9'):
-            self.assertEqual(mac_str, str(utils.AuthenticEUI(mac_str)))
-
-    def test_invalid_values(self):
-        for mac in ('XXXX', 'ypp', 'g3:vvv'):
-            with testtools.ExpectedException(netaddr.core.AddrFormatError):
-                utils.AuthenticEUI(mac)
-
-
-class TestAuthenticIPNetwork(base.BaseTestCase):
-
-    def test_retains_original_format(self):
-        for addr_str in ('10.0.0.0/24', '10.0.0.10/32', '100.0.0.1'):
-            self.assertEqual(addr_str, str(utils.AuthenticIPNetwork(addr_str)))
-
-    def test_invalid_values(self):
-        for addr in ('XXXX', 'ypp', 'g3:vvv'):
-            with testtools.ExpectedException(netaddr.core.AddrFormatError):
-                utils.AuthenticIPNetwork(addr)
-
-
 class TestExcDetails(base.BaseTestCase):
 
     def test_attach_exc_details(self):
@@ -558,3 +537,90 @@ class TestRpBandwidthValidator(base.BaseTestCase):
 
         self.assertRaises(ValueError, utils.validate_rp_bandwidth,
                           self.not_valid_rp_bandwidth, self.device_name_set)
+
+
+class TimerTestCase(base.BaseTestCase):
+
+    def test__getattr(self):
+        with utils.Timer() as timer:
+            time.sleep(1)
+        self.assertEqual(1, round(timer.total_seconds(), 0))
+        self.assertEqual(1, timer.delta.seconds)
+
+    def test__enter_with_timeout(self):
+        with utils.Timer(timeout=10) as timer:
+            time.sleep(1)
+        self.assertEqual(1, round(timer.total_seconds(), 0))
+
+    def test__enter_with_timeout_exception(self):
+        msg = r'Timer timeout expired after 1 second\(s\).'
+        with self.assertRaisesRegex(utils.TimerTimeout, msg):
+            with utils.Timer(timeout=1):
+                time.sleep(2)
+
+    def test__enter_with_timeout_no_exception(self):
+        with utils.Timer(timeout=1, raise_exception=False):
+            time.sleep(2)
+
+    def test__iter(self):
+        iterations = []
+        for i in utils.Timer(timeout=2):
+            iterations.append(i)
+            time.sleep(1.1)
+        self.assertEqual(2, len(iterations))
+
+    def test_delta_time_sec(self):
+        with utils.Timer() as timer:
+            self.assertIsInstance(timer.delta_time_sec, float)
+
+
+class SpawnWithOrWithoutProfilerTestCase(
+        testscenarios.WithScenarios, base.BaseTestCase):
+
+    scenarios = [
+        ('spawn', {'spawn_variant': utils.spawn}),
+        ('spawn_n', {'spawn_variant': utils.spawn_n}),
+    ]
+
+    def _compare_profilers_in_parent_and_in_child(self, init_profiler):
+
+        q = queue.Queue()
+
+        def is_profiler_initialized(where):
+            # Instead of returning a single boolean add information so we can
+            # identify which thread produced the result without depending on
+            # queue order.
+            return {where: bool(profiler.get())}
+
+        def thread_with_no_leaked_profiler():
+            if init_profiler:
+                profiler.init(hmac_key='fake secret')
+
+            self.spawn_variant(
+                lambda: q.put(is_profiler_initialized('in-child')))
+            q.put(is_profiler_initialized('in-parent'))
+
+        # Make sure in parent we start with an uninitialized profiler by
+        # eventlet.spawn()-ing a new thread. Otherwise the unit test runner
+        # thread may leak an initialized profiler from one test to another.
+        eventlet.spawn(thread_with_no_leaked_profiler)
+
+        # In order to have some global protection against leaking initialized
+        # profilers neutron.test.base.BaseTestCase.setup() also calls
+        # addCleanup(profiler.clean)
+
+        # Merge the results independently of queue order.
+        results = {}
+        results.update(q.get())
+        results.update(q.get())
+
+        self.assertEqual(
+            {'in-parent': init_profiler,
+             'in-child': init_profiler},
+            results)
+
+    def test_spawn_with_profiler(self):
+        self._compare_profilers_in_parent_and_in_child(init_profiler=True)
+
+    def test_spawn_without_profiler(self):
+        self._compare_profilers_in_parent_and_in_child(init_profiler=False)

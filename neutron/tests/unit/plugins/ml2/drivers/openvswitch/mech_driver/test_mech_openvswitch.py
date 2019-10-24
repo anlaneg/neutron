@@ -34,7 +34,9 @@ class OpenvswitchMechanismBaseTestCase(base.AgentMechanismBaseTestCase):
     VIF_DETAILS = {'bridge_name': 'br-int',
                    portbindings.OVS_DATAPATH_TYPE: 'system',
                    portbindings.CAP_PORT_FILTER: True,
-                   portbindings.OVS_HYBRID_PLUG: True}
+                   portbindings.OVS_HYBRID_PLUG: True,
+                   portbindings.VIF_DETAILS_CONNECTIVITY:
+                       portbindings.CONNECTIVITY_L2}
     AGENT_TYPE = constants.AGENT_TYPE_OVS
 
     GOOD_MAPPINGS = {'fake_physical_network': 'fake_bridge'}
@@ -108,11 +110,13 @@ class OpenvswitchMechanismBaseTestCase(base.AgentMechanismBaseTestCase):
 
 
 class OpenvswitchMechanismSGDisabledBaseTestCase(
-    OpenvswitchMechanismBaseTestCase):
+        OpenvswitchMechanismBaseTestCase):
     VIF_DETAILS = {'bridge_name': 'br-int',
                    portbindings.OVS_DATAPATH_TYPE: 'system',
                    portbindings.CAP_PORT_FILTER: False,
-                   portbindings.OVS_HYBRID_PLUG: False}
+                   portbindings.OVS_HYBRID_PLUG: False,
+                   portbindings.VIF_DETAILS_CONNECTIVITY:
+                       portbindings.CONNECTIVITY_L2}
 
     def setUp(self):
         cfg.CONF.set_override('enable_security_group',
@@ -210,18 +214,13 @@ class OpenvswitchMechanismGreTestCase(OpenvswitchMechanismBaseTestCase,
 
 
 class OpenvswitchMechanismSGDisabledLocalTestCase(
-    OpenvswitchMechanismSGDisabledBaseTestCase,
-    base.AgentMechanismLocalTestCase):
+        OpenvswitchMechanismSGDisabledBaseTestCase,
+        base.AgentMechanismLocalTestCase):
     pass
 
 
 class OpenvswitchMechanismFirewallUndefinedTestCase(
-    OpenvswitchMechanismBaseTestCase, base.AgentMechanismLocalTestCase):
-
-    VIF_DETAILS = {'bridge_name': 'br-int',
-                   portbindings.OVS_DATAPATH_TYPE: 'system',
-                   portbindings.CAP_PORT_FILTER: True,
-                   portbindings.OVS_HYBRID_PLUG: True}
+        OpenvswitchMechanismBaseTestCase, base.AgentMechanismLocalTestCase):
 
     def setUp(self):
         # this simple test case just ensures backward compatibility where
@@ -285,13 +284,22 @@ class OpenvswitchMechanismDPDKTestCase(OpenvswitchMechanismBaseTestCase):
         self.assertEqual(portbindings.VHOST_USER_MODE_SERVER, result)
 
     def test_get_vif_type(self):
-        result = self.driver.get_vif_type(None, self.AGENT, None)
+        normal_port_cxt = base.FakePortContext(None, None, None)
+        result = self.driver.get_vif_type(normal_port_cxt, self.AGENT, None)
         self.assertEqual(portbindings.VIF_TYPE_VHOST_USER, result)
 
-        result = self.driver.get_vif_type(None, self.AGENT_SERVER, None)
+        result = self.driver.get_vif_type(normal_port_cxt,
+                                          self.AGENT_SERVER, None)
         self.assertEqual(portbindings.VIF_TYPE_VHOST_USER, result)
 
-        result = self.driver.get_vif_type(None, self.AGENT_SYSTEM, None)
+        result = self.driver.get_vif_type(normal_port_cxt,
+                                          self.AGENT_SYSTEM, None)
+        self.assertEqual(portbindings.VIF_TYPE_OVS, result)
+
+        direct_port_cxt = base.FakePortContext(
+            None, None, None, vnic_type=portbindings.VNIC_DIRECT)
+        result = self.driver.get_vif_type(direct_port_cxt,
+                                          self.AGENT, None)
         self.assertEqual(portbindings.VIF_TYPE_OVS, result)
 
 
@@ -320,19 +328,22 @@ class OpenvswitchMechanismSRIOVTestCase(OpenvswitchMechanismBaseTestCase):
 
 
 class OpenvswitchMechVnicTypesTestCase(OpenvswitchMechanismBaseTestCase):
+
+    supported_vnics = [portbindings.VNIC_NORMAL,
+                       portbindings.VNIC_DIRECT,
+                       portbindings.VNIC_SMARTNIC]
+
     def setUp(self):
         self.blacklist_cfg = {
             'OVS_DRIVER': {
                 'vnic_type_blacklist': []
             }
         }
-        self.default_supported_vnics = [portbindings.VNIC_NORMAL,
-                                        portbindings.VNIC_DIRECT]
+        self.default_supported_vnics = self.supported_vnics
         super(OpenvswitchMechVnicTypesTestCase, self).setUp()
 
     def test_default_vnic_types(self):
-        self.assertEqual([portbindings.VNIC_NORMAL,
-                          portbindings.VNIC_DIRECT],
+        self.assertEqual(self.default_supported_vnics,
                          self.driver.supported_vnic_types)
 
     def test_vnic_type_blacklist_valid_item(self):
@@ -366,7 +377,7 @@ class OpenvswitchMechVnicTypesTestCase(OpenvswitchMechanismBaseTestCase):
 
     def test_vnic_type_blacklist_all_items(self):
         self.blacklist_cfg['OVS_DRIVER']['vnic_type_blacklist'] = \
-            [portbindings.VNIC_NORMAL, portbindings.VNIC_DIRECT]
+            self.supported_vnics
         fake_conf = cfg.CONF
         fake_conf_fixture = base.MechDriverConfFixture(
             fake_conf, self.blacklist_cfg,

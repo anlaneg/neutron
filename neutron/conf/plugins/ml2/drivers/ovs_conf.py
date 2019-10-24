@@ -88,17 +88,13 @@ ovs_opts = [
                        "max_unit:int, min_unit:int, "
                        "reserved:int, step_size:int, "
                        "See also: "
-                       "https://developer.openstack.org/api-ref/placement/"
+                       "https://docs.openstack.org/api-ref/placement/"
                        "#update-resource-provider-inventories")),
     cfg.BoolOpt('use_veth_interconnection', default=False,
                 help=_("Use veths instead of patch ports to interconnect the "
                        "integration bridge to physical networks. "
                        "Support kernel without Open vSwitch patch port "
                        "support so long as it is set to True.")),
-    cfg.StrOpt('of_interface', default='native',
-               deprecated_for_removal=True,
-               choices=['ovs-ofctl', 'native'],
-               help=_("OpenFlow interface to use.")),
     cfg.StrOpt('datapath_type', default=constants.OVS_DATAPATH_SYSTEM,
                choices=[constants.OVS_DATAPATH_SYSTEM,
                         constants.OVS_DATAPATH_NETDEV],
@@ -108,19 +104,19 @@ ovs_opts = [
     cfg.StrOpt('vhostuser_socket_dir', default=constants.VHOST_USER_SOCKET_DIR,
                help=_("OVS vhost-user socket directory.")),
     cfg.IPOpt('of_listen_address', default='127.0.0.1',
-              help=_("Address to listen on for OpenFlow connections. "
-                     "Used only for 'native' driver.")),
+              help=_("Address to listen on for OpenFlow connections.")),
     cfg.PortOpt('of_listen_port', default=6633,
-                help=_("Port to listen on for OpenFlow connections. "
-                       "Used only for 'native' driver.")),
+                help=_("Port to listen on for OpenFlow connections.")),
     cfg.IntOpt('of_connect_timeout', default=300,
                help=_("Timeout in seconds to wait for "
-                      "the local switch connecting the controller. "
-                      "Used only for 'native' driver.")),
+                      "the local switch connecting the controller.")),
     cfg.IntOpt('of_request_timeout', default=300,
                help=_("Timeout in seconds to wait for a single "
-                      "OpenFlow request. "
-                      "Used only for 'native' driver.")),
+                      "OpenFlow request.")),
+    cfg.IntOpt('of_inactivity_probe', default=10,
+               help=_("The inactivity_probe interval in seconds for the local "
+                      "switch connection to the controller. "
+                      "A value of 0 disables inactivity probes.")),
 ]
 
 agent_opts = [
@@ -157,11 +153,13 @@ agent_opts = [
                 help=_("Reset flow table on start. Setting this to True will "
                        "cause brief traffic interruption.")),
     cfg.BoolOpt('tunnel_csum', default=False,
-                help=_("Set or un-set the tunnel header checksum  on "
+                help=_("Set or un-set the tunnel header checksum on "
                        "outgoing IP packet carrying GRE/VXLAN tunnel.")),
     cfg.StrOpt('agent_type', default=n_const.AGENT_TYPE_OVS,
                deprecated_for_removal=True,
-               help=_("Selects the Agent Type reported"))
+               help=_("Selects the Agent Type reported.")),
+    cfg.BoolOpt('baremetal_smartnic', default=False,
+                help=_("Enable the agent to process Smart NIC ports.")),
 ]
 
 

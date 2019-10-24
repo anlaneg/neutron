@@ -33,6 +33,7 @@ from neutron_lib.db import model_query
 from neutron_lib.db import resource_extend
 from neutron_lib.db import utils as ndb_utils
 from neutron_lib import exceptions as exc
+from neutron_lib.exceptions import address_scope as addr_scope_exc
 from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
@@ -42,6 +43,7 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import uuidutils
 from sqlalchemy import exc as sql_exc
+from sqlalchemy import func
 from sqlalchemy import not_
 
 from neutron._i18n import _
@@ -53,6 +55,7 @@ from neutron.db import ipam_pluggable_backend
 from neutron.db import models_v2
 from neutron.db import rbac_db_mixin as rbac_mixin
 from neutron.db import standardattrdescription_db as stattr_db
+from neutron.extensions import subnetpool_prefix_ops
 from neutron import ipam
 from neutron.ipam import exceptions as ipam_exc
 from neutron.ipam import subnet_alloc
@@ -172,14 +175,22 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             db_api.sqla_listen(
                 models_v2.Port.status, 'set',
                 self.nova_notifier.record_port_status_changed)
+        if cfg.CONF.ironic.enable_notifications:
+            # Import ironic notifier conditionally
+            from neutron.notifiers import ironic
+            self.ironic_notifier = ironic.Notifier.get_instance()
 
     @registry.receives(resources.RBAC_POLICY, [events.BEFORE_CREATE,
                                                events.BEFORE_UPDATE,
                                                events.BEFORE_DELETE])
-    @db_api.retry_if_session_inactive()
     def validate_network_rbac_policy_change(self, resource, event, trigger,
-                                            context, object_type, policy,
-                                            **kwargs):
+                                            payload=None):
+        return self._validate_network_rbac_policy_change(
+            resource, event, trigger, payload.context, payload)
+
+    @db_api.retry_if_session_inactive()
+    def _validate_network_rbac_policy_change(self, resource, event, trigger,
+                                             context, payload):
         """Validates network RBAC policy changes.
 
         On creation, verify that the creator is an admin or that it owns the
@@ -188,6 +199,10 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         On update and delete, make sure the tenant losing access does not have
         resources that depend on that access.
         """
+        object_type = payload.metadata.get('object_type')
+        policy = (payload.request_body if event == events.BEFORE_CREATE
+                  else payload.latest_state)
+
         if object_type != 'network' or policy['action'] != 'access_as_shared':
             # we only care about shared network policies
             return
@@ -207,7 +222,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         if self_sharing:
             return
         if event == events.BEFORE_UPDATE:
-            new_tenant = kwargs['policy_update']['target_tenant']
+            new_tenant = payload.request_body['target_tenant']
             if policy['target_tenant'] != new_tenant:
                 tenant_to_check = policy['target_tenant']
 
@@ -718,7 +733,14 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         l3plugin.update_router(context, router_id, info)
 
     @db_api.retry_if_session_inactive()
-    def _create_subnet_postcommit(self, context, result, network, ipam_subnet):
+    def _create_subnet_postcommit(self, context, result,
+                                  network=None, ipam_subnet=None):
+        if not network:
+            network = self._get_network(context,
+                                        result['network_id'])
+        if not ipam_subnet:
+            ipam_subnet = self.ipam.get_subnet(context, result['id'])
+
         if hasattr(network, 'external') and network.external:
             self._update_router_gw_ports(context,
                                          network,
@@ -1114,6 +1136,9 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                 subnetpool_id=subnetpool_id, address_scope_id=address_scope_id,
                 ip_version=as_ip_version)
 
+        self._check_subnetpool_address_scope_network_affinity(
+            context, subnetpool_id, ip_version)
+
         subnetpools = subnetpool_obj.SubnetPool.get_objects(
             context, address_scope_id=address_scope_id)
 
@@ -1124,6 +1149,44 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             sp_set = netaddr.IPSet(sp.prefixes)
             if sp_set.intersection(new_set):
                 raise exc.AddressScopePrefixConflict()
+
+    def _check_subnetpool_address_scope_network_affinity(self, context,
+                                                         subnetpool_id,
+                                                         ip_version):
+        """Check whether updating a subnet pool's address scope is allowed.
+
+        - Identify the subnets that would be re-scoped
+        - Identify the networks that would be affected by re-scoping
+        - Find all subnets associated with the affected networks
+        - Perform set difference (all - to_be_rescoped)
+        - If the set difference yields non-zero result size, re-scoping the
+        subnet pool will leave subnets in different address scopes and result
+        in address scope / network affinity violations so raise an exception to
+        block the operation.
+        """
+
+        # TODO(tidwellr) potentially lots of subnets here, optimize this code
+        subnets_to_rescope = self._get_subnets_by_subnetpool(context,
+                                                             subnetpool_id)
+        rescoped_subnet_ids = set()
+        affected_source_network_ids = set()
+        for subnet in subnets_to_rescope:
+            rescoped_subnet_ids.add(subnet.id)
+            affected_source_network_ids.add(subnet.network_id)
+
+        all_network_subnets = subnet_obj.Subnet.get_objects(
+            context,
+            network_id=affected_source_network_ids,
+            ip_version=ip_version)
+        all_affected_subnet_ids = set(
+            [subnet.id for subnet in all_network_subnets])
+
+        # Use set difference to identify the subnets that would be
+        # violating address scope affinity constraints if the subnet
+        # pool's address scope was changed.
+        violations = all_affected_subnet_ids.difference(rescoped_subnet_ids)
+        if violations:
+            raise addr_scope_exc.NetworkAddressScopeAffinityError()
 
     def _check_subnetpool_update_allowed(self, context, subnetpool_id,
                                          address_scope_id):
@@ -1161,7 +1224,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             self._check_default_subnetpool_exists(context,
                                                   sp_reader.ip_version)
         self._validate_address_scope_id(context, sp_reader.address_scope_id,
-                                        id, sp_reader.prefixes,
+                                        sp_reader.id, sp_reader.prefixes,
                                         sp_reader.ip_version)
         pool_args = {'project_id': sp['tenant_id'],
                      'id': sp_reader.id,
@@ -1484,8 +1547,10 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         Port = models_v2.Port
         IPAllocation = models_v2.IPAllocation
 
+        limit = kwargs.pop('limit', None)
         filters = filters or {}
         fixed_ips = filters.pop('fixed_ips', {})
+        mac_address = filters.pop('mac_address', {})
         vif_type = filters.pop(portbindings_def.VIF_TYPE, None)
         query = model_query.get_collection_query(context, Port,
                                                  filters=filters,
@@ -1494,12 +1559,18 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         subnet_ids = fixed_ips.get('subnet_id')
         if vif_type is not None:
             query = query.filter(Port.port_bindings.any(vif_type=vif_type))
+        if mac_address:
+            lowered_macs = [x.lower() for x in mac_address]
+            query = query.filter(func.lower(Port.mac_address).in_(
+                                                    lowered_macs))
         if ip_addresses:
             query = query.filter(
                 Port.fixed_ips.any(IPAllocation.ip_address.in_(ip_addresses)))
         if subnet_ids:
             query = query.filter(
                 Port.fixed_ips.any(IPAllocation.subnet_id.in_(subnet_ids)))
+        if limit:
+            query = query.limit(limit)
         return query
 
     @db_api.retry_if_session_inactive()
@@ -1558,3 +1629,58 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                             device_id=device_id)
                 if tenant_id != router['tenant_id']:
                     raise exc.DeviceIDNotOwnedByTenant(device_id=device_id)
+
+    @db_api.retry_if_session_inactive()
+    def add_prefixes(self, context, subnetpool_id, body):
+        prefixes = subnetpool_prefix_ops.get_operation_request_body(body)
+        with db_api.CONTEXT_WRITER.using(context):
+            subnetpool = subnetpool_obj.SubnetPool.get_object(
+                context, id=subnetpool_id)
+
+            if not subnetpool:
+                raise exc.SubnetPoolNotFound(subnetpool_id=id)
+            if len(prefixes) == 0:
+                # No prefixes were included in the request, simply return
+                return {'prefixes': subnetpool.prefixes}
+
+            new_sp_prefixes = subnetpool.prefixes + prefixes
+            sp_update_req = {'subnetpool': {'prefixes': new_sp_prefixes}}
+            sp = self.update_subnetpool(context, subnetpool_id, sp_update_req)
+            return {'prefixes': sp['prefixes']}
+
+    @db_api.retry_if_session_inactive()
+    def remove_prefixes(self, context, subnetpool_id, body):
+        prefixes = subnetpool_prefix_ops.get_operation_request_body(body)
+        with db_api.CONTEXT_WRITER.using(context):
+            subnetpool = subnetpool_obj.SubnetPool.get_object(
+                context, id=subnetpool_id)
+            if not subnetpool:
+                raise exc.SubnetPoolNotFound(subnetpool_id=id)
+            if len(prefixes) == 0:
+                # No prefixes were included in the request, simply return
+                return {'prefixes': subnetpool.prefixes}
+
+            all_prefix_set = netaddr.IPSet(subnetpool.prefixes)
+            removal_prefix_set = netaddr.IPSet([x for x in prefixes])
+            if all_prefix_set.isdisjoint(removal_prefix_set):
+                # The prefixes requested for removal are not in the prefix
+                # list making this a no-op, so simply return.
+                return {'prefixes': subnetpool.prefixes}
+
+            subnets = subnet_obj.Subnet.get_objects(
+                context, subnetpool_id=subnetpool_id)
+            allocated_prefix_set = netaddr.IPSet([x.cidr for x in subnets])
+
+            if not allocated_prefix_set.isdisjoint(removal_prefix_set):
+                # One or more of the prefixes requested for removal have
+                # been allocated by a real subnet, raise an exception to
+                # indicate this.
+                msg = _("One or more the prefixes to be removed is in use "
+                        "by a subnet.")
+                raise exc.IllegalSubnetPoolPrefixUpdate(msg=msg)
+
+            new_prefixes = all_prefix_set.difference(removal_prefix_set)
+            new_prefixes.compact()
+            subnetpool.prefixes = [str(x) for x in new_prefixes.iter_cidrs()]
+            subnetpool.update()
+            return {'prefixes': subnetpool.prefixes}

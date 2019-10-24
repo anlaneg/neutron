@@ -157,7 +157,8 @@ class NovaSegmentNotifier(object):
             cfg.CONF.send_events_interval, self._send_notifications)
 
     def _get_clients(self):
-        p_client = placement_client.PlacementAPIClient(cfg.CONF)
+        p_client = placement_client.PlacementAPIClient(
+            cfg.CONF, openstack_api_version='placement 1.1')
 
         n_auth = ks_loading.load_auth_from_conf_options(cfg.CONF, 'nova')
         n_session = ks_loading.load_session_from_conf_options(
@@ -250,10 +251,12 @@ class NovaSegmentNotifier(object):
         self.p_client.associate_aggregates(segment_id, [aggregate_uuid])
         for mapping in segment_host_mappings:
             self.n_client.aggregates.add_host(aggregate.id, mapping.host)
-        ipv4_inventory = {'total': total, 'reserved': reserved,
-                          'min_unit': 1, 'max_unit': 1, 'step_size': 1,
-                          'allocation_ratio': 1.0,
-                          'resource_class': IPV4_RESOURCE_CLASS}
+        ipv4_inventory = {
+            IPV4_RESOURCE_CLASS: {
+                'total': total, 'reserved': reserved, 'min_unit': 1,
+                'max_unit': 1, 'step_size': 1, 'allocation_ratio': 1.0,
+            }
+        }
         self.p_client.update_resource_provider_inventories(
             segment_id, ipv4_inventory)
 
@@ -348,13 +351,14 @@ class NovaSegmentNotifier(object):
 
     @registry.receives(resources.SEGMENT_HOST_MAPPING, [events.AFTER_CREATE])
     def _notify_host_addition_to_aggregate(self, resource, event, trigger,
-                                           context, host, current_segment_ids,
-                                           **kwargs):
-        subnets = subnet_obj.Subnet.get_objects(context,
-                                                segment_id=current_segment_ids)
+                                           payload=None):
+        subnets = subnet_obj.Subnet.get_objects(
+            payload.context,
+            segment_id=payload.metadata.get('current_segment_ids'))
         segment_ids = {s.segment_id for s in subnets}
-        self.batch_notifier.queue_event(Event(self._add_host_to_aggregate,
-                                              segment_ids, host=host))
+        self.batch_notifier.queue_event(
+            Event(self._add_host_to_aggregate,
+                  segment_ids, host=payload.metadata.get('host')))
 
     def _add_host_to_aggregate(self, event):
         for segment_id in event.segment_ids:

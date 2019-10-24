@@ -15,6 +15,7 @@ from neutron_lib import constants
 from neutron_lib import exceptions
 
 from neutron.agent.linux import l3_tc_lib as tc_lib
+from neutron.agent.linux import tc_lib as base_tc_lib
 from neutron.tests import base
 
 FLOATING_IP_DEVICE_NAME = "qg-device_rfp"
@@ -128,12 +129,8 @@ INGRESS_QSIC_ID = "ffff:"
 EGRESS_QDISC_ID = "1:"
 QDISC_IDS = {constants.INGRESS_DIRECTION: INGRESS_QSIC_ID,
              constants.EGRESS_DIRECTION: EGRESS_QDISC_ID}
-TC_QDISCS = (
-    'qdisc htb %(egress)s root refcnt 2 r2q 10 default 0 '
-    'direct_packets_stat 6\n'
-    'qdisc ingress %(ingress)s parent ffff:fff1 ----------------\n') % {
-        "egress": EGRESS_QDISC_ID,
-        "ingress": INGRESS_QSIC_ID}
+TC_QDISCS = [{'handle': '1:', 'qdisc_type': 'htb', 'parent': 'root'},
+             {'handle': 'ffff:', 'qdisc_type': 'ingress', 'parent': 'ingress'}]
 
 
 class TestFloatingIPTcCommandBase(base.BaseTestCase):
@@ -144,46 +141,24 @@ class TestFloatingIPTcCommandBase(base.BaseTestCase):
             namespace=FLOATING_IP_ROUTER_NAMESPACE)
         self.execute = mock.patch('neutron.agent.common.utils.execute').start()
 
-    def test__get_qdiscs(self):
-        self.tc._get_qdiscs()
-        self.execute.assert_called_once_with(
-            ['ip', 'netns', 'exec', FLOATING_IP_ROUTER_NAMESPACE,
-             'tc', 'qdisc', 'show', 'dev', FLOATING_IP_DEVICE_NAME],
-            run_as_root=True,
-            check_exit_code=True,
-            log_fail_as_error=True,
-            extra_ok_codes=None
-        )
-
     def test__get_qdisc_id_for_filter(self):
-        with mock.patch.object(tc_lib.FloatingIPTcCommandBase,
-                               '_get_qdiscs') as get_qdiscs:
-            get_qdiscs.return_value = TC_QDISCS
+        with mock.patch.object(base_tc_lib, 'list_tc_qdiscs',
+                               return_value=TC_QDISCS):
             q1 = self.tc._get_qdisc_id_for_filter(constants.INGRESS_DIRECTION)
             self.assertEqual(INGRESS_QSIC_ID, q1)
             q2 = self.tc._get_qdisc_id_for_filter(constants.EGRESS_DIRECTION)
             self.assertEqual(EGRESS_QDISC_ID, q2)
 
-    def test__add_qdisc(self):
+    @mock.patch.object(base_tc_lib, 'add_tc_qdisc')
+    def test__add_qdisc(self, mock_add_tc_qdisc):
         self.tc._add_qdisc(constants.INGRESS_DIRECTION)
-        self.execute.assert_called_with(
-            ['ip', 'netns', 'exec', FLOATING_IP_ROUTER_NAMESPACE,
-             'tc', 'qdisc', 'add', 'dev', FLOATING_IP_DEVICE_NAME, 'ingress'],
-            run_as_root=True,
-            check_exit_code=True,
-            log_fail_as_error=True,
-            extra_ok_codes=None
-        )
+        mock_add_tc_qdisc.assert_called_once_with(
+            self.tc.name, 'ingress', namespace=self.tc.namespace)
+
+        mock_add_tc_qdisc.reset_mock()
         self.tc._add_qdisc(constants.EGRESS_DIRECTION)
-        self.execute.assert_called_with(
-            ['ip', 'netns', 'exec', FLOATING_IP_ROUTER_NAMESPACE,
-             'tc', 'qdisc', 'add', 'dev',
-             FLOATING_IP_DEVICE_NAME] + ['root', 'handle', '1:', 'htb'],
-            run_as_root=True,
-            check_exit_code=True,
-            log_fail_as_error=True,
-            extra_ok_codes=None
-        )
+        mock_add_tc_qdisc.assert_called_once_with(
+            self.tc.name, 'htb', parent='root', namespace=self.tc.namespace)
 
     def test__get_filters(self):
         self.tc._get_filters(INGRESS_QSIC_ID)

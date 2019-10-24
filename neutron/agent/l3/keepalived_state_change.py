@@ -23,6 +23,7 @@ from oslo_log import log as logging
 
 from neutron._i18n import _
 from neutron.agent.l3 import ha
+from neutron.agent.l3 import ha_router
 from neutron.agent.linux import daemon
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import ip_monitor
@@ -54,8 +55,10 @@ class MonitorDaemon(daemon.Daemon):
         self.interface = interface
         self.cidr = cidr
         self.monitor = None
-        super(MonitorDaemon, self).__init__(pidfile, uuid=router_id,
-                                            user=user, group=group)
+        super(MonitorDaemon, self).__init__(
+            pidfile, uuid=router_id,
+            user=user, group=group,
+            procname=ha_router.STATE_CHANGE_PROC_NAME)
 
     def run(self, run_as_root=False):
         self.monitor = ip_monitor.IPMonitor(namespace=self.namespace,
@@ -163,8 +166,6 @@ def configure(conf):
 
 
 def main():
-    agent_config.register_root_helper(cfg.CONF)
-    cfg.CONF.register_cli_opts(agent_config.ROOT_HELPER_OPTS, 'AGENT')
     keepalived.register_cli_l3_agent_keepalived_opts()
     keepalived.register_l3_agent_keepalived_opts()
     configure(cfg.CONF)
